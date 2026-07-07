@@ -3,6 +3,9 @@ import { callLLM } from "@/lib/llm";
 import { normalizeResume } from "@/lib/resume";
 import { normalizeJD } from "@/lib/jd";
 import { buildAnalyzeMessages, normalizeGapAnalysis } from "@/lib/analysis";
+import { getIdentity } from "@/lib/identity";
+import { rateLimitResponse } from "@/lib/rate-limit";
+import { capText, MAX_EXTRA_INFO_CHARS } from "@/lib/limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -12,6 +15,10 @@ function bad(message: string, status = 400) {
 }
 
 export async function POST(request: Request) {
+  const { ip } = getIdentity(request);
+  const limited = await rateLimitResponse(ip);
+  if (limited) return limited;
+
   let body: {
     structuredResume?: unknown;
     structuredJD?: unknown;
@@ -28,8 +35,10 @@ export async function POST(request: Request) {
 
   const resume = normalizeResume(body.structuredResume);
   const jd = normalizeJD(body.structuredJD);
-  const extraInfo =
-    typeof body.extraInfo === "string" ? body.extraInfo : "";
+  const extraInfo = capText(
+    typeof body.extraInfo === "string" ? body.extraInfo : "",
+    MAX_EXTRA_INFO_CHARS,
+  );
 
   try {
     const parsed = await callLLM({

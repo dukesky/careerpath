@@ -28,7 +28,8 @@
       "Bash(curl -s https://careerpath-mkwe6c08l-tian-zhang-s-projects.vercel.app/api/parse-resume -X POST -w '\\\\nHTTP %{http_code}\\\\n')",
       "Bash(curl -s -o /dev/null -w 'code=%{http_code}\\\\nlocation=%{redirect_url}\\\\n' https://careerpath-mkwe6c08l-tian-zhang-s-projects.vercel.app/)",
       "Bash(git commit -q -m 'Add JD ingestion: URL fetch, screenshot OCR, and structured parse *)",
-      "Bash(git commit -q -m 'Add analyze + tailor pipeline with results view *)"
+      "Bash(git commit -q -m 'Add analyze + tailor pipeline with results view *)",
+      "Bash(git commit -q -m 'Add anonymous quota, per-IP rate limiting, and waitlist *)"
     ]
   }
 }

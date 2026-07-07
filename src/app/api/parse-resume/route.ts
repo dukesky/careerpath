@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { callLLM } from "@/lib/llm";
 import { detectKind, extractTextFromBuffer } from "@/lib/extract";
 import { buildParseMessages, normalizeResume } from "@/lib/resume";
+import { getIdentity } from "@/lib/identity";
+import { rateLimitResponse } from "@/lib/rate-limit";
+import { capText, MAX_RESUME_CHARS } from "@/lib/limits";
 
 // unpdf/mammoth need the Node.js runtime (not edge).
 export const runtime = "nodejs";
@@ -14,6 +17,10 @@ function bad(message: string, status = 400) {
 }
 
 export async function POST(request: Request) {
+  const { ip } = getIdentity(request);
+  const limited = await rateLimitResponse(ip);
+  if (limited) return limited;
+
   let form: FormData;
   try {
     form = await request.formData();
@@ -63,7 +70,7 @@ export async function POST(request: Request) {
     const parsed = await callLLM({
       task: "parse",
       json: true,
-      messages: buildParseMessages(rawText),
+      messages: buildParseMessages(capText(rawText, MAX_RESUME_CHARS)),
       maxTokens: 4000,
     });
     resume = normalizeResume(parsed);

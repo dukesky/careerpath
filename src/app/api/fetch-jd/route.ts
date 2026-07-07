@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
+import { getIdentity } from "@/lib/identity";
+import { rateLimitResponse } from "@/lib/rate-limit";
+import { capText, MAX_JD_CHARS } from "@/lib/limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -16,6 +19,10 @@ function fail(reason: string) {
 }
 
 export async function POST(request: Request) {
+  const { ip } = getIdentity(request);
+  const limited = await rateLimitResponse(ip);
+  if (limited) return limited;
+
   let url: string;
   try {
     const body = (await request.json()) as { url?: unknown };
@@ -86,5 +93,5 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, text, title });
+  return NextResponse.json({ ok: true, text: capText(text, MAX_JD_CHARS), title });
 }

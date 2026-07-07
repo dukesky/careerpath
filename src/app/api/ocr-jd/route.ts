@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { callLLM } from "@/lib/llm";
 import { buildJdOcrMessages } from "@/lib/jd";
+import { getIdentity } from "@/lib/identity";
+import { rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -14,6 +16,10 @@ function bad(message: string, status = 400) {
 }
 
 export async function POST(request: Request) {
+  const { ip } = getIdentity(request);
+  const limited = await rateLimitResponse(ip);
+  if (limited) return limited;
+
   let form: FormData;
   try {
     form = await request.formData();

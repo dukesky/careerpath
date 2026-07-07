@@ -23,7 +23,26 @@ Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 | `POST /api/ocr-jd`   | 1–4 image uploads (PNG/JPG, ≤4MB each) → single vision call → transcribed JD text. |
 | `POST /api/parse-jd` | `{ text }` → structured JD JSON.                                                |
 | `POST /api/analyze`  | `{ structuredResume, structuredJD, extraInfo }` → gap analysis (score, requirements matrix, strengths, gaps). |
-| `POST /api/tailor`   | analyze inputs + `analysis` → rewritten resume (same schema) + `change_log`. Never fabricates facts. |
+| `POST /api/tailor`   | analyze inputs + `analysis` → rewritten resume (same schema) + `change_log`. Never fabricates facts. Quota-gated (returns `402` when exhausted). |
+| `GET /api/quota`     | Current anonymous free-tailor quota for the caller (`{ remaining, used, limit }`). |
+| `POST /api/waitlist` | `{ email }` → appended to an Upstash Redis list (early-access signup). |
+
+### Quota, rate limiting & abuse protection
+
+Two independent concerns, two modules:
+
+- **Quota** (`src/lib/quota.ts`) — business logic. Each anonymous identity gets
+  **3 free tailor runs** (one analyze+tailor flow = one run). Tracked against
+  **both** a client `anonId` (localStorage UUID, sent via the `x-anon-id`
+  header) **and** the client IP, and counted exhausted if **either** hits the
+  limit — so clearing localStorage alone doesn't reset it. Keys expire after 30
+  days. Designed to be swapped for a paid credits ledger later.
+- **Rate limiting** (`src/lib/rate-limit.ts`) — abuse protection. Per-IP fixed
+  window (30 requests / 60s) on the API routes.
+
+Both share a small KV abstraction (`src/lib/kv.ts`) backed by Upstash Redis,
+falling back to an in-memory store when Upstash isn't configured. Server-side
+input caps: resume 15k chars, JD 10k chars, extra info 5k chars.
 
 ### Model routing
 
@@ -65,13 +84,16 @@ Open [http://localhost:3000](http://localhost:3000). The workspace lives at
 
 ## Environment variables
 
-| Variable             | Required | Description                                                             |
-| -------------------- | -------- | ---------------------------------------------------------------------- |
-| `OPENROUTER_API_KEY` | Yes\*    | OpenRouter API key for resume analysis (used server-side). The model is served via [OpenRouter](https://openrouter.ai). |
+| Variable                    | Required | Description                                                             |
+| --------------------------- | -------- | ---------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY`        | Yes      | OpenRouter API key for parse/analyze/tailor/OCR (used server-side). The model is served via [OpenRouter](https://openrouter.ai). |
+| `UPSTASH_REDIS_REST_URL`    | Prod     | Upstash Redis REST URL — backs quota, rate limiting, and the waitlist. |
+| `UPSTASH_REDIS_REST_TOKEN`  | Prod     | Upstash Redis REST token.                                              |
 
-\* Not yet consumed by the current UI-only scaffold, but required once the
-analysis backend is wired up. Keep it server-side only — never expose it with a
-`NEXT_PUBLIC_` prefix.
+Keep all of these server-side only — never expose them with a `NEXT_PUBLIC_`
+prefix. Without the Upstash vars the app still runs, but quota/rate-limit/
+waitlist use a per-process in-memory store that is **not shared across
+serverless instances** — so set them for any real deployment.
 
 ## Deploy to Vercel
 

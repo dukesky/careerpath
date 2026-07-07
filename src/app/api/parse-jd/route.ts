@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { callLLM } from "@/lib/llm";
 import { buildJdParseMessages, normalizeJD } from "@/lib/jd";
+import { getIdentity } from "@/lib/identity";
+import { rateLimitResponse } from "@/lib/rate-limit";
+import { capText, MAX_JD_CHARS } from "@/lib/limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -10,6 +13,10 @@ function bad(message: string, status = 400) {
 }
 
 export async function POST(request: Request) {
+  const { ip } = getIdentity(request);
+  const limited = await rateLimitResponse(ip);
+  if (limited) return limited;
+
   let text: string;
   try {
     const body = (await request.json()) as { text?: unknown };
@@ -26,7 +33,7 @@ export async function POST(request: Request) {
     const parsed = await callLLM({
       task: "parse",
       json: true,
-      messages: buildJdParseMessages(text),
+      messages: buildJdParseMessages(capText(text, MAX_JD_CHARS)),
       maxTokens: 2000,
     });
     return NextResponse.json({ jd: normalizeJD(parsed) });

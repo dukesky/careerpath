@@ -1,11 +1,13 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { ResumePreview } from "@/components/ResumePreview";
 import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { ResultsView } from "@/components/ResultsView";
+import { WaitlistModal } from "@/components/WaitlistModal";
+import { apiHeaders } from "@/lib/anon";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
 import {
@@ -76,6 +78,25 @@ export default function WorkspacePage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
   const [tailored, setTailored] = useState<TailorResult | null>(null);
+
+  // Anonymous free-usage quota
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const [showWaitlist, setShowWaitlist] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/quota", { headers: apiHeaders(false) })
+      .then((r) => r.json())
+      .then((d: { remaining: number | null }) => {
+        if (active && typeof d.remaining === "number") setRemaining(d.remaining);
+      })
+      .catch(() => {
+        /* non-blocking */
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const runParse = useCallback(async (body: FormData, label: string) => {
     setStatus("parsing");
@@ -155,6 +176,13 @@ export default function WorkspacePage() {
 
   const runAnalyzeTailor = useCallback(async () => {
     if (!resume || !parsedJd) return;
+
+    // Out of free tailors — go straight to the waitlist.
+    if (remaining !== null && remaining <= 0) {
+      setShowWaitlist(true);
+      return;
+    }
+
     setRunError(null);
     setAnalysis(null);
     setTailored(null);
@@ -170,7 +198,7 @@ export default function WorkspacePage() {
       setRunPhase("analyzing");
       const aRes = await fetch("/api/analyze", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify(payload),
       });
       if (!aRes.ok) {
@@ -182,26 +210,37 @@ export default function WorkspacePage() {
       const gap = normalizeGapAnalysis(aData.analysis);
       setAnalysis(gap);
 
-      // 2) Tailor resume using the gap analysis
+      // 2) Tailor resume using the gap analysis (quota consumed here)
       setRunPhase("tailoring");
       const tRes = await fetch("/api/tailor", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(),
         body: JSON.stringify({ ...payload, analysis: gap }),
       });
+      if (tRes.status === 402) {
+        setRemaining(0);
+        setShowWaitlist(true);
+        setAnalysis(null);
+        setRunPhase("idle");
+        return;
+      }
       if (!tRes.ok) {
         setRunError(await parseErrorMessage(tRes));
         setRunPhase("error");
         return;
       }
-      const tData = (await tRes.json()) as { tailored: unknown };
+      const tData = (await tRes.json()) as {
+        tailored: unknown;
+        remaining?: number;
+      };
       setTailored(normalizeTailorResult(tData.tailored));
+      if (typeof tData.remaining === "number") setRemaining(tData.remaining);
       setRunPhase("idle");
     } catch {
       setRunError("Network error. Please try again.");
       setRunPhase("error");
     }
-  }, [resume, parsedJd, extraInfo]);
+  }, [resume, parsedJd, extraInfo, remaining]);
 
   const backToInputs = useCallback(() => {
     setAnalysis(null);
@@ -223,6 +262,22 @@ export default function WorkspacePage() {
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               Nothing stored, nothing saved
             </span>
+            {remaining !== null &&
+              (remaining > 0 ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                  {remaining} free tailor{remaining === 1 ? "" : "s"} left
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowWaitlist(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 transition hover:bg-amber-100"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                  No free tailors left — get credits
+                </button>
+              ))}
             <Link
               href="/"
               className="font-medium text-slate-600 hover:text-slate-900"
@@ -394,6 +449,11 @@ export default function WorkspacePage() {
           </>
         )}
       </main>
+
+      <WaitlistModal
+        open={showWaitlist}
+        onClose={() => setShowWaitlist(false)}
+      />
     </div>
   );
 }

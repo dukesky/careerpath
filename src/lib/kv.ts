@@ -63,16 +63,27 @@ class MemoryStore implements KVStore {
 
 let store: KVStore | null = null;
 
+/**
+ * Resolve REST credentials from either the Upstash-native names
+ * (UPSTASH_REDIS_REST_URL/TOKEN) or the Vercel Marketplace names
+ * (KV_REST_API_URL/TOKEN). Note: the read-only token can't incr/rpush, so we
+ * never fall back to KV_REST_API_READ_ONLY_TOKEN.
+ */
+function resolveRedisCreds(): { url: string; token: string } | null {
+  const url =
+    process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
+  const token =
+    process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
+  return url && token ? { url, token } : null;
+}
+
 export function getKV(): KVStore {
   if (store) return store;
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  store = url && token ? new UpstashStore(url, token) : new MemoryStore();
+  const creds = resolveRedisCreds();
+  store = creds ? new UpstashStore(creds.url, creds.token) : new MemoryStore();
   return store;
 }
 
 export function isRedisConfigured(): boolean {
-  return Boolean(
-    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
-  );
+  return resolveRedisCreds() !== null;
 }

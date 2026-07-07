@@ -4,7 +4,9 @@ import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { ResumePreview } from "@/components/ResumePreview";
+import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
+import type { ParsedJD } from "@/lib/jd";
 
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_EXT = [".pdf", ".docx"];
@@ -54,8 +56,11 @@ export default function WorkspacePage() {
 
   // Extra info + JD
   const [extraInfo, setExtraInfo] = useState("");
-  const [jdText, setJdText] = useState("");
-  const [jdUrl, setJdUrl] = useState("");
+  const [parsedJd, setParsedJd] = useState<ParsedJD | null>(null);
+
+  const handleJdChange = useCallback((_rawText: string, jd: ParsedJD | null) => {
+    setParsedJd(jd);
+  }, []);
 
   const runParse = useCallback(async (body: FormData, label: string) => {
     setStatus("parsing");
@@ -133,7 +138,7 @@ export default function WorkspacePage() {
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
-  const canAnalyze = resume !== null && jdText.trim().length > 0;
+  const canAnalyze = resume !== null && parsedJd !== null;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -222,27 +227,9 @@ export default function WorkspacePage() {
             <Panel
               step="2"
               title="Job description"
-              subtitle="Paste the JD text. A link is optional but helpful."
+              subtitle="Paste a link (or fall back to text / screenshots) and we structure it."
             >
-              <textarea
-                value={jdText}
-                onChange={(e) => setJdText(e.target.value)}
-                placeholder="Paste the full job description here…"
-                rows={14}
-                className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-              />
-
-              <label className="mt-4 block text-sm font-medium text-slate-700">
-                Job posting URL{" "}
-                <span className="font-normal text-slate-400">(optional)</span>
-              </label>
-              <input
-                type="url"
-                value={jdUrl}
-                onChange={(e) => setJdUrl(e.target.value)}
-                placeholder="https://company.com/careers/senior-engineer"
-                className="mt-1.5 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-              />
+              <JobDescriptionPanel onChange={handleJdChange} />
             </Panel>
           </section>
         </div>
@@ -274,7 +261,7 @@ export default function WorkspacePage() {
               ? "Ready when you are."
               : resume === null
                 ? "Add your resume to continue."
-                : "Paste a job description to continue."}
+                : "Add a job description to continue."}
           </p>
         </div>
       </main>

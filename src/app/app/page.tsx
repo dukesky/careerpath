@@ -5,8 +5,15 @@ import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { ResumePreview } from "@/components/ResumePreview";
 import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
+import { ResultsView } from "@/components/ResultsView";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
+import {
+  normalizeGapAnalysis,
+  normalizeTailorResult,
+  type GapAnalysis,
+  type TailorResult,
+} from "@/lib/analysis";
 
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_EXT = [".pdf", ".docx"];
@@ -61,6 +68,14 @@ export default function WorkspacePage() {
   const handleJdChange = useCallback((_rawText: string, jd: ParsedJD | null) => {
     setParsedJd(jd);
   }, []);
+
+  // Analyze + tailor pipeline
+  const [runPhase, setRunPhase] = useState<
+    "idle" | "analyzing" | "tailoring" | "error"
+  >("idle");
+  const [runError, setRunError] = useState<string | null>(null);
+  const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
+  const [tailored, setTailored] = useState<TailorResult | null>(null);
 
   const runParse = useCallback(async (body: FormData, label: string) => {
     setStatus("parsing");
@@ -138,7 +153,65 @@ export default function WorkspacePage() {
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
+  const runAnalyzeTailor = useCallback(async () => {
+    if (!resume || !parsedJd) return;
+    setRunError(null);
+    setAnalysis(null);
+    setTailored(null);
+
+    const payload = {
+      structuredResume: resume,
+      structuredJD: parsedJd,
+      extraInfo,
+    };
+
+    try {
+      // 1) Analyze fit
+      setRunPhase("analyzing");
+      const aRes = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!aRes.ok) {
+        setRunError(await parseErrorMessage(aRes));
+        setRunPhase("error");
+        return;
+      }
+      const aData = (await aRes.json()) as { analysis: unknown };
+      const gap = normalizeGapAnalysis(aData.analysis);
+      setAnalysis(gap);
+
+      // 2) Tailor resume using the gap analysis
+      setRunPhase("tailoring");
+      const tRes = await fetch("/api/tailor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, analysis: gap }),
+      });
+      if (!tRes.ok) {
+        setRunError(await parseErrorMessage(tRes));
+        setRunPhase("error");
+        return;
+      }
+      const tData = (await tRes.json()) as { tailored: unknown };
+      setTailored(normalizeTailorResult(tData.tailored));
+      setRunPhase("idle");
+    } catch {
+      setRunError("Network error. Please try again.");
+      setRunPhase("error");
+    }
+  }, [resume, parsedJd, extraInfo]);
+
+  const backToInputs = useCallback(() => {
+    setAnalysis(null);
+    setTailored(null);
+    setRunPhase("idle");
+    setRunError(null);
+  }, []);
+
   const canAnalyze = resume !== null && parsedJd !== null;
+  const isRunning = runPhase === "analyzing" || runPhase === "tailoring";
 
   return (
     <div className="flex min-h-full flex-col">
@@ -161,17 +234,25 @@ export default function WorkspacePage() {
       </header>
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
-        <div className="mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            Tailor your resume
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Add your resume and the job description, then let career-path do the
-            rest.
-          </p>
-        </div>
+        {analysis && tailored ? (
+          <ResultsView
+            analysis={analysis}
+            tailored={tailored}
+            onBack={backToInputs}
+          />
+        ) : (
+          <>
+            <div className="mb-8">
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+                Tailor your resume
+              </h1>
+              <p className="mt-1 text-sm text-slate-600">
+                Add your resume and the job description, then let career-path do
+                the rest.
+              </p>
+            </div>
 
-        <div className="grid gap-6 lg:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-2">
           {/* LEFT: Resume + extra info */}
           <section className="flex flex-col gap-6">
             <Panel
@@ -234,36 +315,84 @@ export default function WorkspacePage() {
           </section>
         </div>
 
-        {/* Action bar */}
-        <div className="mt-8 flex flex-col items-center gap-3 border-t border-slate-200 pt-8">
-          <button
-            type="button"
-            disabled={!canAnalyze}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-6 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:text-slate-500 disabled:shadow-none sm:w-auto sm:min-w-72"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4"
-              aria-hidden="true"
-            >
-              <path d="M5 3v4M3 5h4M6 17v4M4 19h4" />
-              <path d="M13 3 15.5 9.5 22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
-            </svg>
-            Analyze &amp; Tailor
-          </button>
-          <p className="text-xs text-slate-500">
-            {canAnalyze
-              ? "Ready when you are."
-              : resume === null
-                ? "Add your resume to continue."
-                : "Add a job description to continue."}
-          </p>
-        </div>
+            {/* Action bar */}
+            <div className="mt-8 flex flex-col items-center gap-3 border-t border-slate-200 pt-8">
+              <button
+                type="button"
+                onClick={() => void runAnalyzeTailor()}
+                disabled={!canAnalyze || isRunning}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-6 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:text-slate-500 disabled:shadow-none sm:w-auto sm:min-w-72"
+              >
+                {isRunning ? (
+                  <svg
+                    className="h-4 w-4 animate-spin"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-4 w-4"
+                    aria-hidden="true"
+                  >
+                    <path d="M5 3v4M3 5h4M6 17v4M4 19h4" />
+                    <path d="M13 3 15.5 9.5 22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
+                  </svg>
+                )}
+                {runPhase === "analyzing"
+                  ? "Analyzing fit…"
+                  : runPhase === "tailoring"
+                    ? "Tailoring resume…"
+                    : "Analyze & Tailor"}
+              </button>
+              <p className="text-xs text-slate-500">
+                {isRunning
+                  ? "This can take up to a minute."
+                  : canAnalyze
+                    ? "Ready when you are."
+                    : resume === null
+                      ? "Add your resume to continue."
+                      : "Add a job description to continue."}
+              </p>
+              {runPhase === "error" && runError && (
+                <p className="flex items-center gap-1.5 text-sm text-red-600">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    className="h-4 w-4 shrink-0"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 8v4M12 16h.01" />
+                  </svg>
+                  {runError}
+                </p>
+              )}
+            </div>
+          </>
+        )}
       </main>
     </div>
   );

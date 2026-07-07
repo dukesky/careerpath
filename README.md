@@ -8,18 +8,22 @@ and JD are processed in-session only.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 
-> **Status:** Resume upload → parse is implemented (upload a PDF/DOCX or paste
-> text, and it is extracted and structured into an editable preview via
-> OpenRouter). The "Analyze & Tailor" step (gap analysis + tailored resume) is
-> the next piece and is not wired up yet.
+> **Status:** End-to-end flow works — upload/parse a resume, ingest a job
+> description (URL / paste / screenshots), then **Analyze & Tailor** produces a
+> gap analysis and a truthfully-rewritten resume with a change log.
 
 ## Pages & endpoints
 
 | Route                | Description                                                                    |
 | -------------------- | ------------------------------------------------------------------------------ |
 | `/`                  | Landing page — value prop and a 3-step overview.                               |
-| `/app`               | Workspace — resume upload (drag & drop), editable parsed preview, and JD input. |
-| `POST /api/parse-resume` | Accepts a multipart PDF/DOCX (≤5MB) **or** a `text` field, extracts the text (`unpdf`/`mammoth`), and returns structured resume JSON via the LLM parse task. |
+| `/app`               | Workspace — resume + JD inputs, then the analysis/tailored-resume results view. |
+| `POST /api/parse-resume` | Multipart PDF/DOCX (≤5MB) **or** a `text` field → extracted (`unpdf`/`mammoth`) → structured resume JSON. |
+| `POST /api/fetch-jd` | `{ url }` → server-side fetch + Readability extraction. `{ ok:false, reason }` on failure. |
+| `POST /api/ocr-jd`   | 1–4 image uploads (PNG/JPG, ≤4MB each) → single vision call → transcribed JD text. |
+| `POST /api/parse-jd` | `{ text }` → structured JD JSON.                                                |
+| `POST /api/analyze`  | `{ structuredResume, structuredJD, extraInfo }` → gap analysis (score, requirements matrix, strengths, gaps). |
+| `POST /api/tailor`   | analyze inputs + `analysis` → rewritten resume (same schema) + `change_log`. Never fabricates facts. |
 
 ### Model routing
 

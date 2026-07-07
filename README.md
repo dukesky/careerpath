@@ -32,7 +32,7 @@ npm install
 
 # 2. Set up environment variables
 cp .env.example .env.local
-# then open .env.local and add your ANTHROPIC_API_KEY
+# then open .env.local and add your OPENROUTER_API_KEY
 
 # 3. Start the dev server
 npm run dev
@@ -52,9 +52,9 @@ Open [http://localhost:3000](http://localhost:3000). The workspace lives at
 
 ## Environment variables
 
-| Variable            | Required | Description                                                |
-| ------------------- | -------- | --------------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | Yes\*    | Anthropic API key for resume analysis (used server-side). |
+| Variable             | Required | Description                                                             |
+| -------------------- | -------- | ---------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY` | Yes\*    | OpenRouter API key for resume analysis (used server-side). The model is served via [OpenRouter](https://openrouter.ai). |
 
 \* Not yet consumed by the current UI-only scaffold, but required once the
 analysis backend is wired up. Keep it server-side only — never expose it with a
@@ -66,7 +66,7 @@ analysis backend is wired up. Keep it server-side only — never expose it with 
 2. In the [Vercel dashboard](https://vercel.com/new), click **Add New → Project**
    and import the repository. Vercel auto-detects Next.js — no build config
    needed.
-3. Under **Settings → Environment Variables**, add `ANTHROPIC_API_KEY` for the
+3. Under **Settings → Environment Variables**, add `OPENROUTER_API_KEY` for the
    Production (and Preview) environments.
 4. Click **Deploy**. Every push to your default branch ships to production;
    every other branch/PR gets a preview URL.

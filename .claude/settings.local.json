@@ -14,7 +14,8 @@
       "Bash(git config *)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit -q -m 'Initial commit: career-path resume tailor UI scaffold *)"
+      "Bash(git commit -q -m 'Initial commit: career-path resume tailor UI scaffold *)",
+      "Bash(gh repo *)"
     ]
   }
 }

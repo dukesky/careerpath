@@ -8,16 +8,25 @@ and JD are processed in-session only.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 
-> **Status:** UI scaffold only. The landing page (`/`) and workspace (`/app`)
-> are complete and interactive, but the "Analyze & Tailor" action is not yet
-> wired to a backend.
+> **Status:** Resume upload → parse is implemented (upload a PDF/DOCX or paste
+> text, and it is extracted and structured into an editable preview via
+> OpenRouter). The "Analyze & Tailor" step (gap analysis + tailored resume) is
+> the next piece and is not wired up yet.
 
-## Pages
+## Pages & endpoints
 
-| Route  | Description                                                            |
-| ------ | --------------------------------------------------------------------- |
-| `/`    | Landing page — value prop and a 3-step overview.                      |
-| `/app` | Workspace — resume upload (drag & drop), extra context, and JD input. |
+| Route                | Description                                                                    |
+| -------------------- | ------------------------------------------------------------------------------ |
+| `/`                  | Landing page — value prop and a 3-step overview.                               |
+| `/app`               | Workspace — resume upload (drag & drop), editable parsed preview, and JD input. |
+| `POST /api/parse-resume` | Accepts a multipart PDF/DOCX (≤5MB) **or** a `text` field, extracts the text (`unpdf`/`mammoth`), and returns structured resume JSON via the LLM parse task. |
+
+### Model routing
+
+All model choices live in one place — `src/lib/llm.ts` (`MODEL_MAP` /
+`QUALITY_MODELS`). Calls go through OpenRouter via the `openai` package. A
+`quality` flag (`"fast" | "quality"`) overrides the analyze/tailor model; OCR is
+pinned to a vision-capable model regardless.
 
 ## Prerequisites
 

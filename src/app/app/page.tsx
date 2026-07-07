@@ -3,6 +3,8 @@
 import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
+import { ResumePreview } from "@/components/ResumePreview";
+import { normalizeResume, type ParsedResume } from "@/lib/resume";
 
 const MAX_SIZE_BYTES = 5 * 1024 * 1024; // 5MB
 const ACCEPTED_EXT = [".pdf", ".docx"];
@@ -11,11 +13,12 @@ const ACCEPTED_MIME = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
 
+type ParseStatus = "idle" | "parsing" | "ready" | "error";
+
 function isAcceptedFile(file: File): boolean {
   const name = file.name.toLowerCase();
   const extOk = ACCEPTED_EXT.some((ext) => name.endsWith(ext));
   const mimeOk = ACCEPTED_MIME.includes(file.type);
-  // Some browsers report an empty MIME for .docx — fall back to extension.
   return extOk && (mimeOk || file.type === "");
 }
 
@@ -25,30 +28,78 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+async function parseErrorMessage(res: Response): Promise<string> {
+  try {
+    const data = (await res.json()) as { error?: string };
+    if (data?.error) return data.error;
+  } catch {
+    // ignore
+  }
+  return `Parsing failed (${res.status}).`;
+}
+
 export default function WorkspacePage() {
-  const [file, setFile] = useState<File | null>(null);
+  // Resume source + parse state
+  const [sourceLabel, setSourceLabel] = useState<string | null>(null);
+  const [status, setStatus] = useState<ParseStatus>("idle");
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [resume, setResume] = useState<ParsedResume | null>(null);
+
+  // Upload UI
   const [fileError, setFileError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [textMode, setTextMode] = useState(false);
+  const [pastedText, setPastedText] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Extra info + JD
   const [extraInfo, setExtraInfo] = useState("");
   const [jdText, setJdText] = useState("");
   const [jdUrl, setJdUrl] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  const acceptFile = useCallback((incoming: File | undefined | null) => {
-    if (!incoming) return;
-    if (!isAcceptedFile(incoming)) {
-      setFileError("Unsupported file type. Please upload a PDF or DOCX.");
-      return;
+  const runParse = useCallback(async (body: FormData, label: string) => {
+    setStatus("parsing");
+    setParseError(null);
+    setSourceLabel(label);
+    try {
+      const res = await fetch("/api/parse-resume", {
+        method: "POST",
+        body,
+      });
+      if (!res.ok) {
+        setParseError(await parseErrorMessage(res));
+        setStatus("error");
+        return;
+      }
+      const data = (await res.json()) as { resume: unknown };
+      setResume(normalizeResume(data.resume));
+      setStatus("ready");
+    } catch {
+      setParseError("Network error while parsing. Please try again.");
+      setStatus("error");
     }
-    if (incoming.size > MAX_SIZE_BYTES) {
-      setFileError(
-        `That file is ${formatBytes(incoming.size)}. The limit is 5MB.`,
-      );
-      return;
-    }
-    setFileError(null);
-    setFile(incoming);
   }, []);
+
+  const acceptFile = useCallback(
+    (incoming: File | undefined | null) => {
+      if (!incoming) return;
+      if (!isAcceptedFile(incoming)) {
+        setFileError("Unsupported file type. Please upload a PDF or DOCX.");
+        return;
+      }
+      if (incoming.size > MAX_SIZE_BYTES) {
+        setFileError(
+          `That file is ${formatBytes(incoming.size)}. The limit is 5MB.`,
+        );
+        return;
+      }
+      setFileError(null);
+      const body = new FormData();
+      body.set("file", incoming);
+      void runParse(body, incoming.name);
+    },
+    [runParse],
+  );
 
   const onDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
@@ -59,7 +110,30 @@ export default function WorkspacePage() {
     [acceptFile],
   );
 
-  const canAnalyze = Boolean(file) && jdText.trim().length > 0;
+  const submitPastedText = useCallback(() => {
+    if (pastedText.trim().length < 30) {
+      setParseError("Please paste a bit more resume text (at least a few lines).");
+      setStatus("error");
+      setSourceLabel("Pasted text");
+      return;
+    }
+    const body = new FormData();
+    body.set("text", pastedText);
+    void runParse(body, "Pasted text");
+  }, [pastedText, runParse]);
+
+  const startOver = useCallback(() => {
+    setResume(null);
+    setStatus("idle");
+    setParseError(null);
+    setSourceLabel(null);
+    setFileError(null);
+    setTextMode(false);
+    setPastedText("");
+    if (inputRef.current) inputRef.current.value = "";
+  }, []);
+
+  const canAnalyze = resume !== null && jdText.trim().length > 0;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -71,7 +145,10 @@ export default function WorkspacePage() {
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               Nothing stored, nothing saved
             </span>
-            <Link href="/" className="font-medium text-slate-600 hover:text-slate-900">
+            <Link
+              href="/"
+              className="font-medium text-slate-600 hover:text-slate-900"
+            >
               ← Home
             </Link>
           </div>
@@ -95,124 +172,32 @@ export default function WorkspacePage() {
             <Panel
               step="1"
               title="Your resume"
-              subtitle="PDF or DOCX, up to 5MB."
+              subtitle="PDF or DOCX, up to 5MB — we extract and structure it for you."
             >
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => inputRef.current?.click()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    inputRef.current?.click();
-                  }
-                }}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setIsDragging(true);
-                }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={onDrop}
-                className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
-                  isDragging
-                    ? "border-indigo-400 bg-indigo-50"
-                    : "border-slate-300 bg-slate-50 hover:border-indigo-300 hover:bg-slate-100"
-                }`}
-              >
-                <input
-                  ref={inputRef}
-                  type="file"
-                  accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                  className="hidden"
-                  onChange={(e) => acceptFile(e.target.files?.[0])}
+              {status === "ready" && resume ? (
+                <ParsedHeader label={sourceLabel} onStartOver={startOver} />
+              ) : status === "parsing" ? (
+                <ParsingState label={sourceLabel} />
+              ) : (
+                <UploadArea
+                  inputRef={inputRef}
+                  isDragging={isDragging}
+                  setIsDragging={setIsDragging}
+                  onDrop={onDrop}
+                  onPick={acceptFile}
+                  fileError={fileError}
+                  parseError={status === "error" ? parseError : null}
+                  textMode={textMode}
+                  setTextMode={setTextMode}
+                  pastedText={pastedText}
+                  setPastedText={setPastedText}
+                  onSubmitText={submitPastedText}
                 />
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="h-8 w-8 text-slate-400"
-                  aria-hidden="true"
-                >
-                  <path d="M12 15V3" />
-                  <path d="m7 8 5-5 5 5" />
-                  <path d="M5 21h14a2 2 0 0 0 2-2v-4" />
-                </svg>
-                <p className="mt-3 text-sm font-medium text-slate-700">
-                  <span className="text-indigo-600">Click to upload</span> or drag
-                  &amp; drop
-                </p>
-                <p className="mt-1 text-xs text-slate-500">PDF or DOCX · max 5MB</p>
-              </div>
-
-              {fileError && (
-                <p className="mt-3 flex items-center gap-1.5 text-sm text-red-600">
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    className="h-4 w-4 shrink-0"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 8v4M12 16h.01" />
-                  </svg>
-                  {fileError}
-                </p>
               )}
 
-              {file && (
-                <div className="mt-3 flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-indigo-50 text-indigo-600">
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="h-4 w-4"
-                        aria-hidden="true"
-                      >
-                        <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-                        <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" />
-                      </svg>
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium text-slate-800">
-                        {file.name}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        {formatBytes(file.size)}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFile(null);
-                      setFileError(null);
-                      if (inputRef.current) inputRef.current.value = "";
-                    }}
-                    className="ml-3 shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                    aria-label="Remove file"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      className="h-4 w-4"
-                      aria-hidden="true"
-                    >
-                      <path d="M18 6 6 18M6 6l12 12" />
-                    </svg>
-                  </button>
+              {status === "ready" && resume && (
+                <div className="mt-5 border-t border-slate-100 pt-5">
+                  <ResumePreview resume={resume} onChange={setResume} />
                 </div>
               )}
             </Panel>
@@ -287,11 +272,227 @@ export default function WorkspacePage() {
           <p className="text-xs text-slate-500">
             {canAnalyze
               ? "Ready when you are."
-              : "Add your resume and a job description to continue."}
+              : resume === null
+                ? "Add your resume to continue."
+                : "Paste a job description to continue."}
           </p>
         </div>
       </main>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Resume panel states
+// ---------------------------------------------------------------------------
+
+function UploadArea({
+  inputRef,
+  isDragging,
+  setIsDragging,
+  onDrop,
+  onPick,
+  fileError,
+  parseError,
+  textMode,
+  setTextMode,
+  pastedText,
+  setPastedText,
+  onSubmitText,
+}: {
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  isDragging: boolean;
+  setIsDragging: (v: boolean) => void;
+  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onPick: (f: File | undefined | null) => void;
+  fileError: string | null;
+  parseError: string | null;
+  textMode: boolean;
+  setTextMode: (v: boolean) => void;
+  pastedText: string;
+  setPastedText: (v: string) => void;
+  onSubmitText: () => void;
+}) {
+  return (
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragging(true);
+        }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={onDrop}
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
+          isDragging
+            ? "border-indigo-400 bg-indigo-50"
+            : "border-slate-300 bg-slate-50 hover:border-indigo-300 hover:bg-slate-100"
+        }`}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          className="hidden"
+          onChange={(e) => onPick(e.target.files?.[0])}
+        />
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-8 w-8 text-slate-400"
+          aria-hidden="true"
+        >
+          <path d="M12 15V3" />
+          <path d="m7 8 5-5 5 5" />
+          <path d="M5 21h14a2 2 0 0 0 2-2v-4" />
+        </svg>
+        <p className="mt-3 text-sm font-medium text-slate-700">
+          <span className="text-indigo-600">Click to upload</span> or drag &amp;
+          drop
+        </p>
+        <p className="mt-1 text-xs text-slate-500">PDF or DOCX · max 5MB</p>
+      </div>
+
+      {fileError && <ErrorLine text={fileError} />}
+      {parseError && <ErrorLine text={parseError} />}
+
+      {/* Scanned-PDF fallback */}
+      <div className="mt-3 text-center">
+        <button
+          type="button"
+          onClick={() => setTextMode(!textMode)}
+          className="text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+        >
+          {textMode
+            ? "Hide text paste"
+            : "Scanned PDF or upload trouble? Paste resume as text"}
+        </button>
+      </div>
+
+      {textMode && (
+        <div className="mt-3">
+          <textarea
+            value={pastedText}
+            onChange={(e) => setPastedText(e.target.value)}
+            placeholder="Paste your full resume text here…"
+            rows={8}
+            className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+          />
+          <button
+            type="button"
+            onClick={onSubmitText}
+            disabled={pastedText.trim() === ""}
+            className="mt-2 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            Parse pasted text
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ParsingState({ label }: { label: string | null }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-6 py-12 text-center">
+      <svg
+        className="h-7 w-7 animate-spin text-indigo-600"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+      >
+        <circle
+          className="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          strokeWidth="4"
+        />
+        <path
+          className="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z"
+        />
+      </svg>
+      <p className="mt-3 text-sm font-medium text-slate-700">
+        Reading and structuring your resume…
+      </p>
+      {label && <p className="mt-1 text-xs text-slate-500">{label}</p>}
+    </div>
+  );
+}
+
+function ParsedHeader({
+  label,
+  onStartOver,
+}: {
+  label: string | null;
+  onStartOver: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-emerald-100 text-emerald-700">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-4 w-4"
+            aria-hidden="true"
+          >
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        </span>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-slate-800">
+            Parsed — review &amp; edit below
+          </p>
+          {label && <p className="truncate text-xs text-slate-500">{label}</p>}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onStartOver}
+        className="ml-3 shrink-0 rounded-md px-2.5 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-white"
+      >
+        Start over
+      </button>
+    </div>
+  );
+}
+
+function ErrorLine({ text }: { text: string }) {
+  return (
+    <p className="mt-3 flex items-start gap-1.5 text-sm text-red-600">
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        className="mt-0.5 h-4 w-4 shrink-0"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4M12 16h.01" />
+      </svg>
+      {text}
+    </p>
   );
 }
 

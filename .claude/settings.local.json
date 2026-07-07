@@ -15,7 +15,13 @@
       "Bash(git init *)",
       "Bash(git add *)",
       "Bash(git commit -q -m 'Initial commit: career-path resume tailor UI scaffold *)",
-      "Bash(gh repo *)"
+      "Bash(gh repo *)",
+      "Bash(node -e \"for \\(const p of ['openai','unpdf','mammoth']\\) console.log\\(p, require\\(p+'/package.json'\\).version\\)\")",
+      "Bash(node *)",
+      "Read(//private/tmp/**)",
+      "Bash(lsof -nP -iTCP:3000 -sTCP:LISTEN)",
+      "Bash(git commit -q -m 'Add OpenRouter LLM layer + resume parsing \\(upload/paste → editable preview\\) *)",
+      "Bash(git push *)"
     ]
   }
 }

@@ -245,14 +245,19 @@ export function JobDescriptionPanel({
       {fetchError && <ErrorLine text={fetchError} />}
       {parseError && <ErrorLine text={parseError} />}
 
-      {!showFallbacks && (
-        <button
-          type="button"
-          onClick={() => setShowFallbacks(true)}
-          className="mt-3 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
-        >
-          Site blocks fetching? Paste text or upload screenshots instead
-        </button>
+      {!showFallbacks && !fetching && !parsing && (
+        <div className="mt-2 space-y-1">
+          <p className="text-xs text-slate-400">
+            Works with LinkedIn, Greenhouse, Lever, Ashby &amp; most job boards.
+          </p>
+          <button
+            type="button"
+            onClick={() => setShowFallbacks(true)}
+            className="text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+          >
+            Site blocks fetching? Paste text or upload screenshots instead
+          </button>
+        </div>
       )}
 
       {(parsing || fetching) && (

@@ -6,9 +6,9 @@ import { rateLimitResponse } from "@/lib/rate-limit";
 import { capText, MAX_JD_CHARS } from "@/lib/limits";
 import {
   fetchGreenhouseJob,
+  fetchJobFromUrl,
   greenhouseAnyEmbed,
   greenhouseFromHtml,
-  greenhouseFromUrl,
 } from "@/lib/ats";
 
 export const runtime = "nodejs";
@@ -49,17 +49,15 @@ export async function POST(request: Request) {
     return fail("Only http and https URLs are supported.");
   }
 
-  // Greenhouse-hosted URLs: skip scraping, use the public JSON API directly.
-  const directGh = greenhouseFromUrl(parsed);
-  if (directGh) {
-    const gh = await fetchGreenhouseJob(directGh);
-    if (gh) {
-      return NextResponse.json({
-        ok: true,
-        text: capText(gh.text, MAX_JD_CHARS),
-        title: gh.title,
-      });
-    }
+  // Known ATS hosts (Greenhouse, LinkedIn, Lever, Ashby, Workday): skip
+  // scraping and pull the JD from the platform's public API.
+  const ats = await fetchJobFromUrl(parsed);
+  if (ats) {
+    return NextResponse.json({
+      ok: true,
+      text: capText(ats.text, MAX_JD_CHARS),
+      title: ats.title,
+    });
   }
 
   // Fetch with a realistic UA and a hard 10s timeout.

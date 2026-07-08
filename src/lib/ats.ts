@@ -1,19 +1,90 @@
 import { JSDOM } from "jsdom";
 
 /**
- * Greenhouse ATS support.
+ * Applicant-tracking-system (ATS) job fetchers.
  *
- * Many career sites (including custom domains like mrbeastjobs.com) are
- * JavaScript-rendered front-ends backed by Greenhouse — the job description is
- * NOT in the server HTML, so Readability finds nothing. Greenhouse exposes a
- * public JSON API, so when we can identify the board + job id we fetch the JD
- * directly instead.
+ * Many job pages are JavaScript-rendered, so the server HTML we fetch has no
+ * job description for Readability to find. Most big ATSs expose a public
+ * JSON/HTML endpoint keyed off ids in the URL — so when we recognize the host
+ * we pull the JD from that API instead of scraping.
+ *
+ * Every fetcher returns `{ text, title } | null` and never throws — a null
+ * simply falls back to the generic Readability path in the route.
  */
 
-const GH_TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 10_000;
 const MIN_CHARS = 200;
-const USER_AGENT =
+const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+export interface FetchedJob {
+  text: string;
+  title: string;
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+async function timedFetch(
+  url: string,
+  accept: string,
+): Promise<Response | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: { Accept: accept, "User-Agent": UA },
+    });
+    return res;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Strip real HTML to readable text, preserving block breaks. */
+function stripHtmlToText(html: string): string {
+  const withBreaks = html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/\s*(p|div|li|h[1-6]|tr|ul|ol)\s*>/gi, "\n");
+  const dom = new JSDOM(`<!DOCTYPE html><body>${withBreaks}</body>`);
+  return normalize(dom.window.document.body.textContent ?? "");
+}
+
+/** Decode entity-escaped HTML (e.g. Greenhouse's double-encoded content). */
+function decodeHtmlEntities(s: string): string {
+  const dom = new JSDOM("<!DOCTYPE html><body><textarea></textarea></body>");
+  const ta = dom.window.document.querySelector("textarea");
+  if (!ta) return s;
+  ta.innerHTML = s;
+  return ta.value;
+}
+
+function normalize(text: string): string {
+  return text
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function withTitle(parts: (string | undefined)[]): string {
+  return parts.map((p) => str(p)).filter(Boolean).join(" — ");
+}
+
+// ---------------------------------------------------------------------------
+// Greenhouse
+// ---------------------------------------------------------------------------
 
 export interface GreenhouseRef {
   board: string;
@@ -21,111 +92,230 @@ export interface GreenhouseRef {
 }
 
 const BOARD_RE = /^[A-Za-z0-9_-]+$/;
-const ID_RE = /^\d+$/;
+const NUM_ID_RE = /^\d+$/;
 
-/** Identify a Greenhouse job from a direct greenhouse.io URL. */
 export function greenhouseFromUrl(u: URL): GreenhouseRef | null {
   if (!u.hostname.toLowerCase().endsWith("greenhouse.io")) return null;
-
-  // e.g. https://job-boards.greenhouse.io/mrbeastyoutube/jobs/6093126004
   const path = u.pathname.match(/^\/([A-Za-z0-9_-]+)\/jobs\/(\d+)/);
   if (path) return { board: path[1], jobId: path[2] };
-
-  // e.g. https://job-boards.greenhouse.io/embed/job_app?for=board&token=id
   const board = u.searchParams.get("for");
   const token = u.searchParams.get("token");
-  if (board && token && BOARD_RE.test(board) && ID_RE.test(token)) {
+  if (board && token && BOARD_RE.test(board) && NUM_ID_RE.test(token)) {
     return { board, jobId: token };
   }
   return null;
 }
 
-/**
- * Strict: identify a Greenhouse job embedded in a page whose URL already names
- * the job id (…/jobs/<id>, ?token=<id>, ?gh_jid=<id>) and whose HTML contains a
- * board tied to THAT id. Strong enough to prefer over a weak Readability parse.
- */
+/** Greenhouse job embedded in a page whose URL names the job id. */
 export function greenhouseFromHtml(html: string, u: URL): GreenhouseRef | null {
-  const idInPath = u.pathname.match(/\/jobs\/(\d+)/);
-  const idInQuery = u.search.match(/[?&](?:token|gh_jid)=(\d+)/);
-  const jobId = idInPath?.[1] ?? idInQuery?.[1] ?? null;
+  const jobId =
+    u.pathname.match(/\/jobs\/(\d+)/)?.[1] ??
+    u.search.match(/[?&](?:token|gh_jid)=(\d+)/)?.[1] ??
+    null;
   if (!jobId) return null;
-
-  // Find the board token tied to THIS job id (pages can list many jobs).
-  const embed = html.match(
-    new RegExp(`for=([A-Za-z0-9_-]+)&(?:amp;)?token=${jobId}\\b`, "i"),
-  );
-  const boardsUrl = html.match(
-    new RegExp(
-      `(?:job-boards|boards)\\.greenhouse\\.io/([A-Za-z0-9_-]+)/jobs/${jobId}\\b`,
-      "i",
-    ),
-  );
-  const board = embed?.[1] ?? boardsUrl?.[1];
+  const board =
+    html.match(new RegExp(`for=([A-Za-z0-9_-]+)&(?:amp;)?token=${jobId}\\b`, "i"))?.[1] ??
+    html.match(
+      new RegExp(
+        `(?:job-boards|boards)\\.greenhouse\\.io/([A-Za-z0-9_-]+)/jobs/${jobId}\\b`,
+        "i",
+      ),
+    )?.[1];
   return board ? { board, jobId } : null;
 }
 
-/**
- * Loose: any single Greenhouse embed on the page. Only used as a last resort
- * after Readability fails, since it isn't tied to the requested job id.
- */
+/** Any single Greenhouse embed on the page — last-resort only. */
 export function greenhouseAnyEmbed(html: string): GreenhouseRef | null {
   const m = html.match(/for=([A-Za-z0-9_-]+)&(?:amp;)?token=(\d+)\b/i);
   return m ? { board: m[1], jobId: m[2] } : null;
 }
 
-/** Convert Greenhouse's entity-encoded HTML `content` into plain text. */
-function greenhouseContentToText(contentHtml: string): string {
-  const dom = new JSDOM("<!DOCTYPE html><body></body>");
-  const doc = dom.window.document;
-  // Greenhouse double-encodes the content (JSON string of entity-escaped HTML).
-  const decoder = doc.createElement("textarea");
-  decoder.innerHTML = contentHtml; // entity-decode → real HTML string
-  const container = doc.createElement("div");
-  container.innerHTML = decoder.value; // parse the real HTML
-  return (container.textContent ?? "")
-    .replace(/\r/g, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-/** Fetch a job's description from the Greenhouse public API. */
 export async function fetchGreenhouseJob(
   ref: GreenhouseRef,
-): Promise<{ text: string; title: string } | null> {
-  if (!BOARD_RE.test(ref.board) || !ID_RE.test(ref.jobId)) return null;
+): Promise<FetchedJob | null> {
+  if (!BOARD_RE.test(ref.board) || !NUM_ID_RE.test(ref.jobId)) return null;
+  const res = await timedFetch(
+    `https://boards-api.greenhouse.io/v1/boards/${ref.board}/jobs/${ref.jobId}`,
+    "application/json",
+  );
+  if (!res || !res.ok) return null;
+  const data = (await res.json().catch(() => null)) as {
+    content?: unknown;
+    title?: unknown;
+    location?: { name?: unknown } | null;
+  } | null;
+  const content = str(data?.content);
+  if (!content) return null;
+  const text = stripHtmlToText(decodeHtmlEntities(content));
+  if (text.length < MIN_CHARS) return null;
+  return { text, title: withTitle([str(data?.title), str(data?.location?.name)]) };
+}
 
-  const api = `https://boards-api.greenhouse.io/v1/boards/${ref.board}/jobs/${ref.jobId}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GH_TIMEOUT_MS);
-  try {
-    const res = await fetch(api, {
-      signal: controller.signal,
-      headers: { Accept: "application/json", "User-Agent": USER_AGENT },
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      content?: unknown;
+// ---------------------------------------------------------------------------
+// LinkedIn (public "guest" job-posting endpoint — no login)
+// ---------------------------------------------------------------------------
+
+export function linkedinJobId(u: URL): string | null {
+  if (!u.hostname.toLowerCase().endsWith("linkedin.com")) return null;
+  const inPath = u.pathname.match(/\/jobs\/view\/(?:[^/]*-)?(\d{5,})/);
+  if (inPath) return inPath[1];
+  const q = u.searchParams.get("currentJobId") ?? u.searchParams.get("jobId");
+  if (q && NUM_ID_RE.test(q)) return q;
+  return null;
+}
+
+async function fetchLinkedinJob(jobId: string): Promise<FetchedJob | null> {
+  const res = await timedFetch(
+    `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/${jobId}`,
+    "text/html",
+  );
+  if (!res || !res.ok) return null;
+  const html = await res.text();
+  const doc = new JSDOM(html).window.document;
+  const descEl =
+    doc.querySelector(".show-more-less-html__markup") ??
+    doc.querySelector(".description__text");
+  const text = descEl
+    ? stripHtmlToText(descEl.innerHTML)
+    : normalize(doc.body?.textContent ?? "");
+  if (text.length < MIN_CHARS) return null;
+  const title = (
+    doc.querySelector(".top-card-layout__title") ??
+    doc.querySelector(".topcard__title")
+  )?.textContent?.trim();
+  const company = (
+    doc.querySelector(".topcard__org-name-link") ??
+    doc.querySelector(".topcard__flavor")
+  )?.textContent?.trim();
+  return { text, title: withTitle([title, company]) };
+}
+
+// ---------------------------------------------------------------------------
+// Lever
+// ---------------------------------------------------------------------------
+
+function leverFromUrl(u: URL): { company: string; postingId: string } | null {
+  const h = u.hostname.toLowerCase();
+  if (h !== "jobs.lever.co" && h !== "jobs.eu.lever.co") return null;
+  const m = u.pathname.match(/^\/([A-Za-z0-9._-]+)\/([0-9a-f-]{36})/i);
+  return m && UUID_RE.test(m[2]) ? { company: m[1], postingId: m[2] } : null;
+}
+
+async function fetchLeverJob(ref: {
+  company: string;
+  postingId: string;
+}): Promise<FetchedJob | null> {
+  const res = await timedFetch(
+    `https://api.lever.co/v0/postings/${ref.company}/${ref.postingId}`,
+    "application/json",
+  );
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as {
+    text?: unknown;
+    descriptionPlain?: unknown;
+    description?: unknown;
+    categories?: { location?: unknown } | null;
+  } | null;
+  const text = str(d?.descriptionPlain)
+    ? normalize(str(d?.descriptionPlain))
+    : stripHtmlToText(str(d?.description));
+  if (text.length < MIN_CHARS) return null;
+  return { text, title: withTitle([str(d?.text), str(d?.categories?.location)]) };
+}
+
+// ---------------------------------------------------------------------------
+// Ashby
+// ---------------------------------------------------------------------------
+
+function ashbyFromUrl(u: URL): { org: string; jobId: string } | null {
+  if (u.hostname.toLowerCase() !== "jobs.ashbyhq.com") return null;
+  const m = u.pathname.match(/^\/([A-Za-z0-9._-]+)\/([0-9a-f-]{36})/i);
+  return m && UUID_RE.test(m[2]) ? { org: m[1], jobId: m[2] } : null;
+}
+
+async function fetchAshbyJob(ref: {
+  org: string;
+  jobId: string;
+}): Promise<FetchedJob | null> {
+  const res = await timedFetch(
+    `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(
+      ref.org,
+    )}?includeCompensation=true`,
+    "application/json",
+  );
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as {
+    jobs?: Array<Record<string, unknown>>;
+  } | null;
+  const job = (d?.jobs ?? []).find((j) => str(j.id) === ref.jobId);
+  if (!job) return null;
+  const text = str(job.descriptionPlain)
+    ? normalize(str(job.descriptionPlain))
+    : stripHtmlToText(str(job.descriptionHtml));
+  if (text.length < MIN_CHARS) return null;
+  return { text, title: withTitle([str(job.title), str(job.location)]) };
+}
+
+// ---------------------------------------------------------------------------
+// Workday (best-effort — tenant/site parsed from the URL)
+// ---------------------------------------------------------------------------
+
+function workdayApiUrl(u: URL): string | null {
+  const h = u.hostname.toLowerCase();
+  if (!h.endsWith("myworkdayjobs.com")) return null;
+  const tenant = h.split(".")[0];
+  // …/{site}/job/{location}/{title}_{req}
+  const m = u.pathname.match(/\/([^/]+)\/job\/(.+)$/);
+  if (!tenant || !m) return null;
+  return `${u.protocol}//${u.hostname}/wday/cxs/${tenant}/${m[1]}/job/${m[2]}`;
+}
+
+async function fetchWorkdayJob(apiUrl: string): Promise<FetchedJob | null> {
+  const res = await timedFetch(apiUrl, "application/json");
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as {
+    jobPostingInfo?: {
       title?: unknown;
-      location?: { name?: unknown } | null;
-    };
-    const contentHtml = typeof data.content === "string" ? data.content : "";
-    if (!contentHtml) return null;
+      jobDescription?: unknown;
+      location?: unknown;
+    } | null;
+  } | null;
+  const info = d?.jobPostingInfo;
+  if (!info) return null;
+  const text = stripHtmlToText(str(info.jobDescription));
+  if (text.length < MIN_CHARS) return null;
+  return { text, title: withTitle([str(info.title), str(info.location)]) };
+}
 
-    const text = greenhouseContentToText(contentHtml);
-    if (text.length < MIN_CHARS) return null;
+// ---------------------------------------------------------------------------
+// Dispatcher — recognize the host and fetch from the right API
+// ---------------------------------------------------------------------------
 
-    const title = [
-      typeof data.title === "string" ? data.title : "",
-      typeof data.location?.name === "string" ? data.location.name : "",
-    ]
-      .filter(Boolean)
-      .join(" — ");
-    return { text, title };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+export async function fetchJobFromUrl(u: URL): Promise<FetchedJob | null> {
+  const gh = greenhouseFromUrl(u);
+  if (gh) {
+    const r = await fetchGreenhouseJob(gh);
+    if (r) return r;
   }
+  const liId = linkedinJobId(u);
+  if (liId) {
+    const r = await fetchLinkedinJob(liId);
+    if (r) return r;
+  }
+  const lever = leverFromUrl(u);
+  if (lever) {
+    const r = await fetchLeverJob(lever);
+    if (r) return r;
+  }
+  const ashby = ashbyFromUrl(u);
+  if (ashby) {
+    const r = await fetchAshbyJob(ashby);
+    if (r) return r;
+  }
+  const wd = workdayApiUrl(u);
+  if (wd) {
+    const r = await fetchWorkdayJob(wd);
+    if (r) return r;
+  }
+  return null;
 }

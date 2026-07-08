@@ -35,7 +35,13 @@
       "Bash(python3 -c ' *)",
       "Bash(git commit -q -m 'Add fast/quality model toggle; bump Sonnet 4.5 -> 4.6 *)",
       "Bash(curl -s -o /tmp/jd.html -D - -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' -L https://www.mrbeastjobs.com/jobs/6093126004)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(curl -s -o /tmp/li.html -D - -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4419665582)",
+      "Bash(echo \"=== LEVER public API \\(leverdemo company, one posting\\) ===\")",
+      "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' 'https://api.lever.co/v0/postings/leverdemo?mode=json&limit=1')",
+      "Bash(python3 -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\('title:',d.get\\('text'\\)\\);print\\('descPlain chars:',len\\(d.get\\('descriptionPlain'\\) or ''\\)\\)\")",
+      "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4419665582 -o /tmp/li.html -w 'HTTP %{http_code}\\\\n')",
+      "Bash(git commit -q -m 'fetch-jd: add LinkedIn, Lever, Ashby, Workday fetchers *)"
     ]
   }
 }

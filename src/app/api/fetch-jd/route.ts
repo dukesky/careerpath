@@ -4,6 +4,12 @@ import { Readability } from "@mozilla/readability";
 import { getIdentity } from "@/lib/identity";
 import { rateLimitResponse } from "@/lib/rate-limit";
 import { capText, MAX_JD_CHARS } from "@/lib/limits";
+import {
+  fetchGreenhouseJob,
+  greenhouseAnyEmbed,
+  greenhouseFromHtml,
+  greenhouseFromUrl,
+} from "@/lib/ats";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -43,6 +49,19 @@ export async function POST(request: Request) {
     return fail("Only http and https URLs are supported.");
   }
 
+  // Greenhouse-hosted URLs: skip scraping, use the public JSON API directly.
+  const directGh = greenhouseFromUrl(parsed);
+  if (directGh) {
+    const gh = await fetchGreenhouseJob(directGh);
+    if (gh) {
+      return NextResponse.json({
+        ok: true,
+        text: capText(gh.text, MAX_JD_CHARS),
+        title: gh.title,
+      });
+    }
+  }
+
   // Fetch with a realistic UA and a hard 10s timeout.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -75,6 +94,20 @@ export async function POST(request: Request) {
     clearTimeout(timer);
   }
 
+  // Strong signal: a Greenhouse job page on a custom domain (JS-rendered, so
+  // Readability would only see boilerplate). Prefer the API JD over scraping.
+  const strongGh = greenhouseFromHtml(html, parsed);
+  if (strongGh) {
+    const gh = await fetchGreenhouseJob(strongGh);
+    if (gh) {
+      return NextResponse.json({
+        ok: true,
+        text: capText(gh.text, MAX_JD_CHARS),
+        title: gh.title,
+      });
+    }
+  }
+
   // Extract the main readable content.
   let text = "";
   let title = "";
@@ -88,6 +121,18 @@ export async function POST(request: Request) {
   }
 
   if (text.length < MIN_CONTENT_CHARS) {
+    // Readability found little — last resort: any Greenhouse embed on the page.
+    const embeddedGh = greenhouseAnyEmbed(html);
+    if (embeddedGh) {
+      const gh = await fetchGreenhouseJob(embeddedGh);
+      if (gh) {
+        return NextResponse.json({
+          ok: true,
+          text: capText(gh.text, MAX_JD_CHARS),
+          title: gh.title,
+        });
+      }
+    }
     return fail(
       "Couldn't find enough job-description text on that page. Many sites block scraping — paste the text or upload screenshots instead.",
     );

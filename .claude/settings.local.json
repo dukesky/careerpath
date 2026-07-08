@@ -33,7 +33,9 @@
       "Skill(claude-api)",
       "Bash(curl -s \"https://openrouter.ai/api/v1/models\")",
       "Bash(python3 -c ' *)",
-      "Bash(git commit -q -m 'Add fast/quality model toggle; bump Sonnet 4.5 -> 4.6 *)"
+      "Bash(git commit -q -m 'Add fast/quality model toggle; bump Sonnet 4.5 -> 4.6 *)",
+      "Bash(curl -s -o /tmp/jd.html -D - -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' -L https://www.mrbeastjobs.com/jobs/6093126004)",
+      "Read(//tmp/**)"
     ]
   }
 }

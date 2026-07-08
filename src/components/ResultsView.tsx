@@ -1,20 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   GapAnalysis,
   ReqStatus,
   TailorResult,
 } from "@/lib/analysis";
 import { resumeToMarkdown, type ParsedResume } from "@/lib/resume";
+import { ResumePreview } from "@/components/ResumePreview";
+import { ResumeDiff } from "@/components/ResumeDiff";
 
 export function ResultsView({
   analysis,
   tailored,
+  originalResume,
+  onTailoredResumeChange,
   onBack,
 }: {
   analysis: GapAnalysis;
   tailored: TailorResult;
+  originalResume: ParsedResume;
+  onTailoredResumeChange: (resume: ParsedResume) => void;
   onBack: () => void;
 }) {
   return (
@@ -44,7 +50,11 @@ export function ResultsView({
       <ScoreCard analysis={analysis} />
       <RequirementsTable analysis={analysis} />
       <StrengthsGaps analysis={analysis} />
-      <TailoredResumeCard resume={tailored.resume} />
+      <TailoredResumeCard
+        resume={tailored.resume}
+        originalResume={originalResume}
+        onChange={onTailoredResumeChange}
+      />
       <ChangeLogCard tailored={tailored} />
 
       <Disclaimer />
@@ -206,12 +216,29 @@ function StrengthsGaps({ analysis }: { analysis: GapAnalysis }) {
 // Tailored resume
 // ---------------------------------------------------------------------------
 
-function TailoredResumeCard({ resume }: { resume: ParsedResume }) {
+type ResumeTab = "preview" | "diff" | "edit";
+
+function TailoredResumeCard({
+  resume,
+  originalResume,
+  onChange,
+}: {
+  resume: ParsedResume;
+  originalResume: ParsedResume;
+  onChange: (resume: ParsedResume) => void;
+}) {
+  const [tab, setTab] = useState<ResumeTab>("preview");
   const [copied, setCopied] = useState(false);
+
+  const originalMd = useMemo(
+    () => resumeToMarkdown(originalResume),
+    [originalResume],
+  );
+  const revisedMd = useMemo(() => resumeToMarkdown(resume), [resume]);
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(resumeToMarkdown(resume));
+      await navigator.clipboard.writeText(revisedMd);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -221,13 +248,14 @@ function TailoredResumeCard({ resume }: { resume: ParsedResume }) {
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-6 py-4">
         <div>
           <h2 className="text-base font-semibold text-slate-900">
             Tailored resume
           </h2>
           <p className="text-sm text-slate-500">
-            Rephrased for this role — your real experience only.
+            Rephrased for this role — your real experience only. Edit anything
+            before you export.
           </p>
         </div>
         <button
@@ -272,8 +300,40 @@ function TailoredResumeCard({ resume }: { resume: ParsedResume }) {
         </button>
       </div>
 
+      {/* Tabs */}
+      <div className="border-b border-slate-100 px-6 pt-3">
+        <div className="inline-flex gap-1 text-sm">
+          {(
+            [
+              ["preview", "Preview"],
+              ["diff", "Changes (diff)"],
+              ["edit", "Edit"],
+            ] as [ResumeTab, string][]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={`rounded-t-lg px-3 py-2 font-medium transition ${
+                tab === key
+                  ? "border-b-2 border-indigo-600 text-indigo-700"
+                  : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="px-6 py-6">
-        <ResumeDocument resume={resume} />
+        {tab === "preview" && <ResumeDocument resume={resume} />}
+        {tab === "diff" && (
+          <ResumeDiff original={originalMd} revised={revisedMd} />
+        )}
+        {tab === "edit" && (
+          <ResumePreview resume={resume} onChange={onChange} />
+        )}
       </div>
     </div>
   );

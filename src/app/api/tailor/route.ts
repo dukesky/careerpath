@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     structuredJD?: unknown;
     extraInfo?: unknown;
     analysis?: unknown;
+    quality?: unknown;
   };
   try {
     body = await request.json();
@@ -58,12 +59,14 @@ export async function POST(request: Request) {
     typeof body.extraInfo === "string" ? body.extraInfo : "",
     MAX_EXTRA_INFO_CHARS,
   );
+  const quality = body.quality === "fast" ? "fast" : "quality";
 
   let tailored;
   try {
     const parsed = await callLLM({
       task: "tailor",
       json: true,
+      quality,
       messages: buildTailorMessages(resume, jd, extraInfo, analysis),
       maxTokens: 8000,
     });

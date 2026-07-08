@@ -79,6 +79,9 @@ export default function WorkspacePage() {
   const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
   const [tailored, setTailored] = useState<TailorResult | null>(null);
 
+  // Model quality (fast = Haiku, quality = Sonnet)
+  const [quality, setQuality] = useState<"fast" | "quality">("quality");
+
   // Anonymous free-usage quota
   const [remaining, setRemaining] = useState<number | null>(null);
   const [showWaitlist, setShowWaitlist] = useState(false);
@@ -191,6 +194,7 @@ export default function WorkspacePage() {
       structuredResume: resume,
       structuredJD: parsedJd,
       extraInfo,
+      quality,
     };
 
     try {
@@ -240,7 +244,7 @@ export default function WorkspacePage() {
       setRunError("Network error. Please try again.");
       setRunPhase("error");
     }
-  }, [resume, parsedJd, extraInfo, remaining]);
+  }, [resume, parsedJd, extraInfo, quality, remaining]);
 
   const backToInputs = useCallback(() => {
     setAnalysis(null);
@@ -372,6 +376,34 @@ export default function WorkspacePage() {
 
             {/* Action bar */}
             <div className="mt-8 flex flex-col items-center gap-3 border-t border-slate-200 pt-8">
+              <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white p-0.5 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setQuality("fast")}
+                  disabled={isRunning}
+                  className={`rounded-full px-3 py-1.5 transition disabled:cursor-not-allowed ${
+                    quality === "fast"
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  title="Faster & cheaper — Claude Haiku 4.5"
+                >
+                  ⚡ Fast
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuality("quality")}
+                  disabled={isRunning}
+                  className={`rounded-full px-3 py-1.5 transition disabled:cursor-not-allowed ${
+                    quality === "quality"
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  title="Best results — Claude Sonnet 4.6"
+                >
+                  ✦ Quality
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => void runAnalyzeTailor()}

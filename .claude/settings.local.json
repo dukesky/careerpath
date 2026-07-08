@@ -29,7 +29,11 @@
       "Bash(curl -s -o /dev/null -w 'code=%{http_code}\\\\nlocation=%{redirect_url}\\\\n' https://careerpath-mkwe6c08l-tian-zhang-s-projects.vercel.app/)",
       "Bash(git commit -q -m 'Add JD ingestion: URL fetch, screenshot OCR, and structured parse *)",
       "Bash(git commit -q -m 'Add analyze + tailor pipeline with results view *)",
-      "Bash(git commit -q -m 'Add anonymous quota, per-IP rate limiting, and waitlist *)"
+      "Bash(git commit -q -m 'Add anonymous quota, per-IP rate limiting, and waitlist *)",
+      "Skill(claude-api)",
+      "Bash(curl -s \"https://openrouter.ai/api/v1/models\")",
+      "Bash(python3 -c ' *)",
+      "Bash(git commit -q -m 'Add fast/quality model toggle; bump Sonnet 4.5 -> 4.6 *)"
     ]
   }
 }

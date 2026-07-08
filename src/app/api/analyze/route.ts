@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     structuredResume?: unknown;
     structuredJD?: unknown;
     extraInfo?: unknown;
+    quality?: unknown;
   };
   try {
     body = await request.json();
@@ -39,11 +40,13 @@ export async function POST(request: Request) {
     typeof body.extraInfo === "string" ? body.extraInfo : "",
     MAX_EXTRA_INFO_CHARS,
   );
+  const quality = body.quality === "fast" ? "fast" : "quality";
 
   try {
     const parsed = await callLLM({
       task: "analyze",
       json: true,
+      quality,
       messages: buildAnalyzeMessages(resume, jd, extraInfo),
       maxTokens: 4000,
     });

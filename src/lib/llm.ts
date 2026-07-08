@@ -22,15 +22,16 @@ export interface ChatMessage {
 
 const MODEL_MAP: Record<LLMTask, string> = {
   parse: "deepseek/deepseek-chat", // placeholder — swap freely
-  analyze: "anthropic/claude-sonnet-4.5",
-  tailor: "anthropic/claude-sonnet-4.5",
-  ocr: "anthropic/claude-sonnet-4.5", // vision-capable; hardcoded, ignores `quality`
+  analyze: "anthropic/claude-sonnet-4.6",
+  tailor: "anthropic/claude-sonnet-4.6",
+  ocr: "anthropic/claude-sonnet-4.6", // vision-capable; hardcoded, ignores `quality`
 };
 
 // The `quality` flag only overrides analyze/tailor. OCR is always the map value.
+// quality → latest Sonnet; fast → latest Haiku.
 const QUALITY_MODELS: Record<Quality, string> = {
   fast: "anthropic/claude-haiku-4.5",
-  quality: "anthropic/claude-sonnet-4.5",
+  quality: "anthropic/claude-sonnet-4.6",
 };
 
 // Sensible default sampling temperature per task.

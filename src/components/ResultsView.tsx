@@ -14,12 +14,14 @@ export function ResultsView({
   analysis,
   tailored,
   originalResume,
+  company,
   onTailoredResumeChange,
   onBack,
 }: {
   analysis: GapAnalysis;
   tailored: TailorResult;
   originalResume: ParsedResume;
+  company: string;
   onTailoredResumeChange: (resume: ParsedResume) => void;
   onBack: () => void;
 }) {
@@ -53,6 +55,7 @@ export function ResultsView({
       <TailoredResumeCard
         resume={tailored.resume}
         originalResume={originalResume}
+        company={company}
         onChange={onTailoredResumeChange}
       />
       <ChangeLogCard tailored={tailored} />
@@ -221,14 +224,17 @@ type ResumeTab = "preview" | "diff" | "edit";
 function TailoredResumeCard({
   resume,
   originalResume,
+  company,
   onChange,
 }: {
   resume: ParsedResume;
   originalResume: ParsedResume;
+  company: string;
   onChange: (resume: ParsedResume) => void;
 }) {
   const [tab, setTab] = useState<ResumeTab>("preview");
   const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const originalMd = useMemo(
     () => resumeToMarkdown(originalResume),
@@ -246,6 +252,29 @@ function TailoredResumeCard({
     }
   }
 
+  async function exportPdf() {
+    setExporting(true);
+    try {
+      // Dynamic import keeps the heavy PDF library out of the initial bundle.
+      const { generateResumePdf, resumePdfFilename } = await import(
+        "@/lib/resume-pdf"
+      );
+      const blob = await generateResumePdf(resume);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = resumePdfFilename(resume.contact.name, company);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      // no-op — button re-enables so the user can retry
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-6 py-4">
@@ -258,12 +287,34 @@ function TailoredResumeCard({
             before you export.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => void copy()}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-        >
-          {copied ? (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void exportPdf()}
+            disabled={exporting}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-4 w-4"
+              aria-hidden="true"
+            >
+              <path d="M12 3v12M8 11l4 4 4-4" />
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+            {exporting ? "Exporting…" : "Export PDF"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void copy()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            {copied ? (
             <>
               <svg
                 viewBox="0 0 24 24"
@@ -297,7 +348,8 @@ function TailoredResumeCard({
               Copy as Markdown
             </>
           )}
-        </button>
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}

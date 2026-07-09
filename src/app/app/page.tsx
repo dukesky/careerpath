@@ -298,6 +298,7 @@ export default function WorkspacePage() {
             analysis={analysis}
             tailored={tailored}
             originalResume={resume}
+            company={parsedJd?.company ?? ""}
             onTailoredResumeChange={(next) =>
               setTailored((prev) => (prev ? { ...prev, resume: next } : prev))
             }

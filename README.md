@@ -8,9 +8,12 @@ and JD are processed in-session only.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 
-> **Status:** End-to-end flow works — upload/parse a resume, ingest a job
-> description (URL / paste / screenshots), then **Analyze & Tailor** produces a
-> gap analysis and a truthfully-rewritten resume with a change log.
+> **Status:** Full end-to-end flow. Upload/parse a resume, ingest a job
+> description (URL / paste / screenshots — with direct fetchers for LinkedIn,
+> Greenhouse, Lever, Ashby & Workday), then **Analyze & Tailor** produces a gap
+> analysis and a truthfully-rewritten resume. Results have **Preview / Diff /
+> Edit** tabs (side-by-side original-vs-tailored with word-level highlights) and
+> **Export PDF** (`Name_Company_Resume.pdf`). Fast/Quality model toggle.
 
 ## Pages & endpoints
 

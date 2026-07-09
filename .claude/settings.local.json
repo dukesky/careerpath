@@ -41,7 +41,8 @@
       "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' 'https://api.lever.co/v0/postings/leverdemo?mode=json&limit=1')",
       "Bash(python3 -c \"import json,sys;d=json.load\\(sys.stdin\\);print\\('title:',d.get\\('text'\\)\\);print\\('descPlain chars:',len\\(d.get\\('descriptionPlain'\\) or ''\\)\\)\")",
       "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/4419665582 -o /tmp/li.html -w 'HTTP %{http_code}\\\\n')",
-      "Bash(git commit -q -m 'fetch-jd: add LinkedIn, Lever, Ashby, Workday fetchers *)"
+      "Bash(git commit -q -m 'fetch-jd: add LinkedIn, Lever, Ashby, Workday fetchers *)",
+      "Bash(awk '{print \"disk avail:\", $4}')"
     ]
   }
 }

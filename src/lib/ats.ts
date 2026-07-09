@@ -288,6 +288,131 @@ async function fetchWorkdayJob(apiUrl: string): Promise<FetchedJob | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Eightfold (Netflix and other "…/careers/job/{id}?domain=…" boards)
+// ---------------------------------------------------------------------------
+
+function eightfoldFromUrl(
+  u: URL,
+): { host: string; jobId: string; domain: string } | null {
+  const m = u.pathname.match(/\/careers\/job\/(\d{6,})/);
+  if (!m) return null;
+  const domain =
+    u.searchParams.get("domain") ||
+    u.hostname.replace(/^(explore\.jobs|jobs|careers)\./, "");
+  return { host: u.hostname, jobId: m[1], domain };
+}
+
+async function fetchEightfoldJob(ref: {
+  host: string;
+  jobId: string;
+  domain: string;
+}): Promise<FetchedJob | null> {
+  const res = await timedFetch(
+    `https://${ref.host}/api/apply/v2/jobs/${ref.jobId}?domain=${encodeURIComponent(
+      ref.domain,
+    )}`,
+    "application/json",
+  );
+  if (!res || !res.ok) return null;
+  const d = (await res.json().catch(() => null)) as {
+    name?: unknown;
+    job_description?: unknown;
+    location?: unknown;
+  } | null;
+  const text = stripHtmlToText(str(d?.job_description));
+  if (text.length < MIN_CHARS) return null;
+  return { text, title: withTitle([str(d?.name), str(d?.location)]) };
+}
+
+// ---------------------------------------------------------------------------
+// schema.org JobPosting (JSON-LD) — a canonical JD embedded by most career
+// sites for Google for Jobs. High-quality and generic.
+// ---------------------------------------------------------------------------
+
+function findJobPosting(node: unknown): Record<string, unknown> | null {
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const r = findJobPosting(n);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (node && typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    const t = o["@type"];
+    const isJP =
+      (typeof t === "string" && t.includes("JobPosting")) ||
+      (Array.isArray(t) && t.some((x) => String(x).includes("JobPosting")));
+    if (isJP) return o;
+    if (o["@graph"]) return findJobPosting(o["@graph"]);
+  }
+  return null;
+}
+
+export function extractJobPostingJsonLd(html: string): FetchedJob | null {
+  const doc = new JSDOM(html).window.document;
+  const scripts = doc.querySelectorAll(
+    'script[type="application/ld+json"]',
+  );
+  for (const s of Array.from(scripts)) {
+    let data: unknown;
+    try {
+      data = JSON.parse(s.textContent ?? "");
+    } catch {
+      continue;
+    }
+    const jp = findJobPosting(data);
+    if (!jp) continue;
+    let raw = str(jp.description);
+    if (raw.includes("&lt;") || raw.includes("&gt;")) raw = decodeHtmlEntities(raw);
+    const text = stripHtmlToText(raw);
+    if (text.length < MIN_CHARS) continue;
+    const org = jp.hiringOrganization;
+    const orgName =
+      org && typeof org === "object"
+        ? str((org as Record<string, unknown>).name)
+        : str(org);
+    return { text, title: withTitle([str(jp.title), orgName]) };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Greenhouse gh_jid rescue — when a custom domain embeds a Greenhouse job id
+// but blocks scraping (403), guess the board token from the hostname.
+// ---------------------------------------------------------------------------
+
+const HOST_SKIP = new Set([
+  "www", "careers", "career", "jobs", "job", "boards", "apply", "explore",
+  "talent", "work", "com", "net", "org", "io", "co", "us", "en", "ai",
+]);
+
+function greenhouseBoardCandidates(u: URL): string[] {
+  const labels = u.hostname.toLowerCase().split(".");
+  const core = labels.filter((l) => !HOST_SKIP.has(l));
+  const main = core.length ? core[core.length - 1] : labels[0];
+  const cands = new Set<string>([main]);
+  for (const suf of ["careers", "career", "jobs", "job", "hq", "inc"]) {
+    if (main.endsWith(suf) && main.length > suf.length) {
+      cands.add(main.slice(0, -suf.length));
+    }
+  }
+  return [...cands];
+}
+
+export async function greenhouseJidRescue(u: URL): Promise<FetchedJob | null> {
+  const jid =
+    u.search.match(/[?&](?:gh_jid|token)=(\d+)/)?.[1] ??
+    u.pathname.match(/\/jobs?\/(\d+)/)?.[1];
+  if (!jid) return null;
+  for (const board of greenhouseBoardCandidates(u)) {
+    const r = await fetchGreenhouseJob({ board, jobId: jid });
+    if (r) return r;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher — recognize the host and fetch from the right API
 // ---------------------------------------------------------------------------
 
@@ -315,6 +440,11 @@ export async function fetchJobFromUrl(u: URL): Promise<FetchedJob | null> {
   const wd = workdayApiUrl(u);
   if (wd) {
     const r = await fetchWorkdayJob(wd);
+    if (r) return r;
+  }
+  const ef = eightfoldFromUrl(u);
+  if (ef) {
+    const r = await fetchEightfoldJob(ef);
     if (r) return r;
   }
   return null;

@@ -4,47 +4,59 @@ import {
   Text,
   View,
   StyleSheet,
+  Font,
   pdf,
 } from "@react-pdf/renderer";
 import type { ParsedResume } from "./resume";
 
-// Built-in PDF fonts (Helvetica) — no external font files to bundle.
+// Disable automatic hyphenation so long tokens (URLs, "API Gateway)") never
+// break mid-word with an ugly trailing dash.
+Font.registerHyphenationCallback((word) => [word]);
+
+// Classic one-page serif resume. NOTE: never set `lineHeight` on the page —
+// react-pdf compounds it with per-Text lineHeight on direct children (loose
+// paragraphs). Set leading per element instead.
 const styles = StyleSheet.create({
   page: {
-    paddingVertical: 42,
-    paddingHorizontal: 48,
-    fontFamily: "Helvetica",
-    fontSize: 10,
-    color: "#1e293b",
-    lineHeight: 1.4,
+    paddingTop: 34,
+    paddingBottom: 32,
+    paddingHorizontal: 44,
+    fontFamily: "Times-Roman",
+    fontSize: 9.5,
+    color: "#1a1a1a",
   },
-  name: { fontSize: 20, fontFamily: "Helvetica-Bold", color: "#0f172a" },
-  contact: { fontSize: 9, color: "#64748b", marginTop: 3 },
-  summary: { marginTop: 4 },
-  sectionTitle: {
+  name: {
+    fontSize: 18,
+    fontFamily: "Times-Bold",
+    textAlign: "center",
+    color: "#111",
+  },
+  contact: { fontSize: 9, textAlign: "center", color: "#333", marginTop: 3 },
+  section: {
     fontSize: 10,
-    fontFamily: "Helvetica-Bold",
-    color: "#334155",
+    fontFamily: "Times-Bold",
+    letterSpacing: 0.5,
     textTransform: "uppercase",
-    letterSpacing: 1,
-    marginTop: 16,
-    marginBottom: 5,
-    paddingBottom: 2,
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
+    marginTop: 10,
+    marginBottom: 3,
+    paddingBottom: 1.5,
+    borderBottomWidth: 0.75,
+    borderBottomColor: "#333",
   },
-  entry: { marginBottom: 8 },
+  paragraph: { fontSize: 9.5, lineHeight: 1.3 },
+  entry: { marginBottom: 4.5 },
   entryHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
   },
-  entryTitle: { fontSize: 10.5, fontFamily: "Helvetica-Bold", color: "#0f172a" },
-  entryDates: { fontSize: 9, color: "#64748b" },
-  entryDesc: { marginTop: 1 },
-  bulletRow: { flexDirection: "row", marginTop: 2, paddingRight: 6 },
-  bulletDot: { width: 10 },
-  bulletText: { flex: 1 },
+  entryTitle: { fontSize: 9.5, fontFamily: "Times-Bold" },
+  entryDates: { fontSize: 9, color: "#444" },
+  entryDesc: { fontSize: 9.5, lineHeight: 1.3, marginTop: 1 },
+  bulletRow: { flexDirection: "row", marginTop: 1.5, paddingRight: 2 },
+  bulletDot: { width: 9, fontSize: 9 },
+  bulletText: { flex: 1, fontSize: 9.3, lineHeight: 1.3 },
+  skills: { fontSize: 9.3, lineHeight: 1.35 },
 });
 
 function Bullets({ items }: { items: string[] }) {
@@ -64,27 +76,27 @@ function ResumePdfDoc({ resume }: { resume: ParsedResume }) {
   const c = resume.contact;
   const contactLine = [c.email, c.phone, c.location, ...c.links]
     .filter(Boolean)
-    .join("  ·  ");
+    .join("   |   ");
 
   return (
     <Document
       title={[c.name, "Resume"].filter(Boolean).join(" — ")}
       author={c.name || "career-path"}
     >
-      <Page size="A4" style={styles.page}>
+      <Page size="LETTER" style={styles.page}>
         {c.name ? <Text style={styles.name}>{c.name}</Text> : null}
         {contactLine ? <Text style={styles.contact}>{contactLine}</Text> : null}
 
         {resume.summary ? (
           <View>
-            <Text style={styles.sectionTitle}>Summary</Text>
-            <Text style={styles.summary}>{resume.summary}</Text>
+            <Text style={styles.section}>Summary</Text>
+            <Text style={styles.paragraph}>{resume.summary}</Text>
           </View>
         ) : null}
 
         {resume.experience.length > 0 ? (
           <View>
-            <Text style={styles.sectionTitle}>Experience</Text>
+            <Text style={styles.section}>Experience</Text>
             {resume.experience.map((e, i) => (
               <View key={i} style={styles.entry} wrap={false}>
                 <View style={styles.entryHeader}>
@@ -103,7 +115,7 @@ function ResumePdfDoc({ resume }: { resume: ParsedResume }) {
 
         {resume.projects.length > 0 ? (
           <View>
-            <Text style={styles.sectionTitle}>Projects</Text>
+            <Text style={styles.section}>Projects</Text>
             {resume.projects.map((p, i) => (
               <View key={i} style={styles.entry} wrap={false}>
                 <Text style={styles.entryTitle}>{p.name}</Text>
@@ -118,14 +130,14 @@ function ResumePdfDoc({ resume }: { resume: ParsedResume }) {
 
         {resume.skills.length > 0 ? (
           <View>
-            <Text style={styles.sectionTitle}>Skills</Text>
-            <Text>{resume.skills.join("  ·  ")}</Text>
+            <Text style={styles.section}>Skills</Text>
+            <Text style={styles.skills}>{resume.skills.join("  ·  ")}</Text>
           </View>
         ) : null}
 
         {resume.education.length > 0 ? (
           <View>
-            <Text style={styles.sectionTitle}>Education</Text>
+            <Text style={styles.section}>Education</Text>
             {resume.education.map((ed, i) => (
               <View key={i} style={styles.entryHeader} wrap={false}>
                 <Text style={styles.entryTitle}>

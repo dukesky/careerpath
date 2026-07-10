@@ -212,22 +212,23 @@ export function buildTailorMessages(
   resume: ParsedResume,
   jd: ParsedJD,
   extraInfo: string,
-  analysis: GapAnalysis,
+  analysis?: GapAnalysis | null,
 ): ChatMessage[] {
+  const blocks = [
+    "Rewrite the resume to target this role. Obey the no-fabrication constraint.",
+    jsonBlock("CANDIDATE RESUME (JSON)", resume),
+    jsonBlock(
+      "EXTRA INFO FROM CANDIDATE (real facts to use)",
+      extraInfo.trim() || "(none provided)",
+    ),
+    jsonBlock("JOB DESCRIPTION (JSON)", jd),
+  ];
+  // Optional: fold in the gap analysis for extra guidance when available.
+  // Omitting it lets tailor run in parallel with analyze.
+  if (analysis) blocks.push(jsonBlock("GAP ANALYSIS (for guidance)", analysis));
+
   return [
     { role: "system", content: TAILOR_SYSTEM },
-    {
-      role: "user",
-      content: [
-        "Rewrite the resume to target this role. Obey the no-fabrication constraint.",
-        jsonBlock("CANDIDATE RESUME (JSON)", resume),
-        jsonBlock(
-          "EXTRA INFO FROM CANDIDATE (real facts to use)",
-          extraInfo.trim() || "(none provided)",
-        ),
-        jsonBlock("JOB DESCRIPTION (JSON)", jd),
-        jsonBlock("GAP ANALYSIS (for guidance)", analysis),
-      ].join("\n\n"),
-    },
+    { role: "user", content: blocks.join("\n\n") },
   ];
 }

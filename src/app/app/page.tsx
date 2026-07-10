@@ -72,9 +72,9 @@ export default function WorkspacePage() {
   }, []);
 
   // Analyze + tailor pipeline
-  const [runPhase, setRunPhase] = useState<
-    "idle" | "analyzing" | "tailoring" | "error"
-  >("idle");
+  const [runPhase, setRunPhase] = useState<"idle" | "running" | "error">(
+    "idle",
+  );
   const [runError, setRunError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
   const [tailored, setTailored] = useState<TailorResult | null>(null);
@@ -189,6 +189,7 @@ export default function WorkspacePage() {
     setRunError(null);
     setAnalysis(null);
     setTailored(null);
+    setRunPhase("running");
 
     const payload = {
       structuredResume: resume,
@@ -198,33 +199,25 @@ export default function WorkspacePage() {
     };
 
     try {
-      // 1) Analyze fit
-      setRunPhase("analyzing");
-      const aRes = await fetch("/api/analyze", {
-        method: "POST",
-        headers: apiHeaders(),
-        body: JSON.stringify(payload),
-      });
-      if (!aRes.ok) {
-        setRunError(await parseErrorMessage(aRes));
-        setRunPhase("error");
-        return;
-      }
-      const aData = (await aRes.json()) as { analysis: unknown };
-      const gap = normalizeGapAnalysis(aData.analysis);
-      setAnalysis(gap);
+      // Analyze and tailor run concurrently — tailor doesn't need the gap
+      // analysis (it has the structured JD), which roughly halves wall-clock.
+      const [aRes, tRes] = await Promise.all([
+        fetch("/api/analyze", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify(payload),
+        }),
+        fetch("/api/tailor", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify(payload),
+        }),
+      ]);
 
-      // 2) Tailor resume using the gap analysis (quota consumed here)
-      setRunPhase("tailoring");
-      const tRes = await fetch("/api/tailor", {
-        method: "POST",
-        headers: apiHeaders(),
-        body: JSON.stringify({ ...payload, analysis: gap }),
-      });
+      // Quota is gated on the tailor route.
       if (tRes.status === 402) {
         setRemaining(0);
         setShowWaitlist(true);
-        setAnalysis(null);
         setRunPhase("idle");
         return;
       }
@@ -233,10 +226,18 @@ export default function WorkspacePage() {
         setRunPhase("error");
         return;
       }
+      if (!aRes.ok) {
+        setRunError(await parseErrorMessage(aRes));
+        setRunPhase("error");
+        return;
+      }
+
+      const aData = (await aRes.json()) as { analysis: unknown };
       const tData = (await tRes.json()) as {
         tailored: unknown;
         remaining?: number;
       };
+      setAnalysis(normalizeGapAnalysis(aData.analysis));
       setTailored(normalizeTailorResult(tData.tailored));
       if (typeof tData.remaining === "number") setRemaining(tData.remaining);
       setRunPhase("idle");
@@ -254,7 +255,7 @@ export default function WorkspacePage() {
   }, []);
 
   const canAnalyze = resume !== null && parsedJd !== null;
-  const isRunning = runPhase === "analyzing" || runPhase === "tailoring";
+  const isRunning = runPhase === "running";
 
   return (
     <div className="flex min-h-full flex-col">
@@ -451,11 +452,7 @@ export default function WorkspacePage() {
                     <path d="M13 3 15.5 9.5 22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5L13 3Z" />
                   </svg>
                 )}
-                {runPhase === "analyzing"
-                  ? "Analyzing fit…"
-                  : runPhase === "tailoring"
-                    ? "Tailoring resume…"
-                    : "Analyze & Tailor"}
+                {isRunning ? "Analyzing & tailoring…" : "Analyze & Tailor"}
               </button>
               <p className="text-xs text-slate-500">
                 {isRunning

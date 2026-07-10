@@ -50,11 +50,11 @@ export async function POST(request: Request) {
 
   if (!body.structuredResume) return bad("Missing structuredResume.");
   if (!body.structuredJD) return bad("Missing structuredJD.");
-  if (!body.analysis) return bad("Missing analysis.");
 
   const resume = normalizeResume(body.structuredResume);
   const jd = normalizeJD(body.structuredJD);
-  const analysis = normalizeGapAnalysis(body.analysis);
+  // Optional — omitted when analyze runs in parallel with tailor.
+  const analysis = body.analysis ? normalizeGapAnalysis(body.analysis) : null;
   const extraInfo = capText(
     typeof body.extraInfo === "string" ? body.extraInfo : "",
     MAX_EXTRA_INFO_CHARS,

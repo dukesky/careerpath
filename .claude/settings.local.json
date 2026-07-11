@@ -46,7 +46,8 @@
       "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://careers.adobe.com/us/en/job/ADOBUSR166334EXTERNALENUS/Senior-Machine-Learning-Engineer -o /tmp/adobe.html -w 'HTTP %{http_code} size %{size_download}\\\\n')",
       "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://explore.jobs.netflix.net/api/apply/v2/jobs/790315228907?domain=netflix.com -o /tmp/nf.json -w 'HTTP %{http_code} size %{size_download}\\\\n')",
       "Bash(git commit -q -m 'fetch-jd: JSON-LD JobPosting, Eightfold, and gh_jid rescue *)",
-      "Bash(pdfinfo /tmp/newresume.pdf)"
+      "Bash(pdfinfo /tmp/newresume.pdf)",
+      "Bash(git commit -q -m 'Add project subagents for review, privacy, contracts, prompts, build *)"
     ]
   }
 }

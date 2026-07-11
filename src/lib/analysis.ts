@@ -44,6 +44,8 @@ export interface ChangeLogEntry {
 export interface TailorResult {
   resume: ParsedResume;
   change_log: ChangeLogEntry[];
+  /** The tailor model's estimate of how well the REWRITTEN resume now matches. */
+  projected_match_score: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +121,7 @@ export function normalizeTailorResult(input: unknown): TailorResult {
         };
       },
     ),
+    projected_match_score: clampScore(raw.projected_match_score),
   };
 }
 
@@ -194,7 +197,8 @@ Output a SINGLE JSON object with EXACTLY this schema:
     "skills": [],
     "education": [ { "school": "", "degree": "", "dates": "" } ]
   },
-  "change_log": [ { "section": "", "original": "", "revised": "", "reason": "" } ]
+  "change_log": [ { "section": "", "original": "", "revised": "", "reason": "" } ],
+  "projected_match_score": 0
 }
 
 Rules for "resume":
@@ -206,6 +210,11 @@ Rules for "resume":
 Rules for "change_log":
 - One entry per meaningful change. "section" e.g. "Summary", "Experience — <Company>", "Skills".
 - "original" and "revised" are short before/after snippets. "reason" ties the change to the job.
+
+Rules for "projected_match_score":
+- Integer 0-100. Judge the TAILORED resume against the job's must-have and nice-to-have requirements exactly as a recruiter would score a gap analysis.
+- Base it ONLY on real content now in the tailored resume — rewording can raise it by surfacing existing relevant experience, but missing hard requirements (skills/years/degrees the candidate genuinely lacks) still cap it. Do not inflate; a rephrase does not manufacture qualifications.
+
 - Respond with ONLY the JSON object. No markdown, no code fences, no commentary.`;
 
 export function buildTailorMessages(

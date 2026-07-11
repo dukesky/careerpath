@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type {
+  ChangeLogEntry,
   GapAnalysis,
   ReqStatus,
   TailorResult,
@@ -53,12 +54,12 @@ export function ResultsView({
       <RequirementsTable analysis={analysis} />
       <StrengthsGaps analysis={analysis} />
       <TailoredResumeCard
-        resume={tailored.resume}
+        tailored={tailored}
         originalResume={originalResume}
         company={company}
+        beforeScore={analysis.overall_match_score}
         onChange={onTailoredResumeChange}
       />
-      <ChangeLogCard tailored={tailored} />
 
       <Disclaimer />
     </div>
@@ -219,19 +220,23 @@ function StrengthsGaps({ analysis }: { analysis: GapAnalysis }) {
 // Tailored resume
 // ---------------------------------------------------------------------------
 
-type ResumeTab = "preview" | "diff" | "edit";
+type ResumeTab = "preview" | "diff" | "changes" | "edit";
 
 function TailoredResumeCard({
-  resume,
+  tailored,
   originalResume,
   company,
+  beforeScore,
   onChange,
 }: {
-  resume: ParsedResume;
+  tailored: TailorResult;
   originalResume: ParsedResume;
   company: string;
+  beforeScore: number;
   onChange: (resume: ParsedResume) => void;
 }) {
+  const resume = tailored.resume;
+  const afterScore = tailored.projected_match_score;
   const [tab, setTab] = useState<ResumeTab>("preview");
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -275,8 +280,51 @@ function TailoredResumeCard({
     }
   }
 
+  const afterTone = scoreTone(afterScore);
+  const delta = afterScore - beforeScore;
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      {/* Before → after match score — the product's value at a glance. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-slate-100 px-6 py-4">
+        <div className="flex items-center gap-3">
+          <div className="text-center">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+              Original
+            </div>
+            <div className="text-xl font-bold text-slate-500">{beforeScore}</div>
+          </div>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-5 w-5 text-slate-300"
+            aria-hidden="true"
+          >
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          <div className="text-center">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+              Tailored
+            </div>
+            <div className={`text-2xl font-bold ${afterTone.text}`}>
+              {afterScore}
+            </div>
+          </div>
+        </div>
+        {delta > 0 && (
+          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+            +{delta} match points
+          </span>
+        )}
+        <span className="ml-auto text-xs text-slate-400">
+          Estimated fit{company ? ` for ${company}` : ""} · review before submitting
+        </span>
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-6 py-4">
         <div>
           <h2 className="text-base font-semibold text-slate-900">
@@ -359,6 +407,7 @@ function TailoredResumeCard({
             [
               ["preview", "Preview"],
               ["diff", "Changes (diff)"],
+              ["changes", "What changed & why"],
               ["edit", "Edit"],
             ] as [ResumeTab, string][]
           ).map(([key, label]) => (
@@ -383,6 +432,7 @@ function TailoredResumeCard({
         {tab === "diff" && (
           <ResumeDiff original={originalMd} revised={revisedMd} />
         )}
+        {tab === "changes" && <ChangeLogTab entries={tailored.change_log} />}
         {tab === "edit" && (
           <ResumePreview resume={resume} onChange={onChange} />
         )}
@@ -515,44 +565,43 @@ function DocSection({
 // Change log
 // ---------------------------------------------------------------------------
 
-function ChangeLogCard({ tailored }: { tailored: TailorResult }) {
-  if (tailored.change_log.length === 0) return null;
+function ChangeLogTab({ entries }: { entries: ChangeLogEntry[] }) {
+  if (entries.length === 0) {
+    return (
+      <p className="text-sm text-slate-400">
+        No line-level changes were recorded for this rewrite.
+      </p>
+    );
+  }
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 px-6 py-4">
-        <h2 className="text-base font-semibold text-slate-900">
-          What changed &amp; why
-        </h2>
-        <p className="text-sm text-slate-500">
-          Every edit, with the original for comparison.
-        </p>
-      </div>
-      <div className="divide-y divide-slate-100">
-        {tailored.change_log.map((c, i) => (
-          <div key={i} className="px-6 py-4">
-            <div className="mb-2 flex items-center gap-2">
-              <span className="rounded bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
-                {c.section || "Edit"}
-              </span>
-              <span className="text-xs text-slate-500">{c.reason}</span>
+    <div className="space-y-5">
+      <p className="text-sm text-slate-500">
+        Every edit, with the original for comparison.
+      </p>
+      {entries.map((c, i) => (
+        <div key={i}>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+              {c.section || "Edit"}
+            </span>
+            <span className="text-xs text-slate-500">{c.reason}</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-rose-100 bg-rose-50/50 p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-rose-400">
+                Original
+              </div>
+              <p className="text-sm text-slate-600">{c.original || "—"}</p>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-lg border border-rose-100 bg-rose-50/50 p-3">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-rose-400">
-                  Original
-                </div>
-                <p className="text-sm text-slate-600">{c.original || "—"}</p>
+            <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
+                Revised
               </div>
-              <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-500">
-                  Revised
-                </div>
-                <p className="text-sm text-slate-700">{c.revised || "—"}</p>
-              </div>
+              <p className="text-sm text-slate-700">{c.revised || "—"}</p>
             </div>
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }

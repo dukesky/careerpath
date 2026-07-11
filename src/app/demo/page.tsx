@@ -107,6 +107,7 @@ const TAILORED: TailorResult = {
       reason: "Surfaces role-relevant keywords already evidenced in your work.",
     },
   ],
+  projected_match_score: 91,
 };
 
 const ANALYSIS: GapAnalysis = {

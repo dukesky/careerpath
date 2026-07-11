@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
-import { getIdentity } from "@/lib/identity";
+import { getIdentity, hasBetaAccess } from "@/lib/identity";
 import { getQuota } from "@/lib/quota";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  if (hasBetaAccess(request)) {
+    return NextResponse.json({ remaining: null, unlimited: true });
+  }
   const identity = getIdentity(request);
   try {
     const q = await getQuota(identity);

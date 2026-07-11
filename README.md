@@ -35,7 +35,9 @@ Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 Two independent concerns, two modules:
 
 - **Quota** (`src/lib/quota.ts`) — business logic. Each anonymous identity gets
-  **3 free tailor runs** (one analyze+tailor flow = one run). Tracked against
+  **5 free tailor runs** (one analyze+tailor flow = one run). Beta testers with a
+  code in `BETA_ACCESS_CODES` (via `?code=` → `x-access-code` header) get
+  **unlimited** runs, bypassing the quota (rate limiting still applies). Tracked against
   **both** a client `anonId` (localStorage UUID, sent via the `x-anon-id`
   header) **and** the client IP, and counted exhausted if **either** hits the
   limit — so clearing localStorage alone doesn't reset it. Keys expire after 30

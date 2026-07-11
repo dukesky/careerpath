@@ -7,7 +7,7 @@ import { ResumePreview } from "@/components/ResumePreview";
 import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { ResultsView } from "@/components/ResultsView";
 import { WaitlistModal } from "@/components/WaitlistModal";
-import { apiHeaders } from "@/lib/anon";
+import { apiHeaders, captureAccessCode } from "@/lib/anon";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
 import {
@@ -84,14 +84,18 @@ export default function WorkspacePage() {
 
   // Anonymous free-usage quota
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [unlimited, setUnlimited] = useState(false);
   const [showWaitlist, setShowWaitlist] = useState(false);
 
   useEffect(() => {
     let active = true;
+    captureAccessCode(); // persist ?code= before the quota fetch reads it
     fetch("/api/quota", { headers: apiHeaders(false) })
       .then((r) => r.json())
-      .then((d: { remaining: number | null }) => {
-        if (active && typeof d.remaining === "number") setRemaining(d.remaining);
+      .then((d: { remaining: number | null; unlimited?: boolean }) => {
+        if (!active) return;
+        if (d.unlimited) setUnlimited(true);
+        else if (typeof d.remaining === "number") setRemaining(d.remaining);
       })
       .catch(() => {
         /* non-blocking */
@@ -267,7 +271,13 @@ export default function WorkspacePage() {
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               Nothing stored, nothing saved
             </span>
-            {remaining !== null &&
+            {unlimited ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#0E1220] px-3 py-1.5 text-xs font-semibold text-white">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                Beta · unlimited
+              </span>
+            ) : (
+              remaining !== null &&
               (remaining > 0 ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-[#F1ECFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9]">
                   {remaining} free tailor{remaining === 1 ? "" : "s"} left
@@ -281,7 +291,8 @@ export default function WorkspacePage() {
                   <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
                   No free tailors left — get credits
                 </button>
-              ))}
+              ))
+            )}
             <Link
               href="/"
               className="font-medium text-slate-600 transition hover:text-slate-900"

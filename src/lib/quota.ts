@@ -11,7 +11,7 @@ import type { Identity } from "./identity";
  * replace the counter reads/writes here with a credits ledger.
  */
 
-export const FREE_TAILOR_LIMIT = 3;
+export const FREE_TAILOR_LIMIT = 5;
 const QUOTA_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
 export interface QuotaState {

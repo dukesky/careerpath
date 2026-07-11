@@ -60,6 +60,15 @@ export async function POST(request: Request) {
   const ats = await fetchJobFromUrl(parsed);
   if (ats) return ok(ats.text, ats.title);
 
+  // Custom domain carrying an explicit Greenhouse job id (?gh_jid=…): prefer
+  // the public Greenhouse API *before* scraping the page. Career-site HTML is
+  // often bot-protected (blocks our server IP), but boards-api.greenhouse.io
+  // is a public programmatic endpoint that isn't.
+  if (/[?&]gh_jid=\d+/.test(parsed.search)) {
+    const early = await greenhouseJidRescue(parsed);
+    if (early) return ok(early.text, early.title);
+  }
+
   // Fetch with a realistic UA and a hard 10s timeout.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);

@@ -7,7 +7,7 @@ import { ResumePreview } from "@/components/ResumePreview";
 import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { ResultsView } from "@/components/ResultsView";
 import { WaitlistModal } from "@/components/WaitlistModal";
-import { apiHeaders, captureAccessCode } from "@/lib/anon";
+import { apiHeaders, captureAccessCode, setAccessCode } from "@/lib/anon";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
 import {
@@ -87,23 +87,47 @@ export default function WorkspacePage() {
   const [unlimited, setUnlimited] = useState(false);
   const [showWaitlist, setShowWaitlist] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    captureAccessCode(); // persist ?code= before the quota fetch reads it
-    fetch("/api/quota", { headers: apiHeaders(false) })
-      .then((r) => r.json())
-      .then((d: { remaining: number | null; unlimited?: boolean }) => {
-        if (!active) return;
-        if (d.unlimited) setUnlimited(true);
-        else if (typeof d.remaining === "number") setRemaining(d.remaining);
-      })
-      .catch(() => {
-        /* non-blocking */
-      });
-    return () => {
-      active = false;
-    };
+  // Beta code entry
+  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [codeInput, setCodeInput] = useState("");
+  const [codeError, setCodeError] = useState<string | null>(null);
+
+  const refreshQuota = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/quota", { headers: apiHeaders(false) });
+      const d = (await res.json()) as {
+        remaining: number | null;
+        unlimited?: boolean;
+      };
+      if (d.unlimited) {
+        setUnlimited(true);
+        return true;
+      }
+      if (typeof d.remaining === "number") setRemaining(d.remaining);
+      return false;
+    } catch {
+      return false;
+    }
   }, []);
+
+  useEffect(() => {
+    captureAccessCode(); // persist ?code= before the quota fetch reads it
+    void refreshQuota();
+  }, [refreshQuota]);
+
+  const applyCode = useCallback(async () => {
+    const code = codeInput.trim();
+    if (!code) return;
+    setAccessCode(code);
+    setCodeError(null);
+    const ok = await refreshQuota();
+    if (ok) {
+      setShowCodeInput(false);
+      setCodeInput("");
+    } else {
+      setCodeError("That code isn't valid.");
+    }
+  }, [codeInput, refreshQuota]);
 
   const runParse = useCallback(async (body: FormData, label: string) => {
     setStatus("parsing");
@@ -293,6 +317,51 @@ export default function WorkspacePage() {
                 </button>
               ))
             )}
+
+            {!unlimited &&
+              (showCodeInput ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void applyCode();
+                  }}
+                  className="flex items-center gap-1.5"
+                >
+                  <input
+                    type="text"
+                    value={codeInput}
+                    onChange={(e) => {
+                      setCodeInput(e.target.value);
+                      setCodeError(null);
+                    }}
+                    autoFocus
+                    placeholder="Beta code"
+                    className={`w-28 rounded-full border px-3 py-1 text-xs focus:outline-none focus:ring-2 ${
+                      codeError
+                        ? "border-rose-300 focus:ring-rose-100"
+                        : "border-slate-300 focus:border-[#7C3AED] focus:ring-[#EDE7FC]"
+                    }`}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-full bg-[#0E1220] px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-[#1c2236]"
+                  >
+                    Apply
+                  </button>
+                  {codeError && (
+                    <span className="text-xs text-rose-500">{codeError}</span>
+                  )}
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowCodeInput(true)}
+                  className="text-xs font-medium text-slate-400 transition hover:text-slate-600"
+                >
+                  Have a beta code?
+                </button>
+              ))}
+
             <Link
               href="/"
               className="font-medium text-slate-600 transition hover:text-slate-900"

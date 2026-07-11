@@ -53,6 +53,16 @@ function getAccessCode(): string {
   }
 }
 
+/** Store a beta access code entered manually (via the on-page input). */
+export function setAccessCode(code: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CODE_KEY, code.trim());
+  } catch {
+    // ignore
+  }
+}
+
 /** Headers to attach to API requests (JSON body by default). */
 export function apiHeaders(json = true): Record<string, string> {
   const headers: Record<string, string> = { [ANON_HEADER]: getAnonId() };

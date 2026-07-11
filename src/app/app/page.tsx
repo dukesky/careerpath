@@ -258,19 +258,18 @@ export default function WorkspacePage() {
   const isRunning = runPhase === "running";
 
   return (
-    <div className="flex min-h-full flex-col">
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur">
+    <div className="flex min-h-full flex-col bg-[#F7F7FB]">
+      <header className="border-b border-[#EDEDF3] bg-white/85 backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-4">
           <Logo />
-          <div className="flex items-center gap-4 text-sm text-slate-500">
+          <div className="flex items-center gap-5 text-sm text-slate-500">
             <span className="hidden items-center gap-2 sm:inline-flex">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
               Nothing stored, nothing saved
             </span>
             {remaining !== null &&
               (remaining > 0 ? (
-                <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-[#F1ECFE] px-3 py-1.5 text-xs font-semibold text-[#6D28D9]">
                   {remaining} free tailor{remaining === 1 ? "" : "s"} left
                 </span>
               ) : (
@@ -285,7 +284,7 @@ export default function WorkspacePage() {
               ))}
             <Link
               href="/"
-              className="font-medium text-slate-600 hover:text-slate-900"
+              className="font-medium text-slate-600 transition hover:text-slate-900"
             >
               ← Home
             </Link>
@@ -293,7 +292,7 @@ export default function WorkspacePage() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">
+      <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8 sm:py-11">
         {analysis && tailored && resume ? (
           <ResultsView
             analysis={analysis}
@@ -308,10 +307,10 @@ export default function WorkspacePage() {
         ) : (
           <>
             <div className="mb-8">
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+              <h1 className="font-display text-3xl font-bold tracking-tight text-[#0E1220] sm:text-[34px]">
                 Tailor your resume
               </h1>
-              <p className="mt-1 text-sm text-slate-600">
+              <p className="mt-2 text-base text-[#606574]">
                 Add your resume and the job description, then let career-path do
                 the rest.
               </p>
@@ -363,7 +362,7 @@ export default function WorkspacePage() {
                 onChange={(e) => setExtraInfo(e.target.value)}
                 placeholder="e.g. Built a side project that handles 10k req/s, led a migration to TypeScript, volunteer mentoring…"
                 rows={6}
-                className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-[#7C3AED] focus:outline-none focus:ring-2 focus:ring-[#EDE7FC]"
               />
             </Panel>
           </section>
@@ -389,7 +388,7 @@ export default function WorkspacePage() {
                   disabled={isRunning}
                   className={`rounded-full px-3 py-1.5 transition disabled:cursor-not-allowed ${
                     quality === "fast"
-                      ? "bg-slate-900 text-white"
+                      ? "bg-[#0E1220] text-white"
                       : "text-slate-600 hover:text-slate-900"
                   }`}
                   title="Faster & cheaper — Claude Haiku 4.5"
@@ -402,7 +401,7 @@ export default function WorkspacePage() {
                   disabled={isRunning}
                   className={`rounded-full px-3 py-1.5 transition disabled:cursor-not-allowed ${
                     quality === "quality"
-                      ? "bg-slate-900 text-white"
+                      ? "bg-[#0E1220] text-white"
                       : "text-slate-600 hover:text-slate-900"
                   }`}
                   title="Best results — Claude Sonnet 4.6"
@@ -414,7 +413,7 @@ export default function WorkspacePage() {
                 type="button"
                 onClick={() => void runAnalyzeTailor()}
                 disabled={!canAnalyze || isRunning}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-6 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:from-indigo-500 hover:to-violet-500 disabled:cursor-not-allowed disabled:from-slate-300 disabled:to-slate-300 disabled:text-slate-500 disabled:shadow-none sm:w-auto sm:min-w-72"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#0E1220] px-7 py-3.5 text-sm font-semibold text-white shadow-[0_14px_30px_-12px_rgba(14,18,32,0.5)] transition hover:bg-[#1c2236] disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:shadow-none sm:w-auto sm:min-w-72"
               >
                 {isRunning ? (
                   <svg
@@ -541,10 +540,10 @@ function UploadArea({
         }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={onDrop}
-        className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
+        className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-[1.5px] border-dashed px-6 py-10 text-center transition ${
           isDragging
-            ? "border-indigo-400 bg-indigo-50"
-            : "border-slate-300 bg-slate-50 hover:border-indigo-300 hover:bg-slate-100"
+            ? "border-[#7C3AED] bg-[#F5F1FE]"
+            : "border-[#CFC6EC] bg-[#FBFAFF] hover:border-[#B9A9EC] hover:bg-[#F5F1FE]"
         }`}
       >
         <input
@@ -554,36 +553,37 @@ function UploadArea({
           className="hidden"
           onChange={(e) => onPick(e.target.files?.[0])}
         />
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-8 w-8 text-slate-400"
-          aria-hidden="true"
-        >
-          <path d="M12 15V3" />
-          <path d="m7 8 5-5 5 5" />
-          <path d="M5 21h14a2 2 0 0 0 2-2v-4" />
-        </svg>
-        <p className="mt-3 text-sm font-medium text-slate-700">
-          <span className="text-indigo-600">Click to upload</span> or drag &amp;
-          drop
+        <span className="mb-3.5 grid h-13 w-13 place-items-center rounded-2xl bg-[#F1ECFE] text-[#7C3AED]">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-6 w-6"
+            aria-hidden="true"
+          >
+            <path d="M12 16V5m0 0L8 9m4-4l4 4" />
+            <path d="M5 15v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" />
+          </svg>
+        </span>
+        <p className="text-base font-medium text-[#0E1220]">
+          <span className="font-semibold text-[#7C3AED]">Click to upload</span>{" "}
+          or drag &amp; drop
         </p>
-        <p className="mt-1 text-xs text-slate-500">PDF or DOCX · max 5MB</p>
+        <p className="mt-1.5 text-[13px] text-[#9298A8]">PDF or DOCX · max 5MB</p>
       </div>
 
       {fileError && <ErrorLine text={fileError} />}
       {parseError && <ErrorLine text={parseError} />}
 
       {/* Scanned-PDF fallback */}
-      <div className="mt-3 text-center">
+      <div className="mt-3.5 text-center">
         <button
           type="button"
           onClick={() => setTextMode(!textMode)}
-          className="text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+          className="text-[13.5px] font-medium text-slate-500 underline-offset-2 transition hover:text-[#7C3AED] hover:underline"
         >
           {textMode
             ? "Hide text paste"
@@ -598,13 +598,13 @@ function UploadArea({
             onChange={(e) => setPastedText(e.target.value)}
             placeholder="Paste your full resume text here…"
             rows={8}
-            className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+            className="w-full resize-y rounded-xl border border-slate-300 bg-white px-3.5 py-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-[#7C3AED] focus:outline-none focus:ring-2 focus:ring-[#EDE7FC]"
           />
           <button
             type="button"
             onClick={onSubmitText}
             disabled={pastedText.trim() === ""}
-            className="mt-2 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="mt-2 w-full rounded-lg bg-[#0E1220] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#1c2236] disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             Parse pasted text
           </button>
@@ -618,7 +618,7 @@ function ParsingState({ label }: { label: string | null }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-6 py-12 text-center">
       <svg
-        className="h-7 w-7 animate-spin text-indigo-600"
+        className="h-7 w-7 animate-spin text-[#7C3AED]"
         viewBox="0 0 24 24"
         fill="none"
         aria-hidden="true"
@@ -718,14 +718,16 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="mb-4 flex items-start gap-3">
-        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-900 text-xs font-semibold text-white">
+    <div className="rounded-2xl border border-[#EBEBF2] bg-white p-6 shadow-sm sm:p-7">
+      <div className="mb-5 flex items-start gap-3.5">
+        <span className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg bg-[#0E1220] text-sm font-bold text-white">
           {step}
         </span>
         <div>
-          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-          <p className="text-sm text-slate-500">{subtitle}</p>
+          <h2 className="font-display text-[19px] font-bold text-[#0E1220]">
+            {title}
+          </h2>
+          <p className="mt-0.5 text-sm text-[#7C8092]">{subtitle}</p>
         </div>
       </div>
       {children}

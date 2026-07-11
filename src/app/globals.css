@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #ffffff;
+  --foreground: #0e1220;
 }
 
 @theme inline {
@@ -10,6 +10,25 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-display);
+
+  /* Refined "1a" palette */
+  --color-navy: #0e1220;
+  --color-navy-hover: #1c2236;
+
+  --animate-glow: glow 9s ease-in-out infinite;
+}
+
+@keyframes glow {
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0) scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translateX(-50%) translateY(-3%) scale(1.08);
+    opacity: 1;
+  }
 }
 
 body {

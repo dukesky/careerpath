@@ -48,7 +48,9 @@
       "Bash(git commit -q -m 'fetch-jd: JSON-LD JobPosting, Eightfold, and gh_jid rescue *)",
       "Bash(pdfinfo /tmp/newresume.pdf)",
       "Bash(git commit -q -m 'Add project subagents for review, privacy, contracts, prompts, build *)",
-      "Bash(curl -s -o /tmp/prodresp.txt -w 'HTTP %{http_code}\\\\ncontent-type: %{content_type}\\\\n' -X POST __TRACKED_VAR__/api/fetch-jd -H 'Content-Type: application/json' -d '{\"url\":\"https://careers.roblox.com/jobs/7950872?gh_jid=7950872\"}')"
+      "Bash(curl -s -o /tmp/prodresp.txt -w 'HTTP %{http_code}\\\\ncontent-type: %{content_type}\\\\n' -X POST __TRACKED_VAR__/api/fetch-jd -H 'Content-Type: application/json' -d '{\"url\":\"https://careers.roblox.com/jobs/7950872?gh_jid=7950872\"}')",
+      "Bash(curl -s -o /dev/null -w 'HTTP %{http_code}\\\\n' https://careerpath-cp57yyfwu-tian-zhang-s-projects.vercel.app/)",
+      "Bash(curl -s -o /tmp/d.txt -w 'HTTP %{http_code} ctype=%{content_type}\\\\n' https://careerpath-cp57yyfwu-tian-zhang-s-projects.vercel.app/api/diag)"
     ]
   }
 }

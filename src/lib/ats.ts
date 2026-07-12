@@ -1,4 +1,5 @@
-import { JSDOM } from "jsdom";
+import { parseHTML } from "linkedom";
+import he from "he";
 
 /**
  * Applicant-tracking-system (ATS) job fetchers.
@@ -57,17 +58,17 @@ function stripHtmlToText(html: string): string {
   const withBreaks = html
     .replace(/<\s*br\s*\/?>/gi, "\n")
     .replace(/<\/\s*(p|div|li|h[1-6]|tr|ul|ol)\s*>/gi, "\n");
-  const dom = new JSDOM(`<!DOCTYPE html><body>${withBreaks}</body>`);
-  return normalize(dom.window.document.body.textContent ?? "");
+  // linkedom's body.textContent on a parsed fragment is unreliable for larger
+  // HTML; a detached element's innerHTML→textContent is robust.
+  const { document } = parseHTML("<!DOCTYPE html><body></body>");
+  const div = document.createElement("div");
+  div.innerHTML = withBreaks;
+  return normalize(div.textContent ?? "");
 }
 
 /** Decode entity-escaped HTML (e.g. Greenhouse's double-encoded content). */
 function decodeHtmlEntities(s: string): string {
-  const dom = new JSDOM("<!DOCTYPE html><body><textarea></textarea></body>");
-  const ta = dom.window.document.querySelector("textarea");
-  if (!ta) return s;
-  ta.innerHTML = s;
-  return ta.value;
+  return he.decode(s);
 }
 
 function normalize(text: string): string {
@@ -171,21 +172,21 @@ async function fetchLinkedinJob(jobId: string): Promise<FetchedJob | null> {
   );
   if (!res || !res.ok) return null;
   const html = await res.text();
-  const doc = new JSDOM(html).window.document;
+  const { document } = parseHTML(html);
   const descEl =
-    doc.querySelector(".show-more-less-html__markup") ??
-    doc.querySelector(".description__text");
+    document.querySelector(".show-more-less-html__markup") ??
+    document.querySelector(".description__text");
   const text = descEl
     ? stripHtmlToText(descEl.innerHTML)
-    : normalize(doc.body?.textContent ?? "");
+    : normalize(document.body?.textContent ?? "");
   if (text.length < MIN_CHARS) return null;
   const title = (
-    doc.querySelector(".top-card-layout__title") ??
-    doc.querySelector(".topcard__title")
+    document.querySelector(".top-card-layout__title") ??
+    document.querySelector(".topcard__title")
   )?.textContent?.trim();
   const company = (
-    doc.querySelector(".topcard__org-name-link") ??
-    doc.querySelector(".topcard__flavor")
+    document.querySelector(".topcard__org-name-link") ??
+    document.querySelector(".topcard__flavor")
   )?.textContent?.trim();
   return { text, title: withTitle([title, company]) };
 }
@@ -350,8 +351,8 @@ function findJobPosting(node: unknown): Record<string, unknown> | null {
 }
 
 export function extractJobPostingJsonLd(html: string): FetchedJob | null {
-  const doc = new JSDOM(html).window.document;
-  const scripts = doc.querySelectorAll(
+  const { document } = parseHTML(html);
+  const scripts = document.querySelectorAll(
     'script[type="application/ld+json"]',
   );
   for (const s of Array.from(scripts)) {

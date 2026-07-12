@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { JSDOM } from "jsdom";
+import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import { getIdentity } from "@/lib/identity";
 import { rateLimitResponse } from "@/lib/rate-limit";
@@ -124,8 +124,8 @@ export async function POST(request: Request) {
   let text = "";
   let title = "";
   try {
-    const dom = new JSDOM(html, { url: parsed.toString() });
-    const article = new Readability(dom.window.document).parse();
+    const { document } = parseHTML(html);
+    const article = new Readability(document).parse();
     text = (article?.textContent ?? "").replace(/\s+\n/g, "\n").trim();
     title = article?.title?.trim() ?? "";
   } catch {

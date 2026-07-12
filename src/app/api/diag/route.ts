@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
 
-// TEMPORARY diagnostic. Everything is dynamically imported inside try/catch so a
-// module-load or native crash is REPORTED (not a bare 500). Remove after use.
+// TEMPORARY diagnostic — verifies the linkedom-based fetch pipeline on Vercel.
+// GET only, hardcoded inputs. Remove after confirming.
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const ROBLOX =
   "https://careers.roblox.com/jobs/7950872?gh_jid=7950872&gh_src=da92d0c91";
 const ADOBE =
@@ -17,81 +15,43 @@ function info(e: unknown): { error: string; stack: string } {
   const cause = (x?.cause as { code?: string; message?: string }) ?? undefined;
   return {
     error: `${x?.name}: ${x?.message}${cause ? ` | cause: ${cause.code ?? cause.message ?? ""}` : ""}`,
-    stack: (x?.stack ?? "").slice(0, 600),
+    stack: (x?.stack ?? "").slice(0, 500),
   };
-}
-
-async function timedFetch(url: string): Promise<Response> {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), 12_000);
-  try {
-    return await fetch(url, { signal: c.signal, headers: { "User-Agent": UA } });
-  } finally {
-    clearTimeout(t);
-  }
 }
 
 export async function GET() {
   const steps: Record<string, unknown>[] = [];
 
-  // 1) Load jsdom and instantiate it.
+  // 1) linkedom loads + parses in this runtime?
   try {
-    const { JSDOM } = await import("jsdom");
-    const txt = new JSDOM(
+    const { parseHTML } = await import("linkedom");
+    const { document } = parseHTML(
       "<!doctype html><body><p>hello&nbsp;world</p></body>",
-    ).window.document.body?.textContent;
-    steps.push({ step: "jsdom", ok: true, sample: txt });
-  } catch (e) {
-    steps.push({ step: "jsdom", ok: false, ...info(e) });
-  }
-
-  // 2) Load @mozilla/readability + jsdom together (the fetch-jd generic path).
-  try {
-    const { JSDOM } = await import("jsdom");
-    const { Readability } = await import("@mozilla/readability");
-    const dom = new JSDOM(
-      "<!doctype html><title>t</title><body><article><h1>Hi</h1><p>" +
-        "word ".repeat(80) +
-        "</p></article></body>",
-      { url: "https://example.com/" },
     );
-    const art = new Readability(dom.window.document).parse();
-    steps.push({ step: "readability", ok: true, len: art?.textContent?.length ?? 0 });
-  } catch (e) {
-    steps.push({ step: "readability", ok: false, ...info(e) });
-  }
-
-  // 3) Greenhouse rescue for Roblox (the public-API fix path).
-  try {
-    const { greenhouseJidRescue } = await import("@/lib/ats");
-    const r = await greenhouseJidRescue(new URL(ROBLOX));
-    steps.push({ step: "greenhouseJidRescue(roblox)", ok: !!r, len: r?.text.length ?? 0 });
-  } catch (e) {
-    steps.push({ step: "greenhouseJidRescue(roblox)", ok: false, ...info(e) });
-  }
-
-  // 4) Adobe: fetch HTML then JSON-LD extractor (uses jsdom).
-  try {
-    const { extractJobPostingJsonLd } = await import("@/lib/ats");
-    const res = await timedFetch(ADOBE);
-    const html = await res.text();
-    let jd: { text: string; title: string } | null = null;
-    let jdErr: { error: string; stack: string } | null = null;
-    try {
-      jd = extractJobPostingJsonLd(html);
-    } catch (e) {
-      jdErr = info(e);
-    }
     steps.push({
-      step: "adobe: fetch + JSON-LD",
-      fetchOk: res.ok,
-      htmlBytes: html.length,
-      jsonLdOk: !!jd,
-      jsonLdLen: jd?.text.length ?? 0,
-      jsonLdError: jdErr,
+      step: "linkedom",
+      ok: true,
+      sample: document.body?.textContent,
     });
   } catch (e) {
-    steps.push({ step: "adobe: fetch + JSON-LD", ok: false, ...info(e) });
+    steps.push({ step: "linkedom", ok: false, ...info(e) });
+  }
+
+  // 2) The real dispatcher for both URLs (Roblox via public GH API; Adobe JSON-LD).
+  for (const [name, url] of [
+    ["fetchJobFromUrl(roblox)", ROBLOX],
+    ["fetchJobFromUrl(adobe)", ADOBE],
+  ] as const) {
+    try {
+      const { fetchJobFromUrl, greenhouseJidRescue } = await import("@/lib/ats");
+      let r = await fetchJobFromUrl(new URL(url));
+      if (!r && /[?&]gh_jid=\d+/.test(new URL(url).search)) {
+        r = await greenhouseJidRescue(new URL(url));
+      }
+      steps.push({ step: name, ok: !!r, len: r?.text.length ?? 0, title: r?.title ?? null });
+    } catch (e) {
+      steps.push({ step: name, ok: false, ...info(e) });
+    }
   }
 
   return NextResponse.json({

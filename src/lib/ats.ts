@@ -351,14 +351,15 @@ function findJobPosting(node: unknown): Record<string, unknown> | null {
 }
 
 export function extractJobPostingJsonLd(html: string): FetchedJob | null {
-  const { document } = parseHTML(html);
-  const scripts = document.querySelectorAll(
-    'script[type="application/ld+json"]',
+  // Regex out the <script> contents rather than relying on the DOM — linkedom's
+  // querySelector/textContent is unreliable in the Vercel runtime.
+  const scripts = html.matchAll(
+    /<script\b[^>]*\btype\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
   );
-  for (const s of Array.from(scripts)) {
+  for (const m of scripts) {
     let data: unknown;
     try {
-      data = JSON.parse(s.textContent ?? "");
+      data = JSON.parse(m[1].trim());
     } catch {
       continue;
     }

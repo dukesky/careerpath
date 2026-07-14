@@ -15,6 +15,7 @@ export function ResultsView({
   analysis,
   tailored,
   originalResume,
+  generatedResume,
   company,
   onTailoredResumeChange,
   onBack,
@@ -22,6 +23,7 @@ export function ResultsView({
   analysis: GapAnalysis;
   tailored: TailorResult;
   originalResume: ParsedResume;
+  generatedResume: ParsedResume;
   company: string;
   onTailoredResumeChange: (resume: ParsedResume) => void;
   onBack: () => void;
@@ -56,6 +58,7 @@ export function ResultsView({
       <TailoredResumeCard
         tailored={tailored}
         originalResume={originalResume}
+        generatedResume={generatedResume}
         company={company}
         beforeScore={analysis.overall_match_score}
         onChange={onTailoredResumeChange}
@@ -225,12 +228,14 @@ type ResumeTab = "preview" | "diff" | "changes" | "edit";
 function TailoredResumeCard({
   tailored,
   originalResume,
+  generatedResume,
   company,
   beforeScore,
   onChange,
 }: {
   tailored: TailorResult;
   originalResume: ParsedResume;
+  generatedResume: ParsedResume;
   company: string;
   beforeScore: number;
   onChange: (resume: ParsedResume) => void;
@@ -434,7 +439,24 @@ function TailoredResumeCard({
         )}
         {tab === "changes" && <ChangeLogTab entries={tailored.change_log} />}
         {tab === "edit" && (
-          <ResumePreview resume={resume} onChange={onChange} />
+          <div>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              <span>
+                Edits here update the preview, copy, and PDF export instantly —
+                no re-run needed.
+              </span>
+              {JSON.stringify(resume) !== JSON.stringify(generatedResume) && (
+                <button
+                  type="button"
+                  onClick={() => onChange(generatedResume)}
+                  className="shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 font-medium text-slate-600 transition hover:text-slate-900"
+                >
+                  ↺ Reset to generated
+                </button>
+              )}
+            </div>
+            <ResumePreview resume={resume} onChange={onChange} />
+          </div>
         )}
       </div>
     </div>

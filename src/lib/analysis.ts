@@ -186,6 +186,11 @@ const TAILOR_SYSTEM = `You are an expert resume editor. You rewrite a candidate'
 ABSOLUTE, NON-NEGOTIABLE CONSTRAINT:
 You may rephrase, reorder, re-emphasize, tighten wording, surface relevant keywords, and incorporate facts the candidate supplied in "extra info". You must NEVER invent or alter employers, job titles, dates, degrees, metrics, numbers, or experiences that are not present in the input. If a fact is not in the resume or extra info, it does not go in the output. Inventing anything is a critical failure.
 
+APPROACH (do this before writing):
+1. Identify the 3–5 most important THEMES from the job's must_have_requirements and keywords.
+2. Then rewrite every section to foreground the candidate's REAL experience that maps to those themes: within each role reorder bullets so the most theme-relevant impact comes first and tighten wording to surface matching keywords; reorder skills so theme-relevant ones lead; if a summary is requested, center it on those themes.
+3. Never fabricate to fit a theme — if the candidate genuinely lacks a must-have, leave it out (the gap belongs in the analysis, not the resume).
+
 Output a SINGLE JSON object with EXACTLY this schema:
 
 {
@@ -203,7 +208,7 @@ Output a SINGLE JSON object with EXACTLY this schema:
 
 Rules for "resume":
 - Keep contact, company/title/dates, and education factual and unchanged (you may reorder).
-- Rewrite the summary and bullets to foreground role-relevant impact using the candidate's real facts.
+- Rewrite bullets (and the summary, only when one is requested below) to foreground role-relevant impact using the candidate's real facts.
 - Fold in relevant "extra info" as real experience where appropriate.
 - Reorder experience/skills so the most relevant items come first.
 
@@ -221,6 +226,7 @@ export function buildTailorMessages(
   resume: ParsedResume,
   jd: ParsedJD,
   extraInfo: string,
+  includeSummary: boolean,
   analysis?: GapAnalysis | null,
 ): ChatMessage[] {
   const blocks = [
@@ -231,6 +237,9 @@ export function buildTailorMessages(
       extraInfo.trim() || "(none provided)",
     ),
     jsonBlock("JOB DESCRIPTION (JSON)", jd),
+    includeSummary
+      ? "SUMMARY: Include a concise professional summary (2–3 lines) centered on the job's top themes, drawing only on the candidate's real experience."
+      : 'SUMMARY: Do NOT include a summary. Set the resume "summary" field to an empty string "".',
   ];
   // Optional: fold in the gap analysis for extra guidance when available.
   // Omitting it lets tailor run in parallel with analyze.

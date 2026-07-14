@@ -183,6 +183,7 @@ export default function DemoPage() {
           analysis={ANALYSIS}
           tailored={tailored}
           originalResume={ORIGINAL}
+          generatedResume={TAILORED.resume}
           company="Adobe"
           onTailoredResumeChange={(next) =>
             setTailored((prev) => ({ ...prev, resume: next }))

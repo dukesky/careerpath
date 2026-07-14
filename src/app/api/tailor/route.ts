@@ -46,6 +46,7 @@ export async function POST(request: Request) {
     extraInfo?: unknown;
     analysis?: unknown;
     quality?: unknown;
+    includeSummary?: unknown;
   };
   try {
     body = await request.json();
@@ -65,6 +66,7 @@ export async function POST(request: Request) {
     MAX_EXTRA_INFO_CHARS,
   );
   const quality = body.quality === "fast" ? "fast" : "quality";
+  const includeSummary = body.includeSummary !== false; // default true
 
   let tailored;
   try {
@@ -72,7 +74,7 @@ export async function POST(request: Request) {
       task: "tailor",
       json: true,
       quality,
-      messages: buildTailorMessages(resume, jd, extraInfo, analysis),
+      messages: buildTailorMessages(resume, jd, extraInfo, includeSummary, analysis),
       maxTokens: 8000,
     });
     tailored = normalizeTailorResult(parsed);

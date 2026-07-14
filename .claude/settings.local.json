@@ -52,7 +52,13 @@
       "Bash(curl -s -o /dev/null -w 'HTTP %{http_code}\\\\n' https://careerpath-cp57yyfwu-tian-zhang-s-projects.vercel.app/)",
       "Bash(curl -s -o /tmp/d.txt -w 'HTTP %{http_code} ctype=%{content_type}\\\\n' https://careerpath-cp57yyfwu-tian-zhang-s-projects.vercel.app/api/diag)",
       "Bash(npm uninstall *)",
-      "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://api.lever.co/v0/postings/spotify/159e823e-5a29-4222-94bb-40e97f63cc93)"
+      "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://api.lever.co/v0/postings/spotify/159e823e-5a29-4222-94bb-40e97f63cc93)",
+      "Bash(pdftotext -layout \"/Users/tianzhang/Downloads/Resume_Tian_Zhang 2026.docx \\(1\\).pdf\" /tmp/old.txt)",
+      "Bash(pdftotext -layout \"/Users/tianzhang/Downloads/Tian_Zhang_Spotify_Resume.pdf\" /tmp/new.txt)",
+      "Bash(curl -s -A 'Mozilla/5.0 \\(Macintosh; Intel Mac OS X 10_15_7\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/124.0.0.0 Safari/537.36' https://api.lever.co/v0/postings/spotify/d7c43743-2240-45b6-bc31-33e50cbaba4a)",
+      "Bash(sed -n '/^const TAILOR_SYSTEM = /,/No markdown, no code fences, no commentary.`;/p' src/lib/analysis.ts)",
+      "Bash(sed -n '/^export function buildTailorMessages/,/^}/p' src/lib/analysis.ts)",
+      "Bash(sed -n '/^function jsonBlock/,/^}/p' src/lib/analysis.ts)"
     ]
   }
 }

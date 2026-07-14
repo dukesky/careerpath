@@ -78,9 +78,14 @@ export default function WorkspacePage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
   const [tailored, setTailored] = useState<TailorResult | null>(null);
+  // The resume exactly as generated — kept so edits can be reverted.
+  const [generatedTailored, setGeneratedTailored] =
+    useState<TailorResult | null>(null);
 
   // Model quality (fast = Haiku, quality = Sonnet)
   const [quality, setQuality] = useState<"fast" | "quality">("quality");
+  // Whether the tailored resume should include a summary section.
+  const [includeSummary, setIncludeSummary] = useState(true);
 
   // Anonymous free-usage quota
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -224,6 +229,7 @@ export default function WorkspacePage() {
       structuredJD: parsedJd,
       extraInfo,
       quality,
+      includeSummary,
     };
 
     try {
@@ -265,15 +271,17 @@ export default function WorkspacePage() {
         tailored: unknown;
         remaining?: number;
       };
+      const generated = normalizeTailorResult(tData.tailored);
       setAnalysis(normalizeGapAnalysis(aData.analysis));
-      setTailored(normalizeTailorResult(tData.tailored));
+      setTailored(generated);
+      setGeneratedTailored(generated); // snapshot for "revert edits"
       if (typeof tData.remaining === "number") setRemaining(tData.remaining);
       setRunPhase("idle");
     } catch {
       setRunError("Network error. Please try again.");
       setRunPhase("error");
     }
-  }, [resume, parsedJd, extraInfo, quality, remaining]);
+  }, [resume, parsedJd, extraInfo, quality, includeSummary, remaining]);
 
   const backToInputs = useCallback(() => {
     setAnalysis(null);
@@ -378,6 +386,7 @@ export default function WorkspacePage() {
             analysis={analysis}
             tailored={tailored}
             originalResume={resume}
+            generatedResume={(generatedTailored ?? tailored).resume}
             company={parsedJd?.company ?? ""}
             onTailoredResumeChange={(next) =>
               setTailored((prev) => (prev ? { ...prev, resume: next } : prev))
@@ -489,6 +498,16 @@ export default function WorkspacePage() {
                   ✦ Quality
                 </button>
               </div>
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-600 select-none">
+                <input
+                  type="checkbox"
+                  checked={includeSummary}
+                  onChange={(e) => setIncludeSummary(e.target.checked)}
+                  disabled={isRunning}
+                  className="h-3.5 w-3.5 rounded border-slate-300 accent-[#7C3AED]"
+                />
+                Include a summary section
+              </label>
               <button
                 type="button"
                 onClick={() => void runAnalyzeTailor()}

@@ -215,11 +215,26 @@ async function fetchLeverJob(ref: {
     text?: unknown;
     descriptionPlain?: unknown;
     description?: unknown;
+    lists?: Array<{ text?: unknown; content?: unknown }>;
+    additionalPlain?: unknown;
     categories?: { location?: unknown } | null;
   } | null;
-  const text = str(d?.descriptionPlain)
-    ? normalize(str(d?.descriptionPlain))
-    : stripHtmlToText(str(d?.description));
+
+  // Lever splits the JD: descriptionPlain is only the intro; the real content
+  // (responsibilities, requirements, …) lives in `lists[]`, plus a closing
+  // `additionalPlain`. Assemble all of it.
+  const parts: string[] = [];
+  const intro = str(d?.descriptionPlain) || stripHtmlToText(str(d?.description));
+  if (intro) parts.push(intro);
+  for (const l of d?.lists ?? []) {
+    const header = stripHtmlToText(str(l?.text)).trim();
+    const body = stripHtmlToText(str(l?.content));
+    if (body) parts.push(header ? `${header}\n${body}` : body);
+  }
+  const closing = str(d?.additionalPlain);
+  if (closing) parts.push(closing);
+
+  const text = normalize(parts.join("\n\n"));
   if (text.length < MIN_CHARS) return null;
   return { text, title: withTitle([str(d?.text), str(d?.categories?.location)]) };
 }
@@ -263,10 +278,12 @@ async function fetchAshbyJob(ref: {
 
 function workdayApiUrl(u: URL): string | null {
   const h = u.hostname.toLowerCase();
-  if (!h.endsWith("myworkdayjobs.com")) return null;
+  if (!h.endsWith(".myworkdayjobs.com")) return null;
+  // Tenant is the subdomain's first label (e.g. generalmotors.wd5.myworkdayjobs.com).
   const tenant = h.split(".")[0];
-  // …/{site}/job/{location}/{title}_{req}
-  const m = u.pathname.match(/\/([^/]+)\/job\/(.+)$/);
+  // Path: [/{lang}]/{site}/job/{location}/{title}_{reqId}[/apply][/]
+  // The site is the segment immediately before "/job/" (skips any language prefix).
+  const m = u.pathname.match(/\/([^/]+)\/job\/(.+?)(?:\/apply)?\/?$/i);
   if (!tenant || !m) return null;
   return `${u.protocol}//${u.hostname}/wday/cxs/${tenant}/${m[1]}/job/${m[2]}`;
 }

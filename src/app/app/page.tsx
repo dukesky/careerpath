@@ -81,6 +81,8 @@ export default function WorkspacePage() {
   // The resume exactly as generated — kept so edits can be reverted.
   const [generatedTailored, setGeneratedTailored] =
     useState<TailorResult | null>(null);
+  // Which view is showing. Results are kept when switching back to inputs.
+  const [view, setView] = useState<"input" | "results">("input");
 
   // Model quality (fast = Haiku, quality = Sonnet)
   const [quality, setQuality] = useState<"fast" | "quality">("quality");
@@ -277,16 +279,17 @@ export default function WorkspacePage() {
       setGeneratedTailored(generated); // snapshot for "revert edits"
       if (typeof tData.remaining === "number") setRemaining(tData.remaining);
       setRunPhase("idle");
+      setView("results");
     } catch {
       setRunError("Network error. Please try again.");
       setRunPhase("error");
     }
   }, [resume, parsedJd, extraInfo, quality, includeSummary, remaining]);
 
+  // Switch back to the input view but KEEP the generated results so the user
+  // can return to them without re-running the LLM.
   const backToInputs = useCallback(() => {
-    setAnalysis(null);
-    setTailored(null);
-    setRunPhase("idle");
+    setView("input");
     setRunError(null);
   }, []);
 
@@ -381,7 +384,7 @@ export default function WorkspacePage() {
       </header>
 
       <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8 sm:py-11">
-        {analysis && tailored && resume ? (
+        {view === "results" && analysis && tailored && resume ? (
           <ResultsView
             analysis={analysis}
             tailored={tailored}
@@ -395,6 +398,18 @@ export default function WorkspacePage() {
           />
         ) : (
           <>
+            {tailored && analysis && (
+              <button
+                type="button"
+                onClick={() => setView("results")}
+                className="mb-6 inline-flex items-center gap-2 rounded-xl border border-[#E7E3F5] bg-[#F5F1FE] px-4 py-2.5 text-sm font-semibold text-[#6D28D9] transition hover:bg-[#EDE7FC]"
+              >
+                ← Back to your tailored resume
+                <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs font-medium">
+                  kept
+                </span>
+              </button>
+            )}
             <div className="mb-8">
               <h1 className="font-display text-3xl font-bold tracking-tight text-[#0E1220] sm:text-[34px]">
                 Tailor your resume

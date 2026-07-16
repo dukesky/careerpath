@@ -12,6 +12,12 @@ export interface KVStore {
   getCount(key: string): Promise<number>;
   /** Append to a list. */
   rpush(key: string, value: string): Promise<void>;
+  /** Set a field in a hash (used for per-user saved-resume records). */
+  hset(key: string, field: string, value: string): Promise<void>;
+  /** All fields of a hash (empty object if absent). */
+  hgetall(key: string): Promise<Record<string, string>>;
+  /** Delete a field from a hash. */
+  hdel(key: string, field: string): Promise<void>;
 }
 
 class UpstashStore implements KVStore {
@@ -33,11 +39,27 @@ class UpstashStore implements KVStore {
   async rpush(key: string, value: string): Promise<void> {
     await this.redis.rpush(key, value);
   }
+  async hset(key: string, field: string, value: string): Promise<void> {
+    await this.redis.hset(key, { [field]: value });
+  }
+  async hgetall(key: string): Promise<Record<string, string>> {
+    const v = await this.redis.hgetall<Record<string, string>>(key);
+    // Upstash may auto-parse JSON values; coerce everything back to strings.
+    const out: Record<string, string> = {};
+    for (const [k, val] of Object.entries(v ?? {})) {
+      out[k] = typeof val === "string" ? val : JSON.stringify(val);
+    }
+    return out;
+  }
+  async hdel(key: string, field: string): Promise<void> {
+    await this.redis.hdel(key, field);
+  }
 }
 
 class MemoryStore implements KVStore {
   private counters = new Map<string, { value: number; expires: number }>();
   private lists = new Map<string, string[]>();
+  private hashes = new Map<string, Map<string, string>>();
 
   async incr(key: string, ttlSeconds: number): Promise<number> {
     const now = Date.now();
@@ -58,6 +80,17 @@ class MemoryStore implements KVStore {
     const arr = this.lists.get(key) ?? [];
     arr.push(value);
     this.lists.set(key, arr);
+  }
+  async hset(key: string, field: string, value: string): Promise<void> {
+    const h = this.hashes.get(key) ?? new Map<string, string>();
+    h.set(field, value);
+    this.hashes.set(key, h);
+  }
+  async hgetall(key: string): Promise<Record<string, string>> {
+    return Object.fromEntries(this.hashes.get(key) ?? new Map());
+  }
+  async hdel(key: string, field: string): Promise<void> {
+    this.hashes.get(key)?.delete(field);
   }
 }
 

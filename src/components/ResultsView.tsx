@@ -10,6 +10,7 @@ import type {
 import { resumeToMarkdown, type ParsedResume } from "@/lib/resume";
 import { ResumePreview } from "@/components/ResumePreview";
 import { ResumeDiff } from "@/components/ResumeDiff";
+import { SignedIn, SignedOut, SignInButton } from "@/components/clerk-auth";
 
 export function ResultsView({
   analysis,
@@ -17,6 +18,8 @@ export function ResultsView({
   originalResume,
   generatedResume,
   company,
+  onSave,
+  saveState,
   onTailoredResumeChange,
   onBack,
 }: {
@@ -25,6 +28,8 @@ export function ResultsView({
   originalResume: ParsedResume;
   generatedResume: ParsedResume;
   company: string;
+  onSave: () => void;
+  saveState: "idle" | "saving" | "saved" | "error";
   onTailoredResumeChange: (resume: ParsedResume) => void;
   onBack: () => void;
 }) {
@@ -61,6 +66,8 @@ export function ResultsView({
         generatedResume={generatedResume}
         company={company}
         beforeScore={analysis.overall_match_score}
+        onSave={onSave}
+        saveState={saveState}
         onChange={onTailoredResumeChange}
       />
 
@@ -231,6 +238,8 @@ function TailoredResumeCard({
   generatedResume,
   company,
   beforeScore,
+  onSave,
+  saveState,
   onChange,
 }: {
   tailored: TailorResult;
@@ -238,6 +247,8 @@ function TailoredResumeCard({
   generatedResume: ParsedResume;
   company: string;
   beforeScore: number;
+  onSave: () => void;
+  saveState: "idle" | "saving" | "saved" | "error";
   onChange: (resume: ParsedResume) => void;
 }) {
   const resume = tailored.resume;
@@ -341,6 +352,45 @@ function TailoredResumeCard({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <SignedIn>
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={saveState === "saving"}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
+                aria-hidden="true"
+              >
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                <path d="M17 21v-8H7v8M7 3v5h8" />
+              </svg>
+              {saveState === "saving"
+                ? "Saving…"
+                : saveState === "saved"
+                  ? "Saved ✓"
+                  : saveState === "error"
+                    ? "Retry save"
+                    : "Save this version"}
+            </button>
+          </SignedIn>
+          <SignedOut>
+            <SignInButton mode="modal">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Sign in to save
+              </button>
+            </SignInButton>
+          </SignedOut>
           <button
             type="button"
             onClick={() => void exportPdf()}
@@ -463,7 +513,7 @@ function TailoredResumeCard({
   );
 }
 
-function ResumeDocument({ resume }: { resume: ParsedResume }) {
+export function ResumeDocument({ resume }: { resume: ParsedResume }) {
   const c = resume.contact;
   const contactLine = [c.email, c.phone, c.location, ...c.links]
     .filter(Boolean)

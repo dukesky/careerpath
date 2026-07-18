@@ -141,7 +141,8 @@ export default function Home() {
         <div className="flex flex-col items-center justify-between gap-2 border-t border-slate-200 pt-6 sm:flex-row">
           <span>© 2026 career-path</span>
           <span>
-            Your resume and JD are processed in-session and never saved.
+            Your resume and JD are processed in-session — never saved unless you
+            sign in and save a version.
           </span>
         </div>
       </footer>

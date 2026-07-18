@@ -185,6 +185,8 @@ export default function DemoPage() {
           originalResume={ORIGINAL}
           generatedResume={TAILORED.resume}
           company="Adobe"
+          onSave={() => {}}
+          saveState="idle"
           onTailoredResumeChange={(next) =>
             setTailored((prev) => ({ ...prev, resume: next }))
           }

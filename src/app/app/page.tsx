@@ -8,6 +8,12 @@ import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { ResultsView } from "@/components/ResultsView";
 import { WaitlistModal } from "@/components/WaitlistModal";
 import { apiHeaders, captureAccessCode, setAccessCode } from "@/lib/anon";
+import {
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  UserButton,
+} from "@/components/clerk-auth";
 import { normalizeResume, type ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
 import {
@@ -293,6 +299,36 @@ export default function WorkspacePage() {
     setRunError(null);
   }, []);
 
+  // Opt-in save of the current tailored version (signed-in users only).
+  const [saveState, setSaveState] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+
+  const saveCurrentVersion = useCallback(async () => {
+    if (!tailored) return;
+    setSaveState("saving");
+    try {
+      const res = await fetch("/api/saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company: parsedJd?.company ?? "",
+          roleTitle: parsedJd?.role_title ?? "",
+          resume: tailored.resume,
+          jdSummary: parsedJd?.company_context_hints ?? "",
+        }),
+      });
+      if (!res.ok) {
+        setSaveState("error");
+        return;
+      }
+      setSaveState("saved");
+      setTimeout(() => setSaveState("idle"), 2500);
+    } catch {
+      setSaveState("error");
+    }
+  }, [tailored, parsedJd]);
+
   const canAnalyze = resume !== null && parsedJd !== null;
   const isRunning = runPhase === "running";
 
@@ -304,7 +340,7 @@ export default function WorkspacePage() {
           <div className="flex items-center gap-5 text-sm text-slate-500">
             <span className="hidden items-center gap-2 sm:inline-flex">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Nothing stored, nothing saved
+              Nothing stored unless you save
             </span>
             {unlimited ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[#0E1220] px-3 py-1.5 text-xs font-semibold text-white">
@@ -379,6 +415,28 @@ export default function WorkspacePage() {
             >
               ← Home
             </Link>
+
+            <SignedOut>
+              <SignInButton mode="modal">
+                <button
+                  type="button"
+                  className="rounded-full bg-[#0E1220] px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-[#1c2236]"
+                >
+                  Sign in
+                </button>
+              </SignInButton>
+            </SignedOut>
+            <SignedIn>
+              <Link
+                href="/app/saved"
+                className="font-medium text-slate-600 transition hover:text-slate-900"
+              >
+                My resumes
+              </Link>
+              <UserButton
+                appearance={{ elements: { avatarBox: "h-7 w-7" } }}
+              />
+            </SignedIn>
           </div>
         </div>
       </header>
@@ -391,6 +449,8 @@ export default function WorkspacePage() {
             originalResume={resume}
             generatedResume={(generatedTailored ?? tailored).resume}
             company={parsedJd?.company ?? ""}
+            onSave={saveCurrentVersion}
+            saveState={saveState}
             onTailoredResumeChange={(next) =>
               setTailored((prev) => (prev ? { ...prev, resume: next } : prev))
             }

@@ -14,4 +14,4 @@ export function SignedOut({ children }: { children: ReactNode }) {
   return <Show when="signed-out">{children}</Show>;
 }
 
-export { SignInButton, UserButton } from "@clerk/nextjs";
+export { SignInButton, SignUpButton, UserButton } from "@clerk/nextjs";

@@ -353,33 +353,48 @@ function TailoredResumeCard({
         </div>
         <div className="flex items-center gap-2">
           <SignedIn>
-            <button
-              type="button"
-              onClick={onSave}
-              disabled={saveState === "saving"}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-4 w-4"
-                aria-hidden="true"
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={onSave}
+                disabled={saveState === "saving"}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-                <path d="M17 21v-8H7v8M7 3v5h8" />
-              </svg>
-              {saveState === "saving"
-                ? "Saving…"
-                : saveState === "saved"
-                  ? "Saved ✓"
-                  : saveState === "error"
-                    ? "Retry save"
-                    : "Save this version"}
-            </button>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-4 w-4"
+                  aria-hidden="true"
+                >
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                  <path d="M17 21v-8H7v8M7 3v5h8" />
+                </svg>
+                {saveState === "saving"
+                  ? "Saving…"
+                  : saveState === "saved"
+                    ? "Saved ✓"
+                    : saveState === "error"
+                      ? "Retry save"
+                      : "Save this version"}
+              </button>
+              <span className="group relative inline-flex">
+                <span
+                  className="grid h-5 w-5 cursor-help place-items-center rounded-full border border-slate-300 text-[11px] font-semibold text-slate-400"
+                  aria-hidden="true"
+                >
+                  ?
+                </span>
+                <span className="pointer-events-none absolute right-0 top-7 z-10 w-60 rounded-lg bg-slate-900 px-3 py-2 text-xs leading-relaxed text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100">
+                  Saves this tailored version (including any edits) to your
+                  account. Find it later under “My resumes.” Nothing else is
+                  stored.
+                </span>
+              </span>
+            </div>
           </SignedIn>
           <SignedOut>
             <SignInButton mode="modal">

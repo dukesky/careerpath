@@ -1,5 +1,12 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
+import {
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  SignUpButton,
+  UserButton,
+} from "@/components/clerk-auth";
 
 const steps = [
   {
@@ -49,13 +56,40 @@ export default function Home() {
 
         <header className="relative mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
           <Logo />
-          <div className="flex items-center gap-7">
+          <div className="flex items-center gap-5 sm:gap-7">
             <a
               href="#how-it-works"
-              className="text-[15px] font-medium text-slate-600 transition hover:text-slate-900"
+              className="hidden text-[15px] font-medium text-slate-600 transition hover:text-slate-900 sm:inline"
             >
               How it works
             </a>
+            <SignedOut>
+              <SignInButton mode="modal">
+                <button
+                  type="button"
+                  className="text-[15px] font-medium text-slate-600 transition hover:text-slate-900"
+                >
+                  Sign in
+                </button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <button
+                  type="button"
+                  className="hidden rounded-[10px] border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 sm:inline-flex"
+                >
+                  Sign up
+                </button>
+              </SignUpButton>
+            </SignedOut>
+            <SignedIn>
+              <Link
+                href="/app/saved"
+                className="hidden text-[15px] font-medium text-slate-600 transition hover:text-slate-900 sm:inline"
+              >
+                My resumes
+              </Link>
+              <UserButton appearance={{ elements: { avatarBox: "h-8 w-8" } }} />
+            </SignedIn>
             <Link
               href="/app"
               className="inline-flex items-center gap-2 rounded-[10px] bg-[#0E1220] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#1c2236]"

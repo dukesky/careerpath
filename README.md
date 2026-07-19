@@ -1,10 +1,50 @@
-# career-path
+<div align="center">
 
-**Tailor your resume to any job description — nothing stored, nothing saved.**
+# 🎯 career-path
 
-A privacy-first web app: upload your resume, paste a job description, and get a
-tailored resume plus an honest gap analysis. Nothing is persisted — your resume
-and JD are processed in-session only.
+### Tailor your resume to any job description — in 30 seconds, without lying.
+
+Upload your resume, paste a job link, and get it **rewritten for that specific role** —
+plus an **honest gap analysis** of where you fall short. Your data is processed
+in-session and **never stored unless you sign in and explicitly save a version**.
+
+**[▶ Try the live demo](https://YOUR-DEPLOYMENT-URL)** &nbsp;·&nbsp; **[⭐ Star this repo](https://github.com/dukesky/careerpath)** &nbsp;·&nbsp; [Report an issue](https://github.com/dukesky/careerpath/issues)
+
+<br/>
+
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=next.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4-06B6D4?logo=tailwindcss&logoColor=white)
+![Vercel](https://img.shields.io/badge/Deployed_on-Vercel-000000?logo=vercel&logoColor=white)
+![Claude](https://img.shields.io/badge/LLM-Claude_%2B_DeepSeek-7C3AED)
+![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)
+
+<br/>
+
+<!--
+  ⬇ HIGH-LEVERAGE TODO: record a 15–20s screen recording (paste JD → generate → diff),
+  save it as docs/demo.gif, then delete this comment and uncomment the <img> below.
+  A GIF here is the single biggest thing for converting repo visitors into stars.
+
+  <img src="docs/demo.gif" alt="career-path demo — paste a job description and get a tailored resume with a gap analysis" width="820" />
+-->
+
+</div>
+
+---
+
+## Why it's different
+
+- **🔒 Private by design.** Your resume and the JD are processed in-session. Nothing
+  is persisted unless you sign in and click *Save this version*.
+- **🚫 It won't lie for you.** It reorders, re-emphasizes, and surfaces keywords from
+  your **real** experience — but never invents a title, metric, or skill you don't have.
+- **📊 Honest gap analysis.** A match score (before → after), a requirements matrix,
+  and the gaps you genuinely can't fake.
+- **🔍 Verifiable.** A *what changed & why* view and a word-level diff show every edit
+  before you export.
+- **🔗 Ingests JDs from anywhere.** Paste text, a screenshot, or a link — with direct
+  fetchers for LinkedIn, Greenhouse, Lever, Ashby & Workday.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 

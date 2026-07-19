@@ -20,10 +20,33 @@ const bricolage = Bricolage_Grotesque({
   weight: ["500", "600", "700", "800"],
 });
 
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : "http://localhost:3000");
+
+const TITLE = "career-path — Tailor your resume to any job";
+const DESCRIPTION =
+  "Tailor your resume to any job description — rewritten for the role, never fabricated. Processed in-session; nothing stored unless you sign in and save a version. Free & open source.";
+
 export const metadata: Metadata = {
-  title: "career-path — Tailor your resume to any job",
-  description:
-    "Tailor your resume to any job description — processed in-session, nothing stored unless you sign in and save a version.",
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  applicationName: "career-path",
+  openGraph: {
+    type: "website",
+    siteName: "career-path",
+    title: TITLE,
+    description: DESCRIPTION,
+    url: SITE_URL,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({

@@ -28,7 +28,7 @@ async function errorMessage(res: Response): Promise<string> {
 export function JobDescriptionPanel({
   onChange,
 }: {
-  onChange: (rawText: string, jd: ParsedJD | null) => void;
+  onChange: (rawText: string, jd: ParsedJD | null, sourceUrl?: string) => void;
 }) {
   // URL (primary)
   const [url, setUrl] = useState("");
@@ -64,7 +64,7 @@ export function JobDescriptionPanel({
   }, []);
 
   const doParse = useCallback(
-    async (text: string) => {
+    async (text: string, sourceUrl?: string) => {
       setParsing(true);
       setParseError(null);
       try {
@@ -81,7 +81,7 @@ export function JobDescriptionPanel({
         const parsed = normalizeJD(data.jd);
         setJd(parsed);
         setSummaryOpen(true);
-        onChange(text, parsed);
+        onChange(text, parsed, sourceUrl);
       } catch {
         setParseError("Network error while parsing the job description.");
       } finally {
@@ -111,7 +111,7 @@ export function JobDescriptionPanel({
       };
       if (data.ok && data.text) {
         setFetching(false);
-        await doParse(data.text);
+        await doParse(data.text, url.trim());
         return;
       }
       setFetchError(data.reason ?? "Could not fetch that URL.");

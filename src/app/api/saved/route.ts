@@ -25,6 +25,7 @@ export async function POST(request: Request) {
     roleTitle?: unknown;
     resume?: unknown;
     jdSummary?: unknown;
+    jdUrl?: unknown;
   };
   try {
     body = await request.json();
@@ -35,12 +36,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing resume." }, { status: 400 });
   }
 
+  const jdUrl =
+    typeof body.jdUrl === "string" && /^https?:\/\//i.test(body.jdUrl.trim())
+      ? body.jdUrl.trim().slice(0, 2000)
+      : undefined;
+
   const saved = await saveResume(userId, {
     company: typeof body.company === "string" ? body.company : "",
     roleTitle: typeof body.roleTitle === "string" ? body.roleTitle : "",
     resume: normalizeResume(body.resume),
     jdSummary:
       typeof body.jdSummary === "string" ? body.jdSummary.slice(0, 500) : "",
+    jdUrl,
   });
   return NextResponse.json({ saved });
 }

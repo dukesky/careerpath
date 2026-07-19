@@ -72,10 +72,16 @@ export default function WorkspacePage() {
   // Extra info + JD
   const [extraInfo, setExtraInfo] = useState("");
   const [parsedJd, setParsedJd] = useState<ParsedJD | null>(null);
+  // Set only when the JD was ingested from a URL (not paste/screenshot).
+  const [jdUrl, setJdUrl] = useState<string | null>(null);
 
-  const handleJdChange = useCallback((_rawText: string, jd: ParsedJD | null) => {
-    setParsedJd(jd);
-  }, []);
+  const handleJdChange = useCallback(
+    (_rawText: string, jd: ParsedJD | null, sourceUrl?: string) => {
+      setParsedJd(jd);
+      setJdUrl(jd && sourceUrl ? sourceUrl : null);
+    },
+    [],
+  );
 
   // Analyze + tailor pipeline
   const [runPhase, setRunPhase] = useState<"idle" | "running" | "error">(
@@ -316,6 +322,7 @@ export default function WorkspacePage() {
           roleTitle: parsedJd?.role_title ?? "",
           resume: tailored.resume,
           jdSummary: parsedJd?.company_context_hints ?? "",
+          jdUrl: jdUrl ?? "",
         }),
       });
       if (!res.ok) {
@@ -327,7 +334,7 @@ export default function WorkspacePage() {
     } catch {
       setSaveState("error");
     }
-  }, [tailored, parsedJd]);
+  }, [tailored, parsedJd, jdUrl]);
 
   const canAnalyze = resume !== null && parsedJd !== null;
   const isRunning = runPhase === "running";

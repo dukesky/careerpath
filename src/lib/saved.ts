@@ -14,6 +14,7 @@ export interface SavedResume {
   savedAt: string; // ISO 8601
   resume: ParsedResume;
   jdSummary: string;
+  jdUrl?: string; // set only when the JD was ingested from a link
 }
 
 const MAX_PER_USER = 50;
@@ -41,6 +42,7 @@ export async function saveResume(
     roleTitle: string;
     resume: ParsedResume;
     jdSummary: string;
+    jdUrl?: string;
   },
 ): Promise<SavedResume> {
   const kv = getKV();
@@ -51,6 +53,7 @@ export async function saveResume(
     roleTitle: input.roleTitle,
     resume: input.resume,
     jdSummary: input.jdSummary,
+    ...(input.jdUrl ? { jdUrl: input.jdUrl } : {}),
   };
   await kv.hset(userKey(userId), record.id, JSON.stringify(record));
 

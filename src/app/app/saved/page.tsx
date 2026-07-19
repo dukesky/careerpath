@@ -19,6 +19,15 @@ interface SavedItem {
   savedAt: string;
   resume: ParsedResume;
   jdSummary: string;
+  jdUrl?: string;
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "job posting";
+  }
 }
 
 export default function SavedResumesPage() {
@@ -158,7 +167,35 @@ function SavedList() {
                 <div className="truncate text-sm font-semibold text-slate-900">
                   {title}
                 </div>
-                <div className="text-xs text-slate-400">Saved {date}</div>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
+                  <span>Saved {date}</span>
+                  {item.jdUrl && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <a
+                        href={item.jdUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-medium text-indigo-600 transition hover:text-indigo-500 hover:underline"
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        >
+                          <path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 5.5" />
+                          <path d="M14 11a5 5 0 0 0-7.07 0L5.5 12.4a5 5 0 0 0 7.07 7.07L14 18.5" />
+                        </svg>
+                        {hostOf(item.jdUrl)}
+                      </a>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button

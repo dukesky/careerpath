@@ -197,7 +197,7 @@ If you're building anything LLM-backed, three ideas here generalize:
 
 ## Try it / break it / fork it
 
-- **Live demo (no account needed):** _[add your deployment URL]_
+- **Live demo (no account needed):** [careerpath-hazel.vercel.app](https://careerpath-hazel.vercel.app)
 - **Source:** [github.com/dukesky/careerpath](https://github.com/dukesky/careerpath)
 
 It's open source and I'm actively improving the tailoring quality. If you try it and the output misses the mark for your field, that's exactly the feedback I want — open an issue or reply. And if this saved you an hour of resume-wrangling, a ⭐ on the repo genuinely helps more people find it.

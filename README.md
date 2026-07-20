@@ -8,7 +8,7 @@ Upload your resume, paste a job link, and get it **rewritten for that specific r
 plus an **honest gap analysis** of where you fall short. Your data is processed
 in-session and **never stored unless you sign in and explicitly save a version**.
 
-**[▶ Try the live demo](https://YOUR-DEPLOYMENT-URL)** &nbsp;·&nbsp; **[⭐ Star this repo](https://github.com/dukesky/careerpath)** &nbsp;·&nbsp; [Report an issue](https://github.com/dukesky/careerpath/issues)
+**[▶ Try the live demo](https://careerpath-hazel.vercel.app)** &nbsp;·&nbsp; **[⭐ Star this repo](https://github.com/dukesky/careerpath)** &nbsp;·&nbsp; [Report an issue](https://github.com/dukesky/careerpath/issues)
 
 <br/>
 

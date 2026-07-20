@@ -33,6 +33,11 @@ in-session and **never stored unless you sign in and explicitly save a version**
 
 ---
 
+> 💻 **Prefer the command line?** There's also a free, open-source **CLI skill** —
+> [**resume-tailor**](https://github.com/dukesky/resume-tailor) — that runs the same
+> honest tailoring method right inside Claude Code, Codex, or any
+> [Agent Skills](https://agentskills.io) tool. No upload, no API keys.
+
 ## Why it's different
 
 - **🔒 Private by design.** Your resume and the JD are processed in-session. Nothing

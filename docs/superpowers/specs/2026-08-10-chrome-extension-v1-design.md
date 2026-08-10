@@ -247,6 +247,13 @@ We extract **text**. Not screenshots, not the DOM tree.
    `{kind: "user", userId}` or `{kind: "device", deviceId}`. Per-IP rate limiting
    (`src/lib/rate-limit.ts`) continues to apply to everyone.
 
+**Absent versus invalid.** These are different and must behave differently. *No*
+`Authorization` header is the normal web-app case and resolves to the anonymous
+tier. A header that is present but fails verification returns **`401`** — that
+request is the extension with an expired token, and it needs the signal to
+refresh. Degrading it silently to anonymous would both mis-bill it and leave the
+extension permanently unable to discover that its token died.
+
 The existing `x-anon-id` header path stays for the current web app so it keeps working
 unchanged; it is simply not trusted for extension traffic.
 
@@ -387,5 +394,6 @@ accumulating.
    stages are individually useful.
 4. Switching jobs in a LinkedIn SPA session never shows a stale result.
 5. The anonymous 3 runs → sign-in → 5-per-day path works end to end.
-6. Calling any protected API route without a valid token returns `401`.
+6. A request carrying an invalid or expired bearer token returns `401`; a request
+   with no `Authorization` header at all still works on the anonymous tier.
 7. `callLLM` timing and token data is queryable per task and per model.

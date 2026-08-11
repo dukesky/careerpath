@@ -209,7 +209,7 @@ Create `extension/tsconfig.json`. This is deliberately separate from the root co
     "skipLibCheck": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "types": ["chrome", "vitest/globals"],
+    "types": ["chrome", "vitest/globals", "vite/client"],
     "paths": {
       "@/*": ["./src/*"],
       "@shared/*": ["../shared/*"]

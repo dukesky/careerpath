@@ -50,6 +50,8 @@ Nothing exists yet. This task produces a `.crx`-shaped build that Chrome can loa
 - Create: `extension/tsconfig.json`
 - Create: `extension/manifest.config.ts`
 - Create: `extension/eslint.config.mjs`
+- Create: `extension/src/background/index.ts` (placeholder — Task 2 fills it in)
+- Modify: `eslint.config.mjs` (repo root — add an `extension/**` ignore)
 - Create: `extension/src/sidepanel/index.html`
 - Create: `extension/src/sidepanel/main.tsx`
 - Create: `extension/src/sidepanel/App.tsx`
@@ -213,9 +215,15 @@ Create `extension/tsconfig.json`. This is deliberately separate from the root co
       "@shared/*": ["../shared/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "manifest.config.ts", "../shared"]
+  "include": ["src", "vite.config.ts", "manifest.config.ts", "../shared/contract.ts"]
 }
 ```
+
+Note the include names `contract.ts` specifically, not the whole `../shared`
+directory. `shared/__tests__/contract.test.ts` imports the Next.js app's `@/lib/*`
+alias, which cannot resolve under the extension's own `paths` — sweeping the
+directory in would fail `tsc --noEmit` on a file that has nothing to do with the
+extension.
 
 - [ ] **Step 5b: Give the extension its own ESLint config**
 
@@ -371,6 +379,13 @@ In the root `package.json`, add to `"scripts"`:
 ```
 
 The root `test` script stays as it is, so nothing about the Next.js workflow changes.
+
+Also add `"extension/**"` to the `ignores` array in the **repo-root**
+`eslint.config.mjs`. The root's `lint` script is a bare `eslint` with no path,
+and ESLint 9 flat config neither reads `.gitignore` nor cascades into a nested
+`eslint.config.mjs` — so without this, root lint walks into `extension/dist`'s
+minified bundle and reports hundreds of warnings about generated code. Same
+class of problem as the `.claude/**` ignore already there.
 
 - [ ] **Step 10: Build**
 

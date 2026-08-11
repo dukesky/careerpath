@@ -372,31 +372,69 @@ In the root `package.json`, add to `"scripts"`:
 
 The root `test` script stays as it is, so nothing about the Next.js workflow changes.
 
-- [ ] **Step 10: Build and load it**
+- [ ] **Step 10: Build**
 
 ```bash
 npm --prefix extension run build
 ```
-Expected: `extension/dist/` is created with `manifest.json` and a `service-worker-loader.js`.
+Expected: `extension/dist/` is created, containing `manifest.json` and a
+service-worker loader. List the directory and record what it actually emitted —
+Task 6 needs the emitted content-script filename.
 
-Then in Chrome: open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, select `extension/dist`.
+- [ ] **Step 11: Compute the extension ID and configure CORS**
 
-Expected: the extension appears with no errors. Click its toolbar icon — the side panel opens showing "Side panel is alive."
+Chrome derives the extension ID from the public key deterministically: SHA-256
+of the DER public key, first 16 bytes, hex-encoded, then each hex digit mapped
+`0-9a-f` → `a-p`. Compute it rather than reading it off a screen — same answer,
+and it does not need a browser:
 
-**Record the extension ID shown on the card.** It is derived from the `key` you set, so it is now stable. Put it in the repo-root `.env.local`:
-
+```bash
+openssl rsa -in extension/key.pem -pubout -outform DER 2>/dev/null \
+  | openssl dgst -sha256 -binary \
+  | head -c 16 \
+  | xxd -p \
+  | tr '0-9a-f' 'a-p'
 ```
-ALLOWED_EXTENSION_IDS=<the id from chrome://extensions>
+
+Expected: a 32-character string of letters a-p.
+
+Append it to the repo-root `.env.local` (the file is gitignored and already
+holds the other keys — append, do not overwrite):
+
+```bash
+printf '\n# Chrome extension ID (CORS allowlist)\nALLOWED_EXTENSION_IDS=%s\n' "<the computed id>" >> .env.local
 ```
 
-- [ ] **Step 11: Verify the repo root is undisturbed**
+Then confirm it landed:
+
+```bash
+grep -o '^[A-Z_]*=' .env.local | tr -d '='
+```
+Expected: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`,
+`OPENROUTER_API_KEY`, `DEVICE_TOKEN_SECRET`, `ALLOWED_EXTENSION_IDS`.
+
+**Loading it in Chrome is a human step, not yours.** `chrome://extensions` is a
+privileged page you cannot drive. Do not claim you loaded it. Instead, end your
+report with the exact instructions and the computed ID so the controller can
+hand them over:
+
+> Open `chrome://extensions`, enable Developer mode, click **Load unpacked**,
+> select `<abs path>/extension/dist`. The ID on the card should read
+> `<computed id>`. Click the toolbar icon — the panel should say
+> "Side panel is alive."
+
+If the ID Chrome shows ever differs from the computed one, the `key` field is
+wrong — that is the single thing to check first, because every CORS failure
+downstream traces back to it.
+
+- [ ] **Step 12: Verify the repo root is undisturbed**
 
 ```bash
 npm test && npm run lint && npm run build
 ```
 Expected: all green, exactly as before this task.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 npm --prefix extension run lint

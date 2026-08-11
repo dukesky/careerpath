@@ -1024,7 +1024,7 @@ The whole reason for an extension: read the posting out of the DOM the user is a
 - Create: `extension/src/content/extract.ts`
 - Create: `extension/src/content/__tests__/extract.test.ts`
 - Create: `extension/src/content/index.ts`
-- Modify: `extension/manifest.config.ts`
+- Considered and deliberately unchanged: `extension/manifest.config.ts` (see Step 5)
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
@@ -1297,21 +1297,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 ```
 
-Add it to `extension/manifest.config.ts`, after `side_panel`:
+**Do NOT add a `content_scripts` block to the manifest.** The obvious move here
+is `content_scripts: [{ matches: ["<all_urls>"], ... }]`, and it is the wrong
+one: even though that is a different grant from `<all_urls>` *host
+permissions*, it still shows the user "Read and change all your data on all
+websites" at install — the exact review friction the spec set out to avoid.
 
-```ts
-  content_scripts: [
-    {
-      matches: ["<all_urls>"],
-      js: ["src/content/index.ts"],
-      run_at: "document_idle",
-    },
-  ],
-```
+Instead the script is injected on demand, per tab, via `activeTab` +
+`chrome.scripting.executeScript`. The user clicking the extension icon *is*
+the gesture that grants access to that one tab. Task 6's side panel does the
+injecting; this task only creates the script and leaves the manifest alone.
 
-**Note the tension and resolve it deliberately:** the global constraint says do not request `<all_urls>` *host permissions*. A `content_scripts.matches` entry is a different grant — but it still shows as "Read and change all your data on all websites" at install, which is the review friction the spec set out to avoid. So do **not** ship it this way. Instead delete the `content_scripts` block you just added and rely on `activeTab` + `chrome.scripting.executeScript`, which the side panel does in Task 6: the user clicking the extension icon is the gesture that grants access to that one tab.
-
-Keep `extension/src/content/index.ts` — Task 6 injects it programmatically.
+So `extension/manifest.config.ts` is unchanged by this task — the "Modify"
+entry in the Files list above is there to tell you the file was considered and
+deliberately left alone.
 
 - [ ] **Step 6: Confirm the manifest has no content_scripts block**
 

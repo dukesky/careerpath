@@ -1,0 +1,109 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { apiPost } from "@/lib/api";
+import { setToken, getToken } from "@/lib/storage";
+
+function fakeChromeStorage() {
+  const data: Record<string, unknown> = {};
+  return {
+    storage: {
+      local: {
+        get: vi.fn(async (keys: string[]) => {
+          const out: Record<string, unknown> = {};
+          for (const k of keys) if (k in data) out[k] = data[k];
+          return out;
+        }),
+        set: vi.fn(async (items: Record<string, unknown>) => Object.assign(data, items)),
+        remove: vi.fn(async (keys: string[]) => keys.forEach((k) => delete data[k])),
+      },
+    },
+  };
+}
+
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(body), { status, headers });
+
+describe("apiPost", () => {
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("returns the parsed body on success", async () => {
+    await setToken("t1");
+    vi.stubGlobal("fetch", vi.fn(async () => json({ jd: { company: "Acme" } })));
+    const res = await apiPost<{ jd: { company: string } }>("/api/parse-jd", { text: "x" });
+    expect(res).toEqual({ ok: true, data: { jd: { company: "Acme" } } });
+  });
+
+  it("sends the stored token as a bearer header", async () => {
+    await setToken("t1");
+    const fetchMock = vi.fn<typeof fetch>(async () => json({}));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/parse-jd", { text: "x" });
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer t1");
+  });
+
+  it("refreshes once on 401 and retries with the new token", async () => {
+    await setToken("stale");
+    const fetchMock = vi
+      .fn()
+      // first attempt with the stale token
+      .mockResolvedValueOnce(json({ error: "expired" }, 401))
+      // the mint call
+      .mockResolvedValueOnce(json({ token: "renewed" }))
+      // the retry
+      .mockResolvedValueOnce(json({ jd: { company: "Acme" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost<{ jd: { company: string } }>("/api/parse-jd", { text: "x" });
+    expect(res.ok).toBe(true);
+    expect(await getToken()).toBe("renewed");
+    const retryInit = fetchMock.mock.calls[2][1] as RequestInit;
+    expect((retryInit.headers as Record<string, string>).Authorization).toBe("Bearer renewed");
+  });
+
+  it("does not loop when the retry also 401s", async () => {
+    await setToken("stale");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({ error: "expired" }, 401))
+      .mockResolvedValueOnce(json({ token: "renewed" }))
+      .mockResolvedValueOnce(json({ error: "still bad" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost("/api/parse-jd", { text: "x" });
+    expect(res).toMatchObject({ ok: false, kind: "auth" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("classifies 402 as a quota error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ error: "out of runs" }, 402)));
+    const res = await apiPost("/api/tailor", {});
+    expect(res).toMatchObject({ ok: false, kind: "quota", message: "out of runs" });
+  });
+
+  it("classifies 429 and surfaces Retry-After", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ error: "slow down" }, 429, { "Retry-After": "60" })),
+    );
+    const res = await apiPost("/api/tailor", {});
+    expect(res).toMatchObject({ ok: false, kind: "rate_limit", retryAfter: 60 });
+  });
+
+  it("classifies 502 as a server error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ error: "llm down" }, 502)));
+    const res = await apiPost("/api/analyze", {});
+    expect(res).toMatchObject({ ok: false, kind: "server" });
+  });
+
+  it("classifies a thrown fetch as a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const res = await apiPost("/api/analyze", {});
+    expect(res).toMatchObject({ ok: false, kind: "network" });
+  });
+});

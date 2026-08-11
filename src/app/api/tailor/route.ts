@@ -8,8 +8,9 @@ import {
   normalizeTailorResult,
 } from "@/lib/analysis";
 import { getIdentity, hasBetaAccess } from "@/lib/identity";
+import { getCaller, readRunId, unauthorized } from "@/lib/api-auth";
 import { rateLimitResponse } from "@/lib/rate-limit";
-import { getQuota, consumeQuota } from "@/lib/quota";
+import { getQuota, consumeRun } from "@/lib/quota";
 import { capText, MAX_EXTRA_INFO_CHARS } from "@/lib/limits";
 
 export const runtime = "nodejs";
@@ -20,21 +21,24 @@ function bad(message: string, status = 400) {
 }
 
 export async function POST(request: Request) {
-  const identity = getIdentity(request);
+  const { ip } = getIdentity(request);
 
   // Abuse protection (per-IP) — applies to everyone, including beta users.
-  const limited = await rateLimitResponse(identity.ip);
+  const limited = await rateLimitResponse(ip);
   if (limited) return limited;
 
   // Beta testers with a valid access code bypass the business quota entirely.
   const beta = hasBetaAccess(request);
+  const resolved = await getCaller(request);
+  if (!resolved.ok) return unauthorized();
+  const caller = resolved.caller;
 
   // Business quota — block before doing any expensive work.
   if (!beta) {
-    const quota = await getQuota(identity);
+    const quota = await getQuota(caller, ip);
     if (quota.exhausted) {
       return NextResponse.json(
-        { error: "You've used all your free tailors.", remaining: 0 },
+        { error: "You've used all your free runs.", remaining: 0 },
         { status: 402 },
       );
     }
@@ -47,6 +51,7 @@ export async function POST(request: Request) {
     analysis?: unknown;
     quality?: unknown;
     includeSummary?: unknown;
+    runId?: unknown;
   };
   try {
     body = await request.json();
@@ -67,6 +72,7 @@ export async function POST(request: Request) {
   );
   const quality = body.quality === "fast" ? "fast" : "quality";
   const includeSummary = body.includeSummary !== false; // default true
+  const runId = readRunId(body);
 
   let tailored;
   try {
@@ -89,6 +95,6 @@ export async function POST(request: Request) {
   }
 
   // Only consume quota on a successful run.
-  const after = await consumeQuota(identity);
+  const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
   return NextResponse.json({ tailored, remaining: after.remaining });
 }

@@ -105,7 +105,8 @@ A four-step pipeline — all in one session, nothing stored by default.
 | `POST /api/parse-jd` | `{ text }` → structured JD JSON.                                                |
 | `POST /api/analyze`  | `{ structuredResume, structuredJD, extraInfo }` → gap analysis (score, requirements matrix, strengths, gaps). |
 | `POST /api/tailor`   | analyze inputs + `analysis` → rewritten resume (same schema) + `change_log`. Never fabricates facts. Quota-gated (returns `402` when exhausted). |
-| `GET /api/quota`     | Current anonymous free-tailor quota for the caller (`{ remaining, used, limit }`). |
+| `GET /api/quota`     | Current free-tailor quota for the caller — signed-in, extension device, or anonymous (`{ remaining, used, limit }`). |
+| `POST /api/device-token` | Mints a server-signed, 24h device identity for a signed-out extension client. |
 | `GET/POST /api/saved` | Signed-in only. List saved versions, or save the current one (per-user Redis hash, capped at 50). |
 | `DELETE /api/saved/[id]` | Signed-in only. Delete one saved version.                                 |
 | `POST /api/waitlist` | `{ email }` → appended to an Upstash Redis list (early-access signup). |
@@ -114,14 +115,23 @@ A four-step pipeline — all in one session, nothing stored by default.
 
 Two independent concerns, two modules:
 
-- **Quota** (`src/lib/quota.ts`) — business logic. Each anonymous identity gets
-  **5 free tailor runs** (one analyze+tailor flow = one run). Beta testers with a
-  code in `BETA_ACCESS_CODES` (via `?code=` → `x-access-code` header) get
-  **unlimited** runs, bypassing the quota (rate limiting still applies). Tracked against
-  **both** a client `anonId` (localStorage UUID, sent via the `x-anon-id`
-  header) **and** the client IP, and counted exhausted if **either** hits the
-  limit — so clearing localStorage alone doesn't reset it. Keys expire after 30
-  days. Designed to be swapped for a paid credits ledger later.
+- **Quota** (`src/lib/quota.ts`) — business logic. One "run" = one analyze +
+  tailor flow, charged once via a client-supplied `runId` and only on success
+  (see `src/lib/auth.ts` for how a caller is identified). Allowances by
+  caller: **5 per day** signed in (`quota:user:<userId>:<YYYY-MM-DD>`, 48h
+  TTL); **3 per 30-day window** for a signed-out extension device
+  (`quota:device:<deviceId>`); **5 per 30-day window** for a signed-out web
+  visitor, keyed on the `x-anon-id` header when it's sent
+  (`quota:anon:<anonId>`, unchanged from before the extension work) or on IP
+  when it's absent (`quota:anon:ip:<ip>`). A per-IP ceiling of **20 per day**
+  (`quota:ip:<ip>:<YYYY-MM-DD>`) applies on top of every tier, and a caller is
+  blocked when **either** its tier counter **or** the IP counter is exhausted.
+  Beta testers with a code in `BETA_ACCESS_CODES` (via `?code=` →
+  `x-access-code` header) bypass the quota entirely (rate limiting still
+  applies). Extension callers are identified by a server-signed device JWT
+  (`Authorization: Bearer <token>`, minted by `POST /api/device-token`)
+  rather than a client-generated id, so clearing extension storage alone
+  doesn't reset the trial.
 - **Rate limiting** (`src/lib/rate-limit.ts`) — abuse protection. Per-IP fixed
   window (30 requests / 60s) on the API routes.
 
@@ -190,6 +200,8 @@ Open [http://localhost:3000](http://localhost:3000). The workspace lives at
 | `UPSTASH_REDIS_REST_TOKEN`  | Prod     | Upstash Redis REST token.                                              |
 | `NEXT_PUBLIC_SITE_URL`      | Optional | Canonical site URL for absolute OG/Twitter share-image links. Falls back to the Vercel production URL, then `localhost`. |
 | `BETA_ACCESS_CODES`         | Optional | Comma-separated codes granting unlimited tailors (via `?code=`). |
+| `DEVICE_TOKEN_SECRET`       | Prod     | Secret for signing Chrome-extension device tokens (HS256). Generate with `openssl rand -base64 32`. |
+| `ALLOWED_EXTENSION_IDS`     | Optional | Comma-separated Chrome extension IDs permitted to call the API (CORS). Empty means no extension origin is accepted. |
 
 Keep the secret values server-side only — never expose them with a
 `NEXT_PUBLIC_` prefix (the two `NEXT_PUBLIC_` vars above are intentionally
@@ -234,3 +246,5 @@ tailor pipeline is stateless: resume files and job descriptions are **not** writ
 to any database or persistent store. The **only** data that is ever persisted is a
 tailored version you explicitly save while signed in (stored per-user in Redis and
 deletable from *My resumes*). Anonymous use stores nothing.
+
+The full policy lives at [`/privacy`](https://careerpath-hazel.vercel.app/privacy).

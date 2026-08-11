@@ -425,13 +425,18 @@ export type {
 import type {
   ReqStatus,
   ReqKind,
-  RequirementRow,
-  GapItem,
   GapAnalysis,
-  ChangeLogEntry,
   TailorResult,
 } from "@shared/contract";
 ```
+
+Note the asymmetry: all seven types are **re-exported**, but only the four
+referenced directly inside `analysis.ts` are **imported**. `RequirementRow`,
+`GapItem`, and `ChangeLogEntry` appear in this file only as nested fields of
+`GapAnalysis` / `TailorResult`, whose definitions now live in
+`shared/contract.ts` — importing them locally would produce
+`no-unused-vars` warnings for no benefit. `resume.ts` and `jd.ts` follow the
+same rule.
 
 Leave the existing `import { normalizeResume, type ParsedResume } from "./resume";` line and every normalizer and prompt builder untouched.
 
@@ -599,8 +604,6 @@ import { getKV } from "./kv";
  * break a user-facing request, so every failure here is swallowed.
  */
 
-const STATS_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
-
 export interface LLMCallStats {
   task: string;
   model: string;
@@ -612,17 +615,6 @@ export interface LLMCallStats {
 }
 
 const statsKey = (task: string, model: string) => `stats:${task}:${model}`;
-
-/**
- * Read-modify-write, so concurrent calls can lose an increment. That is
- * deliberate: these are trend aggregates for model comparison, not billing.
- * The per-call console.log line is the exact record; this is the cheap rollup.
- */
-async function bump(key: string, field: string, by: number): Promise<void> {
-  const kv = getKV();
-  const current = Number((await kv.hgetall(key))[field] ?? 0);
-  await kv.hset(key, field, String(current + by));
-}
 
 export async function recordLLMCall(stats: LLMCallStats): Promise<void> {
   console.log(
@@ -638,15 +630,35 @@ export async function recordLLMCall(stats: LLMCallStats): Promise<void> {
     }),
   );
 
+  // Read every field once, then write them concurrently. This sits in the hot
+  // path of every LLM call, so it must cost two round-trip layers, not ten:
+  // KVStore has no atomic hash-increment, and awaiting five sequential
+  // read-modify-write pairs would add real latency to every request.
+  //
+  // Still read-modify-write, so concurrent calls can lose an increment. That
+  // is deliberate: these are trend aggregates for model comparison, not
+  // billing. The per-call console.log above is the exact record.
+  //
+  // No TTL: the key space is bounded by the number of (task, model) pairs —
+  // a dozen keys, not one per user — so these never need to expire.
   try {
+    const kv = getKV();
     const key = statsKey(stats.task, stats.model);
-    await bump(key, "calls", 1);
-    await bump(key, "totalMs", stats.durationMs);
-    await bump(key, "promptTokens", stats.promptTokens);
-    await bump(key, "completionTokens", stats.completionTokens);
-    await bump(key, "failures", stats.ok ? 0 : 1);
-    // Touch a companion counter purely to attach a TTL to the aggregate.
-    await getKV().incr(`${key}:ttl`, STATS_TTL_SECONDS);
+    const current = await kv.hgetall(key);
+    const next = (field: string, by: number) =>
+      String(Number(current[field] ?? 0) + by);
+
+    await Promise.all([
+      kv.hset(key, "calls", next("calls", 1)),
+      kv.hset(key, "totalMs", next("totalMs", stats.durationMs)),
+      kv.hset(key, "promptTokens", next("promptTokens", stats.promptTokens)),
+      kv.hset(
+        key,
+        "completionTokens",
+        next("completionTokens", stats.completionTokens),
+      ),
+      kv.hset(key, "failures", next("failures", stats.ok ? 0 : 1)),
+    ]);
   } catch {
     // Never let instrumentation break a user request.
   }
@@ -760,6 +772,8 @@ The extension ships as public, unpackable code, so a client-generated id is not 
 - Create: `src/lib/auth.ts`
 - Create: `src/lib/__tests__/auth.test.ts`
 - Create: `src/app/api/device-token/route.ts`
+- Modify: `src/lib/rate-limit.ts` (add a scoped bucket for identity minting)
+- Modify: `src/lib/identity.ts` (export the anon-id cap so it has one definition)
 - Modify: `.env.example`
 
 **Interfaces:**
@@ -792,7 +806,8 @@ npm install jose@^6
 Create `src/lib/__tests__/auth.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { decodeJwt } from "jose";
 import {
   issueDeviceToken,
   verifyDeviceToken,
@@ -803,6 +818,12 @@ import {
 function req(headers: Record<string, string>): Request {
   return new Request("https://example.com/api/tailor", { headers });
 }
+
+// Vitest reuses worker processes across files, so an env var set here would
+// otherwise leak into whichever file runs next in the same worker.
+afterEach(() => {
+  delete process.env.DEVICE_TOKEN_SECRET;
+});
 
 describe("device tokens", () => {
   beforeEach(() => {
@@ -836,6 +857,24 @@ describe("device tokens", () => {
   it("rejects garbage", async () => {
     expect(await verifyDeviceToken("not-a-jwt")).toBeNull();
     expect(await verifyDeviceToken("")).toBeNull();
+  });
+
+  // The plan pins this TTL as an exact value, so assert it rather than
+  // trusting the constant. Without this, changing "24h" to "240h" keeps the
+  // suite green.
+  it("issues a token that expires in exactly 24 hours", async () => {
+    const { token } = await issueDeviceToken();
+    const { iat, exp } = decodeJwt(token);
+    expect(exp! - iat!).toBe(24 * 60 * 60);
+  });
+
+  // The most security-relevant invariant in this module: an absent secret
+  // must fail loudly, never fall back to a guessable default. Every other
+  // test sets the secret in beforeEach, so nothing else would catch a
+  // `?? "dev-secret"` creeping into secret().
+  it("refuses to sign without a secret", async () => {
+    delete process.env.DEVICE_TOKEN_SECRET;
+    await expect(issueDeviceToken()).rejects.toThrow(/DEVICE_TOKEN_SECRET/);
   });
 });
 
@@ -872,9 +911,30 @@ describe("resolveCaller", () => {
     expect(r).toEqual({ ok: false, reason: "invalid_token" });
   });
 
-  it("rejects an expired-looking token even without an anon header", async () => {
+  it("rejects a structurally invalid token even without an anon header", async () => {
     const r = await resolveCaller(req({ authorization: "Bearer a.b.c" }), null);
     expect(r).toEqual({ ok: false, reason: "invalid_token" });
+  });
+
+  // A header that is present but unusable is the extension misbehaving, not a
+  // web visitor. It must get the 401 signal, not anon quota.
+  it("rejects a non-Bearer scheme rather than degrading to anon", async () => {
+    const r = await resolveCaller(
+      req({ authorization: "Basic abc", "x-anon-id": "legacy-web-id" }),
+      null,
+    );
+    expect(r).toEqual({ ok: false, reason: "invalid_token" });
+  });
+
+  it("rejects a Bearer scheme with an empty token", async () => {
+    const r = await resolveCaller(req({ authorization: "Bearer" }), null);
+    expect(r).toEqual({ ok: false, reason: "invalid_token" });
+  });
+
+  it("accepts a lowercase bearer scheme without corrupting the token", async () => {
+    const { token, deviceId } = await issueDeviceToken();
+    const r = await resolveCaller(req({ authorization: `bearer ${token}` }), null);
+    expect(r).toEqual({ ok: true, caller: { kind: "device", deviceId } });
   });
 
   it("still prefers a signed-in user even when the bearer token is invalid", async () => {
@@ -919,6 +979,10 @@ Create `src/lib/auth.ts`:
 
 ```ts
 import { SignJWT, jwtVerify } from "jose";
+// The anon header name and its length cap have exactly one definition, in
+// identity.ts. Two copies of the rule that derives a live user's quota key
+// would silently split their quota bucket the day the copies drift.
+import { ANON_HEADER, MAX_ANON_ID_CHARS } from "./identity";
 
 /**
  * Caller identity for quota purposes.
@@ -944,7 +1008,6 @@ export type CallerResult =
   | { ok: false; reason: "invalid_token" };
 
 const DEVICE_TOKEN_TTL = "24h";
-const MAX_ANON_ID_CHARS = 100;
 
 function secret(): Uint8Array {
   const value = process.env.DEVICE_TOKEN_SECRET;
@@ -974,7 +1037,12 @@ export async function issueDeviceToken(): Promise<{
 export async function verifyDeviceToken(token: string): Promise<string | null> {
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, secret());
+    // Pin the algorithm. A Uint8Array key already restricts jose to the HS
+    // family, but stating it makes the intent explicit rather than an
+    // emergent property of the key type.
+    const { payload } = await jwtVerify(token, secret(), {
+      algorithms: ["HS256"],
+    });
     const did = payload.did;
     return typeof did === "string" && did.length > 0 ? did : null;
   } catch {
@@ -982,11 +1050,22 @@ export async function verifyDeviceToken(token: string): Promise<string | null> {
   }
 }
 
-function bearer(request: Request): string {
-  const header = request.headers.get("authorization") ?? "";
-  return header.toLowerCase().startsWith("bearer ")
-    ? header.slice(7).trim()
-    : "";
+/**
+ * Three distinct outcomes, and the difference matters:
+ *   null — no Authorization header at all (the web app) → fall through to anon
+ *   ""   — header present but unusable (wrong scheme, empty token) → reject
+ *   else — the token to verify
+ *
+ * Note the case handling: the scheme test lowercases, but the token is sliced
+ * from the original string. Lowercasing the token would corrupt base64url and
+ * turn every valid extension request into an invalid one.
+ */
+function bearer(request: Request): string | null {
+  const header = request.headers.get("authorization");
+  if (header === null) return null;
+  const trimmed = header.trim();
+  if (!trimmed.toLowerCase().startsWith("bearer ")) return "";
+  return trimmed.slice(7).trim();
 }
 
 /**
@@ -1007,13 +1086,17 @@ export async function resolveCaller(
   }
 
   const token = bearer(request);
-  if (token) {
+  if (token !== null) {
+    // An Authorization header was sent. It is either good or it is a 401 —
+    // never a silent downgrade to anon, or the extension can't learn its
+    // token died.
+    if (!token) return { ok: false, reason: "invalid_token" };
     const deviceId = await verifyDeviceToken(token);
     if (!deviceId) return { ok: false, reason: "invalid_token" };
     return { ok: true, caller: { kind: "device", deviceId } };
   }
 
-  const anonId = (request.headers.get("x-anon-id") ?? "")
+  const anonId = (request.headers.get(ANON_HEADER) ?? "")
     .trim()
     .slice(0, MAX_ANON_ID_CHARS);
   return { ok: true, caller: { kind: "anon", anonId } };
@@ -1037,6 +1120,71 @@ export function callerKey(caller: Caller): string {
 Run: `npx vitest run src/lib/__tests__/auth.test.ts`
 Expected: PASS — 14 tests.
 
+- [ ] **Step 5b: Give identity minting its own rate-limit bucket**
+
+`rateLimitResponse` currently hardcodes one shared bucket (`ratelimit:<ip>`, 30
+requests / 60s). Identity minting needs its own, so refresh traffic never
+competes with tailoring requests. In `src/lib/rate-limit.ts`, add above
+`checkRateLimit`:
+
+```ts
+export interface RateLimitScope {
+  /** Key namespace. Omitted = the shared request bucket. */
+  scope?: string;
+  max?: number;
+  windowSeconds?: number;
+}
+
+/**
+ * Identity minting: a device token lasts 24h, so a healthy client mints two
+ * or three a day. Kept deliberately loose enough for many users behind one
+ * NAT, and still ~100x tighter than the shared bucket.
+ */
+export const DEVICE_TOKEN_RATE_LIMIT: RateLimitScope = {
+  scope: "devicetoken",
+  max: 20,
+  windowSeconds: 60 * 60,
+};
+```
+
+Then thread the option through both functions, defaulting to today's behavior:
+
+```ts
+export async function checkRateLimit(
+  ip: string,
+  opts: RateLimitScope = {},
+): Promise<RateLimitResult> {
+  const max = opts.max ?? MAX_REQUESTS;
+  const windowSeconds = opts.windowSeconds ?? WINDOW_SECONDS;
+  if (!ip || ip === "unknown") {
+    return { ok: true, remaining: max, retryAfter: 0 };
+  }
+  const key = opts.scope ? `ratelimit:${opts.scope}:${ip}` : `ratelimit:${ip}`;
+  const count = await getKV().incr(key, windowSeconds);
+  const remaining = Math.max(0, max - count);
+  return {
+    ok: count <= max,
+    remaining,
+    retryAfter: count > max ? windowSeconds : 0,
+  };
+}
+
+export async function rateLimitResponse(
+  ip: string,
+  opts: RateLimitScope = {},
+): Promise<Response | null> {
+  const result = await checkRateLimit(ip, opts);
+  if (result.ok) return null;
+  return NextResponse.json(
+    { error: "Too many requests. Please slow down and try again shortly." },
+    { status: 429, headers: { "Retry-After": String(result.retryAfter) } },
+  );
+}
+```
+
+Every existing call site passes no options and keeps its current behavior
+exactly — verify that by leaving them untouched.
+
 - [ ] **Step 6: Add the token-issuing route**
 
 Create `src/app/api/device-token/route.ts`:
@@ -1045,18 +1193,27 @@ Create `src/app/api/device-token/route.ts`:
 import { NextResponse } from "next/server";
 import { issueDeviceToken } from "@/lib/auth";
 import { getIdentity } from "@/lib/identity";
-import { rateLimitResponse } from "@/lib/rate-limit";
+import { rateLimitResponse, DEVICE_TOKEN_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 /**
  * Mint a device identity for the extension. Called once on install and again
- * whenever the stored token nears expiry. Rate-limited per IP so it cannot be
- * used to farm fresh trial quotas.
+ * whenever the stored token nears expiry.
+ *
+ * Minting draws on its OWN tight per-IP bucket rather than the shared request
+ * budget, for two reasons. It keeps token refresh from competing with real
+ * work — a user mid-session must never be refused a refresh because they were
+ * busy tailoring — and it stops one IP from minting identities at the shared
+ * bucket's rate. Note what this does and does not buy: a fresh device id
+ * carries a fresh trial allowance, but `quota:ip:<ip>:<day>` still caps what
+ * any one IP can actually spend, so minting alone never yields unlimited runs.
+ * The device token's real job is to make quota reset cost more than editing a
+ * string in local storage.
  */
 export async function POST(request: Request) {
   const { ip } = getIdentity(request);
-  const limited = await rateLimitResponse(ip);
+  const limited = await rateLimitResponse(ip, DEVICE_TOKEN_RATE_LIMIT);
   if (limited) return limited;
 
   try {

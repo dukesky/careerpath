@@ -61,6 +61,7 @@ export async function POST(request: Request) {
   const quality = body.quality === "fast" ? "fast" : "quality";
   const runId = readRunId(body);
 
+  let analysis;
   try {
     const parsed = await callLLM({
       task: "analyze",
@@ -69,14 +70,22 @@ export async function POST(request: Request) {
       messages: buildAnalyzeMessages(resume, jd, extraInfo),
       maxTokens: 4000,
     });
-    const analysis = normalizeGapAnalysis(parsed);
-    if (beta) {
-      return NextResponse.json({ analysis, remaining: null });
-    }
-    const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
-    return NextResponse.json({ analysis, remaining: after.remaining });
+    analysis = normalizeGapAnalysis(parsed);
   } catch (err) {
     const detail = err instanceof Error ? err.message : "Unknown error";
     return bad(`Analysis failed: ${detail}`, 502);
+  }
+
+  if (beta) {
+    return NextResponse.json({ analysis, remaining: null });
+  }
+
+  // A quota-store outage must not discard a completed analysis. Same posture
+  // as /api/quota and llm-stats: degrade, don't block.
+  try {
+    const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
+    return NextResponse.json({ analysis, remaining: after.remaining });
+  } catch {
+    return NextResponse.json({ analysis, remaining: null });
   }
 }

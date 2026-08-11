@@ -94,7 +94,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ tailored, remaining: null });
   }
 
-  // Only consume quota on a successful run.
-  const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
-  return NextResponse.json({ tailored, remaining: after.remaining });
+  // A quota-store outage must not discard a completed tailor. Same posture as
+  // /api/quota and llm-stats: degrade, don't block.
+  try {
+    const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
+    return NextResponse.json({ tailored, remaining: after.remaining });
+  } catch {
+    return NextResponse.json({ tailored, remaining: null });
+  }
 }

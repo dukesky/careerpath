@@ -49,9 +49,10 @@ export default function PrivacyPage() {
       <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-relaxed text-slate-600">
         <li>
           Usage counters — quota and rate-limit counts keyed by your account,
-          your IP address, or, for a signed-out extension, a device ID our
-          server issues and signs into a token kept on your device. We store a
-          running count against that ID; we do not keep a directory of
+          an anonymous ID your browser stores for the web app, your IP
+          address, or, for a signed-out extension, a device ID our server
+          issues and signs into a token kept on your device. We store a
+          running count against each of these; we do not keep a directory of
           devices.
         </li>
         <li>

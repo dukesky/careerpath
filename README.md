@@ -243,8 +243,14 @@ vercel env pull .env.local
 
 career-path is designed to keep your data in your session. The parse → analyze →
 tailor pipeline is stateless: resume files and job descriptions are **not** written
-to any database or persistent store. The **only** data that is ever persisted is a
-tailored version you explicitly save while signed in (stored per-user in Redis and
-deletable from *My resumes*). Anonymous use stores nothing.
+to any database or persistent store, whether or not you're signed in. A tailored
+result is persisted only when a signed-in user explicitly saves it (stored per-user
+in Redis, deletable from *My resumes*).
 
-The full policy lives at [`/privacy`](https://careerpath-hazel.vercel.app/privacy).
+The server does keep a small amount of **operational** data for every caller, signed
+in or not, to enforce the free allowances and watch for abuse: usage counters, rate-limit
+counters, and aggregate model timing/token counts with no user content attached. None
+of it is your resume, your job description, or a tailored result you didn't explicitly
+save.
+
+The complete list lives at [`/privacy`](https://careerpath-hazel.vercel.app/privacy).

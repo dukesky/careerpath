@@ -117,6 +117,14 @@ export function getKV(): KVStore {
   return store;
 }
 
+/**
+ * Test-only: drop the cached store so the next getKV() builds a fresh one.
+ * Never call this from application code.
+ */
+export function resetKV(): void {
+  store = null;
+}
+
 export function isRedisConfigured(): boolean {
   return resolveRedisCreds() !== null;
 }

@@ -266,9 +266,22 @@ the anonymous allowance is deliberately small.
 | Key | Applies to | Allowance | TTL |
 | --- | --- | --- | --- |
 | `quota:user:<userId>:<YYYY-MM-DD>` | any signed-in user, web or extension | 5 per day | 48h |
-| `quota:device:<deviceId>` | extension, signed out | 3 total, never resets | 30 days |
-| `quota:anon:<anonId>` | **web app, signed out — unchanged from today** | 5 total | 30 days |
+| `quota:device:<deviceId>` | extension, signed out | 3 per 30-day window | 30 days |
+| `quota:anon:<anonId>` | **web app, signed out — unchanged from today** | 5 per 30-day window | 30 days |
+| `quota:anon:ip:<ip>` | signed out with **no** `x-anon-id` header | 5 per 30-day window | 30 days |
 | `quota:ip:<ip>:<YYYY-MM-DD>` | everyone | 20 per day (abuse ceiling) | 48h |
+
+The 30-day tiers reset when their key expires — a device that returns after a month
+gets a fresh trial. Accepted: the tier already cannot survive a reinstall, and
+permanent keys would grow without bound.
+
+The `quota:anon:ip:<ip>` row exists because `resolveCaller` yields `anonId: ""`
+whenever the header is absent (a bot, a direct API call, an extension that has not
+minted a token yet). Keying those on `quota:anon:` would put every one of them in a
+**single global bucket**: five stray requests exhaust it, and every header-less
+caller worldwide then reads 0 remaining for 30 days. Falling back to the IP keeps the
+allowance identical to a normal anonymous visitor's, so omitting the header is never
+*more* generous than sending one.
 
 The existing `quota:anon:<anonId>` row is kept verbatim so **current web behavior does
 not regress**. Two things do change for the web app, both improvements: signing in now

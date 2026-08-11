@@ -15,7 +15,7 @@
 - **No prompt or model-behavior changes.** `buildParseMessages`, `buildJdParseMessages`, `buildAnalyzeMessages`, `buildTailorMessages` and every normalizer keep their current output. The only `llm.ts` model change permitted is the new `parse_jd` task in Task 8.
 - **The existing web app must not regress.** Anonymous web users keep `quota:anon:<anonId>`, 5 total, 30-day TTL. The `x-anon-id` header path stays working.
 - **Nothing new is persisted server-side.** The only server-persisted data remains: quota counters, rate-limit counters, saved versions (`saved:<userId>`), waitlist emails — plus the new `stats:*` aggregates. Resumes and JD text are never written to storage.
-- **Quota allowances (exact):** signed-in `5` per day; extension device trial `3` total, never resets; legacy web anonymous `5` total; per-IP ceiling `20` per day.
+- **Quota allowances (exact):** signed-in `5` per day; extension device trial `3` per rolling 30-day window; legacy web anonymous `5` per rolling 30-day window; per-IP ceiling `20` per day. (The two 30-day tiers follow their keys' TTL — a device that returns after a month gets a fresh trial. That is accepted: the tier already cannot survive a reinstall, and permanent keys would grow without bound.)
 - **TTLs (exact):** daily keys `48h` (172800s); device trial and legacy anon `30 days` (2592000s); `runId` marker `10 minutes` (600s); device JWT `24h`.
 - **Blocking rule:** a caller is blocked when **either** its tier counter **or** the IP counter is exhausted.
 - **Quota is consumed only on success**, exactly once per `runId`.
@@ -1453,7 +1453,7 @@ interface Tier {
   ttl: number;
 }
 
-function tierFor(caller: Caller): Tier {
+function tierFor(caller: Caller, ip: string): Tier {
   switch (caller.kind) {
     case "user":
       return {
@@ -1468,8 +1468,17 @@ function tierFor(caller: Caller): Tier {
         ttl: LONG_TTL_SECONDS,
       };
     case "anon":
+      // resolveCaller yields anonId: "" whenever the header is absent — a bot,
+      // a direct API call, an extension that hasn't minted a token yet. Keying
+      // those on `quota:anon:` would put every one of them in a SINGLE global
+      // bucket, so five stray requests exhaust it and every header-less caller
+      // worldwide reads 0 remaining for the next 30 days. Fall back to the IP,
+      // at the same allowance a normal anonymous visitor gets — so omitting
+      // the header is never more generous than sending one.
       return {
-        key: `quota:anon:${caller.anonId}`,
+        key: caller.anonId
+          ? `quota:anon:${caller.anonId}`
+          : `quota:anon:ip:${ip}`,
         limit: LEGACY_ANON_LIMIT,
         ttl: LONG_TTL_SECONDS,
       };
@@ -1493,7 +1502,7 @@ function toState(limit: number, used: number, ipUsed: number, ipCounts: boolean)
 
 export async function getQuota(caller: Caller, ip: string): Promise<QuotaState> {
   const kv = getKV();
-  const tier = tierFor(caller);
+  const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([
     kv.getCount(tier.key),
@@ -1518,7 +1527,7 @@ export async function consumeRun(
   const seen = await kv.incr(marker, RUN_TTL_SECONDS);
   if (seen > 1) return getQuota(caller, ip);
 
-  const tier = tierFor(caller);
+  const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([
     kv.incr(tier.key, tier.ttl),
@@ -1795,20 +1804,169 @@ The beta early-return above it stays exactly as it is.
 - [ ] **Step 7: Verify the build is green again and the suite passes**
 
 Run: `npm run build`
-Expected: succeeds — `/api/quota` still uses the old signature and is fixed in Task 8, so if it errors here, confirm the error is only in `src/app/api/quota/route.ts` and continue to Task 8 before committing. If any other file errors, fix it now.
+Expected: still RED, and now confined to `src/app/api/quota/route.ts` alone — it is the last caller of the old `getQuota(identity)` signature, and Task 8 fixes it. `src/app/api/tailor/route.ts` must have dropped off the failure list. If any other file errors, that is a real problem: fix it before committing.
 
 Run: `npm test`
 Expected: all PASS.
 
-- [ ] **Step 8: Manually verify the run-charged-once behavior**
+- [ ] **Step 8: Understand what is and is not true yet**
 
-Start the dev server (`npm run dev`) and, with a resume and JD already parsed in `/app`, confirm in the terminal logs that a single generate action produces two `llm_call` log lines (analyze + tailor) and decrements the remaining count by exactly **one**.
+At the end of this task a single generate action still costs **two** units, not
+one. The web client sends the same payload to both routes and that payload
+carries no `runId` until Task 8, so each route mints its own UUID and the
+idempotency marker never matches. A related consequence: with `remaining === 1`
+both routes pass their `getQuota` check concurrently and both consume, pushing
+`used` past `limit`.
 
-- [ ] **Step 9: Lint and commit**
+This is transitional, and Task 8 closes it by sending one `runId` to both
+fetches. Do not try to fix it here by removing the UUID fallback — passing an
+empty `runId` would make every request from a caller share one marker, so only
+the first would ever charge, which is a total quota escape.
+
+**Branch-level requirement:** the final review must confirm the client passes
+the *same* `runId` to **both** the analyze and tailor fetches. A `runId` wired
+to only one of them looks correct in isolation and silently double-charges.
+
+The live smoke test this step originally called for needs an
+`OPENROUTER_API_KEY`, which is not present in local `.env.local`. Step 9's
+route-level tests exist because of that gap — they are the verification, not a
+supplement to it.
+
+- [ ] **Step 9: Route-level charge-once tests**
+
+`readRunId` is unit-tested, but the charging decision lives in the routes and
+has no coverage at all — and no live smoke test is possible without an API key.
+The composed two-route behavior described in Step 8 is exactly the class of
+defect these catch and per-route reading does not.
+
+Create `src/app/api/__tests__/charging.test.ts`:
+
+```ts
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+// Must be hoisted above the route imports.
+vi.mock("@/lib/llm", () => ({ callLLM: vi.fn() }));
+vi.mock("@clerk/nextjs/server", () => ({
+  auth: vi.fn(async () => ({ userId: null })),
+}));
+
+import { callLLM } from "@/lib/llm";
+import { resetKV } from "@/lib/kv";
+import { getQuota } from "@/lib/quota";
+import type { Caller } from "@/lib/auth";
+import { POST as analyze } from "@/app/api/analyze/route";
+import { POST as tailor } from "@/app/api/tailor/route";
+
+const IP = "5.5.5.5";
+const ANON = "charging-test-anon";
+const caller: Caller = { kind: "anon", anonId: ANON };
+
+const used = async () => (await getQuota(caller, IP)).used;
+
+function post(
+  url: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) {
+  return new Request(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-anon-id": ANON,
+      "x-forwarded-for": IP,
+      ...headers,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+const inputs = (runId?: string) => ({
+  structuredResume: { contact: { name: "A" } },
+  structuredJD: { company: "B" },
+  ...(runId ? { runId } : {}),
+});
+
+describe("charging", () => {
+  beforeEach(() => {
+    resetKV();
+    vi.mocked(callLLM).mockReset();
+    vi.mocked(callLLM).mockResolvedValue({} as never);
+    delete process.env.BETA_ACCESS_CODES;
+  });
+
+  it("charges one unit for a successful analyze", async () => {
+    const res = await analyze(post("https://x/api/analyze", inputs("r1")));
+    expect(res.status).toBe(200);
+    expect(await used()).toBe(1);
+  });
+
+  it("charges nothing when the LLM call fails", async () => {
+    vi.mocked(callLLM).mockRejectedValue(new Error("upstream down"));
+    const res = await analyze(post("https://x/api/analyze", inputs("r2")));
+    expect(res.status).toBe(502);
+    expect(await used()).toBe(0);
+  });
+
+  it("charges nothing for a malformed body", async () => {
+    const res = await analyze(post("https://x/api/analyze", { runId: "r3" }));
+    expect(res.status).toBe(400);
+    expect(await used()).toBe(0);
+  });
+
+  // THE invariant this task exists for: analyze + tailor sharing one runId is
+  // one run. Task 8 makes the client send a shared id; this locks it in.
+  it("charges one unit total for analyze + tailor sharing a runId", async () => {
+    await Promise.all([
+      analyze(post("https://x/api/analyze", inputs("shared"))),
+      tailor(post("https://x/api/tailor", inputs("shared"))),
+    ]);
+    expect(await used()).toBe(1);
+  });
+
+  it("treats two requests with no shared runId as two runs", async () => {
+    await analyze(post("https://x/api/analyze", inputs()));
+    await tailor(post("https://x/api/tailor", inputs()));
+    expect(await used()).toBe(2);
+  });
+
+  it("returns 402 and charges nothing once exhausted", async () => {
+    for (let i = 0; i < 5; i++) {
+      await analyze(post("https://x/api/analyze", inputs(`fill-${i}`)));
+    }
+    expect(await used()).toBe(5);
+    const res = await analyze(post("https://x/api/analyze", inputs("over")));
+    expect(res.status).toBe(402);
+    expect(await used()).toBe(5);
+  });
+
+  it("charges nothing for a beta caller", async () => {
+    process.env.BETA_ACCESS_CODES = "letmein";
+    const res = await analyze(
+      post("https://x/api/analyze", inputs("beta"), { "x-access-code": "letmein" }),
+    );
+    expect(res.status).toBe(200);
+    expect(await used()).toBe(0);
+  });
+
+  it("401s on a present-but-invalid bearer token, before any LLM call", async () => {
+    const res = await analyze(
+      post("https://x/api/analyze", inputs("bad"), { authorization: "Bearer nope" }),
+    );
+    expect(res.status).toBe(401);
+    expect(vi.mocked(callLLM)).not.toHaveBeenCalled();
+    expect(await used()).toBe(0);
+  });
+});
+```
+
+Run: `npx vitest run src/app/api/__tests__/charging.test.ts`
+Expected: 8 passing.
+
+- [ ] **Step 10: Lint and commit**
 
 ```bash
 npm run lint
-git add src/lib/api-auth.ts src/lib/__tests__/api-auth.test.ts src/app/api/analyze/route.ts src/app/api/tailor/route.ts
+git add src/lib/api-auth.ts src/lib/__tests__/api-auth.test.ts src/app/api/__tests__/charging.test.ts src/app/api/analyze/route.ts src/app/api/tailor/route.ts
 git commit -m "feat: quota-gate analyze and charge one unit per run"
 ```
 

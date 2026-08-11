@@ -79,6 +79,26 @@ describe("quota tiers", () => {
       false,
     );
   });
+
+  // Regression guard: a header-less caller must not share one global bucket
+  // with every other header-less caller.
+  it("keys a header-less anonymous caller per IP, not globally", async () => {
+    const headerless: Caller = { kind: "anon", anonId: "" };
+    for (let i = 0; i < LEGACY_ANON_LIMIT; i++) {
+      await consumeRun(headerless, "9.9.9.9", nextRun());
+    }
+    expect((await getQuota(headerless, "9.9.9.9")).exhausted).toBe(true);
+    // A header-less caller on a different IP is unaffected.
+    expect((await getQuota(headerless, "8.8.8.8")).exhausted).toBe(false);
+  });
+
+  it("keeps a header-less caller separate from a real anon id on the same IP", async () => {
+    for (let i = 0; i < LEGACY_ANON_LIMIT; i++) {
+      await consumeRun({ kind: "anon", anonId: "" }, "7.7.7.7", nextRun());
+    }
+    expect((await getQuota({ kind: "anon", anonId: "" }, "7.7.7.7")).exhausted).toBe(true);
+    expect((await getQuota({ kind: "anon", anonId: "real-id" }, "7.7.7.7")).exhausted).toBe(false);
+  });
 });
 
 describe("run idempotency", () => {
@@ -94,6 +114,14 @@ describe("run idempotency", () => {
     expect((await getQuota(user, IP)).used).toBe(1);
   });
 
+  // This exercises the in-memory store only, whose `incr` body is fully
+  // synchronous — under Promise.all, the first call's map write completes
+  // before the second call's synchronous prefix runs, so the race is not
+  // truly concurrent here. The test still has value: if `incr` were ever
+  // rewritten with a read/write split across an `await`, both callers would
+  // see 1 and both would charge, and this assertion would catch it. The real
+  // multi-instance race is carried by Redis's native atomic INCR in
+  // production and is not exercised by this test.
   it("charges one unit when analyze and tailor finish in parallel", async () => {
     await Promise.all([
       consumeRun(user, IP, "parallel-run"),

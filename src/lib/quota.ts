@@ -38,7 +38,7 @@ interface Tier {
   ttl: number;
 }
 
-function tierFor(caller: Caller): Tier {
+function tierFor(caller: Caller, ip: string): Tier {
   switch (caller.kind) {
     case "user":
       return {
@@ -53,8 +53,17 @@ function tierFor(caller: Caller): Tier {
         ttl: LONG_TTL_SECONDS,
       };
     case "anon":
+      // resolveCaller yields anonId: "" whenever the header is absent — a bot,
+      // a direct API call, an extension that hasn't minted a token yet. Keying
+      // those on `quota:anon:` would put every one of them in a SINGLE global
+      // bucket, so five stray requests exhaust it and every header-less caller
+      // worldwide reads 0 remaining for the next 30 days. Fall back to the IP,
+      // at the same allowance a normal anonymous visitor gets — so omitting
+      // the header is never more generous than sending one.
       return {
-        key: `quota:anon:${caller.anonId}`,
+        key: caller.anonId
+          ? `quota:anon:${caller.anonId}`
+          : `quota:anon:ip:${ip}`,
         limit: LEGACY_ANON_LIMIT,
         ttl: LONG_TTL_SECONDS,
       };
@@ -78,7 +87,7 @@ function toState(limit: number, used: number, ipUsed: number, ipCounts: boolean)
 
 export async function getQuota(caller: Caller, ip: string): Promise<QuotaState> {
   const kv = getKV();
-  const tier = tierFor(caller);
+  const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([
     kv.getCount(tier.key),
@@ -103,7 +112,7 @@ export async function consumeRun(
   const seen = await kv.incr(marker, RUN_TTL_SECONDS);
   if (seen > 1) return getQuota(caller, ip);
 
-  const tier = tierFor(caller);
+  const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([
     kv.incr(tier.key, tier.ttl),

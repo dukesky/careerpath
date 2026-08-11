@@ -3,7 +3,7 @@ import { normalizeResume, type ParsedResume } from "./resume";
 import type { ParsedJD } from "./jd";
 
 // ---------------------------------------------------------------------------
-// Gap analysis
+// Gap analysis & tailor result
 // ---------------------------------------------------------------------------
 
 export type {
@@ -19,10 +19,7 @@ export type {
 import type {
   ReqStatus,
   ReqKind,
-  RequirementRow,
-  GapItem,
   GapAnalysis,
-  ChangeLogEntry,
   TailorResult,
 } from "@shared/contract";
 

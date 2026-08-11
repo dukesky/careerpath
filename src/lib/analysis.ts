@@ -6,47 +6,25 @@ import type { ParsedJD } from "./jd";
 // Gap analysis
 // ---------------------------------------------------------------------------
 
-export type ReqStatus = "met" | "partially_met" | "missing";
-export type ReqKind = "must_have" | "nice_to_have";
+export type {
+  ReqStatus,
+  ReqKind,
+  RequirementRow,
+  GapItem,
+  GapAnalysis,
+  ChangeLogEntry,
+  TailorResult,
+} from "@shared/contract";
 
-export interface RequirementRow {
-  requirement: string;
-  kind: ReqKind;
-  status: ReqStatus;
-  evidence: string;
-  suggestion: string;
-}
-
-export interface GapItem {
-  gap: string;
-  mitigation: string;
-}
-
-export interface GapAnalysis {
-  overall_match_score: number; // 0-100
-  rationale: string;
-  requirements_matrix: RequirementRow[];
-  strengths: string[];
-  gaps: GapItem[];
-}
-
-// ---------------------------------------------------------------------------
-// Tailor result
-// ---------------------------------------------------------------------------
-
-export interface ChangeLogEntry {
-  section: string;
-  original: string;
-  revised: string;
-  reason: string;
-}
-
-export interface TailorResult {
-  resume: ParsedResume;
-  change_log: ChangeLogEntry[];
-  /** The tailor model's estimate of how well the REWRITTEN resume now matches. */
-  projected_match_score: number;
-}
+import type {
+  ReqStatus,
+  ReqKind,
+  RequirementRow,
+  GapItem,
+  GapAnalysis,
+  ChangeLogEntry,
+  TailorResult,
+} from "@shared/contract";
 
 // ---------------------------------------------------------------------------
 // Normalizers

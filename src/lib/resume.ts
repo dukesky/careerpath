@@ -4,41 +4,15 @@ import type { ChatMessage } from "./llm";
 // Structured resume shape (shared by the API route and the frontend)
 // ---------------------------------------------------------------------------
 
-export interface Contact {
-  name: string;
-  email: string;
-  phone: string;
-  location: string;
-  links: string[];
-}
+export type {
+  Contact,
+  ExperienceEntry,
+  ProjectEntry,
+  EducationEntry,
+  ParsedResume,
+} from "@shared/contract";
 
-export interface ExperienceEntry {
-  company: string;
-  title: string;
-  dates: string;
-  bullets: string[];
-}
-
-export interface ProjectEntry {
-  name: string;
-  description: string;
-  bullets: string[];
-}
-
-export interface EducationEntry {
-  school: string;
-  degree: string;
-  dates: string;
-}
-
-export interface ParsedResume {
-  contact: Contact;
-  summary: string;
-  experience: ExperienceEntry[];
-  projects: ProjectEntry[];
-  skills: string[];
-  education: EducationEntry[];
-}
+import type { ParsedResume } from "@shared/contract";
 
 export const EMPTY_RESUME: ParsedResume = {
   contact: { name: "", email: "", phone: "", location: "", links: [] },

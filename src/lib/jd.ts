@@ -4,16 +4,9 @@ import type { ChatMessage } from "./llm";
 // Structured job-description shape (shared by API routes and the frontend)
 // ---------------------------------------------------------------------------
 
-export interface ParsedJD {
-  company: string;
-  role_title: string;
-  must_have_requirements: string[];
-  nice_to_have: string[];
-  key_responsibilities: string[];
-  keywords: string[];
-  seniority_level: string;
-  company_context_hints: string;
-}
+export type { ParsedJD } from "@shared/contract";
+
+import type { ParsedJD } from "@shared/contract";
 
 export const EMPTY_JD: ParsedJD = {
   company: "",

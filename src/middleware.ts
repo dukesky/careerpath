@@ -8,6 +8,13 @@ import { corsHeaders, isAllowedOrigin, preflightResponse } from "@/lib/cors";
 // Also answers CORS preflights from allowlisted Chrome-extension origins and
 // stamps the CORS headers onto API responses, so route files stay untouched.
 export default clerkMiddleware(async (_auth, request) => {
+  // CORS is only relevant to the extension's API calls. Applying it to HTML
+  // page requests too would let a CDN cache a response carrying
+  // Access-Control-Allow-Origin + Vary: Origin for an allowlisted origin and
+  // then serve that same cached response to everyone else.
+  const pathname = new URL(request.url).pathname;
+  if (!pathname.startsWith("/api/")) return;
+
   const origin = request.headers.get("origin");
   if (!isAllowedOrigin(origin)) return;
 

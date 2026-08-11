@@ -7,7 +7,7 @@ import { ResumePreview } from "@/components/ResumePreview";
 import { JobDescriptionPanel } from "@/components/JobDescriptionPanel";
 import { ResultsView } from "@/components/ResultsView";
 import { WaitlistModal } from "@/components/WaitlistModal";
-import { apiHeaders, captureAccessCode, setAccessCode } from "@/lib/anon";
+import { apiHeaders, captureAccessCode, newId, setAccessCode } from "@/lib/anon";
 import {
   SignedIn,
   SignedOut,
@@ -239,8 +239,11 @@ export default function WorkspacePage() {
     setRunPhase("running");
 
     // One id per generate action, shared by both requests below, so the pair
-    // is charged as a single run instead of two.
-    const runId = crypto.randomUUID();
+    // is charged as a single run instead of two. Uses the guarded newId()
+    // rather than a bare crypto.randomUUID(), which is undefined in insecure
+    // contexts (e.g. testing a dev server over http://<LAN-IP>:3000) and would
+    // otherwise throw outside this try block, leaving the UI stuck "running".
+    const runId = newId();
 
     const payload = {
       structuredResume: resume,

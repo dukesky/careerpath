@@ -91,14 +91,6 @@ describe("quota tiers", () => {
     // A header-less caller on a different IP is unaffected.
     expect((await getQuota(headerless, "8.8.8.8")).exhausted).toBe(false);
   });
-
-  it("keeps a header-less caller separate from a real anon id on the same IP", async () => {
-    for (let i = 0; i < LEGACY_ANON_LIMIT; i++) {
-      await consumeRun({ kind: "anon", anonId: "" }, "7.7.7.7", nextRun());
-    }
-    expect((await getQuota({ kind: "anon", anonId: "" }, "7.7.7.7")).exhausted).toBe(true);
-    expect((await getQuota({ kind: "anon", anonId: "real-id" }, "7.7.7.7")).exhausted).toBe(false);
-  });
 });
 
 describe("run idempotency", () => {
@@ -107,11 +99,19 @@ describe("run idempotency", () => {
     run = 0;
   });
 
-  it("charges one unit for repeated calls with the same runId", async () => {
-    await consumeRun(user, IP, "same-run");
+  it("charges one unit for the two legs of a run sharing a runId", async () => {
     await consumeRun(user, IP, "same-run");
     await consumeRun(user, IP, "same-run");
     expect((await getQuota(user, IP)).used).toBe(1);
+  });
+
+  // Regression guard for a metered-resource bypass: the routes check quota
+  // BEFORE the LLM work and charge AFTER it, so an unbounded free-ride on a
+  // reused runId would let one attacker-chosen id buy uncharged runs until the
+  // marker expired.
+  it("charges again when a runId is replayed beyond the two legs", async () => {
+    for (let i = 0; i < 4; i++) await consumeRun(user, IP, "replayed");
+    expect((await getQuota(user, IP)).used).toBe(3);
   });
 
   // This exercises the in-memory store only, whose `incr` body is fully

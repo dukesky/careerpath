@@ -25,6 +25,7 @@ export function corsHeaders(origin: string): Record<string, string> {
     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers":
       "content-type, authorization, x-anon-id, x-access-code",
+    "Access-Control-Expose-Headers": "Retry-After",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };

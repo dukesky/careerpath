@@ -20,6 +20,7 @@ export default function PrivacyPage() {
       <h1 className="mt-6 font-display text-3xl font-bold tracking-tight text-[#0E1220]">
         Privacy
       </h1>
+      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-11</p>
 
       <p className="mt-6 text-sm leading-relaxed text-slate-600">
         career-path is built so your resume stays yours. This page lists exactly

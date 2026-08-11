@@ -29,11 +29,18 @@ export type CallerResult =
 
 const DEVICE_TOKEN_TTL = "24h";
 
+const MIN_SECRET_CHARS = 32;
+
 function secret(): Uint8Array {
   const value = process.env.DEVICE_TOKEN_SECRET;
   if (!value) {
     throw new Error(
       "DEVICE_TOKEN_SECRET is not set. Add it to .env.local (see .env.example).",
+    );
+  }
+  if (value.length < MIN_SECRET_CHARS) {
+    throw new Error(
+      `DEVICE_TOKEN_SECRET must be at least ${MIN_SECRET_CHARS} characters. Generate one with: openssl rand -base64 32`,
     );
   }
   return new TextEncoder().encode(value);

@@ -35,7 +35,18 @@ export async function POST(request: Request) {
 
   // Business quota — block before doing any expensive work.
   if (!beta) {
-    const quota = await getQuota(caller, ip);
+    let quota;
+    try {
+      quota = await getQuota(caller, ip);
+    } catch {
+      // Fail closed: without a readable counter we cannot bound spend, and an
+      // unbounded free window is worse than a brief outage. Contrast the
+      // post-success consumeRun below, which deliberately degrades.
+      return NextResponse.json(
+        { error: "Usage limits are temporarily unavailable. Please try again shortly." },
+        { status: 503 },
+      );
+    }
     if (quota.exhausted) {
       return NextResponse.json(
         { error: "You've used all your free runs.", remaining: 0 },

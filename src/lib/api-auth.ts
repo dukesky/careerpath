@@ -13,6 +13,7 @@ export async function getCaller(request: Request): Promise<CallerResult> {
   try {
     ({ userId } = await auth());
   } catch {
+    console.warn(JSON.stringify({ evt: "clerk_auth_failed" }));
     userId = null;
   }
   return resolveCaller(request, userId);

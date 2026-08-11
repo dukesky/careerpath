@@ -6,7 +6,7 @@ export const ACCESS_HEADER = "x-access-code";
 const STORAGE_KEY = "cp_anon_id";
 const CODE_KEY = "cp_access_code";
 
-function newId(): string {
+export function newId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }

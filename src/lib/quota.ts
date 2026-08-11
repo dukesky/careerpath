@@ -20,12 +20,22 @@ const DAY_TTL_SECONDS = 48 * 60 * 60;
 const LONG_TTL_SECONDS = 30 * 24 * 60 * 60;
 const RUN_TTL_SECONDS = 10 * 60;
 
+/**
+ * `remaining` and `exhausted` are authoritative — always use these to decide
+ * whether a caller may proceed. `used` and `limit` describe the caller's own
+ * tier only, so when the per-IP ceiling is what's actually binding, the state
+ * can legitimately read `{ limit: 5, used: 0, remaining: 0 }`. Consumers must
+ * never derive `limit - used` as a substitute for `remaining`.
+ */
 export interface QuotaState {
   limit: number;
   used: number;
   remaining: number;
   exhausted: boolean;
 }
+
+/** A run has exactly two legs: analyze and tailor. */
+const RUN_LEGS = 2;
 
 /** UTC calendar day, so a "daily" allowance is well-defined server-side. */
 function dayKey(): string {
@@ -110,7 +120,12 @@ export async function consumeRun(
 
   // incr is atomic: exactly one caller sees 1, so exactly one charges.
   const seen = await kv.incr(marker, RUN_TTL_SECONDS);
-  if (seen > 1) return getQuota(caller, ip);
+  // Legs 2..RUN_LEGS ride free on leg 1's charge — that is the whole point of
+  // the marker. Anything past that is a REPLAYED runId: the routes check quota
+  // before doing the work and charge after, so an unbounded free-ride window
+  // would let one id buy unlimited uncharged LLM calls until the marker
+  // expires. Past the pair, charge normally.
+  if (seen > 1 && seen <= RUN_LEGS) return getQuota(caller, ip);
 
   const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);

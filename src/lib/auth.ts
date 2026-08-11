@@ -1,4 +1,8 @@
 import { SignJWT, jwtVerify } from "jose";
+// The anon header name and its length cap have exactly one definition, in
+// identity.ts. Two copies of the rule that derives a live user's quota key
+// would silently split their quota bucket the day the copies drift.
+import { ANON_HEADER, MAX_ANON_ID_CHARS } from "./identity";
 
 /**
  * Caller identity for quota purposes.
@@ -24,7 +28,6 @@ export type CallerResult =
   | { ok: false; reason: "invalid_token" };
 
 const DEVICE_TOKEN_TTL = "24h";
-const MAX_ANON_ID_CHARS = 100;
 
 function secret(): Uint8Array {
   const value = process.env.DEVICE_TOKEN_SECRET;
@@ -54,7 +57,12 @@ export async function issueDeviceToken(): Promise<{
 export async function verifyDeviceToken(token: string): Promise<string | null> {
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, secret());
+    // Pin the algorithm. A Uint8Array key already restricts jose to the HS
+    // family, but stating it makes the intent explicit rather than an
+    // emergent property of the key type.
+    const { payload } = await jwtVerify(token, secret(), {
+      algorithms: ["HS256"],
+    });
     const did = payload.did;
     return typeof did === "string" && did.length > 0 ? did : null;
   } catch {
@@ -62,11 +70,22 @@ export async function verifyDeviceToken(token: string): Promise<string | null> {
   }
 }
 
-function bearer(request: Request): string {
-  const header = request.headers.get("authorization") ?? "";
-  return header.toLowerCase().startsWith("bearer ")
-    ? header.slice(7).trim()
-    : "";
+/**
+ * Three distinct outcomes, and the difference matters:
+ *   null — no Authorization header at all (the web app) → fall through to anon
+ *   ""   — header present but unusable (wrong scheme, empty token) → reject
+ *   else — the token to verify
+ *
+ * Note the case handling: the scheme test lowercases, but the token is sliced
+ * from the original string. Lowercasing the token would corrupt base64url and
+ * turn every valid extension request into an invalid one.
+ */
+function bearer(request: Request): string | null {
+  const header = request.headers.get("authorization");
+  if (header === null) return null;
+  const trimmed = header.trim();
+  if (!trimmed.toLowerCase().startsWith("bearer ")) return "";
+  return trimmed.slice(7).trim();
 }
 
 /**
@@ -87,13 +106,17 @@ export async function resolveCaller(
   }
 
   const token = bearer(request);
-  if (token) {
+  if (token !== null) {
+    // An Authorization header was sent. It is either good or it is a 401 —
+    // never a silent downgrade to anon, or the extension can't learn its
+    // token died.
+    if (!token) return { ok: false, reason: "invalid_token" };
     const deviceId = await verifyDeviceToken(token);
     if (!deviceId) return { ok: false, reason: "invalid_token" };
     return { ok: true, caller: { kind: "device", deviceId } };
   }
 
-  const anonId = (request.headers.get("x-anon-id") ?? "")
+  const anonId = (request.headers.get(ANON_HEADER) ?? "")
     .trim()
     .slice(0, MAX_ANON_ID_CHARS);
   return { ok: true, caller: { kind: "anon", anonId } };

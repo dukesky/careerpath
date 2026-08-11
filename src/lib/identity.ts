@@ -1,5 +1,6 @@
 export const ANON_HEADER = "x-anon-id";
 export const ACCESS_HEADER = "x-access-code";
+export const MAX_ANON_ID_CHARS = 100;
 
 export interface Identity {
   anonId: string;
@@ -24,7 +25,9 @@ export function hasBetaAccess(request: Request): boolean {
 
 /** Extract the anonymous id (header) and client IP from a request. */
 export function getIdentity(request: Request): Identity {
-  const anonId = (request.headers.get(ANON_HEADER) ?? "").trim().slice(0, 100);
+  const anonId = (request.headers.get(ANON_HEADER) ?? "")
+    .trim()
+    .slice(0, MAX_ANON_ID_CHARS);
 
   const forwarded = request.headers.get("x-forwarded-for");
   const ip =

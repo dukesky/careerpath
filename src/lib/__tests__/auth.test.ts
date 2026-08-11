@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { decodeJwt } from "jose";
 import {
   issueDeviceToken,
   verifyDeviceToken,
@@ -9,6 +10,12 @@ import {
 function req(headers: Record<string, string>): Request {
   return new Request("https://example.com/api/tailor", { headers });
 }
+
+// Vitest reuses worker processes across files, so an env var set here would
+// otherwise leak into whichever file runs next in the same worker.
+afterEach(() => {
+  delete process.env.DEVICE_TOKEN_SECRET;
+});
 
 describe("device tokens", () => {
   beforeEach(() => {
@@ -42,6 +49,24 @@ describe("device tokens", () => {
   it("rejects garbage", async () => {
     expect(await verifyDeviceToken("not-a-jwt")).toBeNull();
     expect(await verifyDeviceToken("")).toBeNull();
+  });
+
+  // The plan pins this TTL as an exact value, so assert it rather than
+  // trusting the constant. Without this, changing "24h" to "240h" keeps the
+  // suite green.
+  it("issues a token that expires in exactly 24 hours", async () => {
+    const { token } = await issueDeviceToken();
+    const { iat, exp } = decodeJwt(token);
+    expect(exp! - iat!).toBe(24 * 60 * 60);
+  });
+
+  // The most security-relevant invariant in this module: an absent secret
+  // must fail loudly, never fall back to a guessable default. Every other
+  // test sets the secret in beforeEach, so nothing else would catch a
+  // `?? "dev-secret"` creeping into secret().
+  it("refuses to sign without a secret", async () => {
+    delete process.env.DEVICE_TOKEN_SECRET;
+    await expect(issueDeviceToken()).rejects.toThrow(/DEVICE_TOKEN_SECRET/);
   });
 });
 
@@ -78,7 +103,7 @@ describe("resolveCaller", () => {
     expect(r).toEqual({ ok: false, reason: "invalid_token" });
   });
 
-  it("rejects an expired-looking token even without an anon header", async () => {
+  it("rejects a structurally invalid token even without an anon header", async () => {
     const r = await resolveCaller(req({ authorization: "Bearer a.b.c" }), null);
     expect(r).toEqual({ ok: false, reason: "invalid_token" });
   });
@@ -101,6 +126,27 @@ describe("resolveCaller", () => {
   it("caps an absurdly long anon id", async () => {
     const r = await resolveCaller(req({ "x-anon-id": "z".repeat(500) }), null);
     expect(r).toEqual({ ok: true, caller: { kind: "anon", anonId: "z".repeat(100) } });
+  });
+
+  // A header that is present but unusable is the extension misbehaving, not a
+  // web visitor. It must get the 401 signal, not anon quota.
+  it("rejects a non-Bearer scheme rather than degrading to anon", async () => {
+    const r = await resolveCaller(
+      req({ authorization: "Basic abc", "x-anon-id": "legacy-web-id" }),
+      null,
+    );
+    expect(r).toEqual({ ok: false, reason: "invalid_token" });
+  });
+
+  it("rejects a Bearer scheme with an empty token", async () => {
+    const r = await resolveCaller(req({ authorization: "Bearer" }), null);
+    expect(r).toEqual({ ok: false, reason: "invalid_token" });
+  });
+
+  it("accepts a lowercase bearer scheme without corrupting the token", async () => {
+    const { token, deviceId } = await issueDeviceToken();
+    const r = await resolveCaller(req({ authorization: `bearer ${token}` }), null);
+    expect(r).toEqual({ ok: true, caller: { kind: "device", deviceId } });
   });
 });
 

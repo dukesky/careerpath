@@ -16,7 +16,17 @@ const eslintConfig = [
     // their build output is not matched by the root-anchored `.next/**` above,
     // so without this a worktree that has been built once makes `npm run lint`
     // in the main checkout fail on thousands of generated files.
-    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**"],
+    // `extension/**` is the sibling Chrome extension package: it has its own
+    // eslint.config.mjs and build output (extension/dist), neither of which
+    // the Next.js config should ever walk into.
+    ignores: [
+      ".next/**",
+      "out/**",
+      "build/**",
+      "next-env.d.ts",
+      ".claude/**",
+      "extension/**",
+    ],
   },
 ];
 

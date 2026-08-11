@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:extension": "npm --prefix extension run test",
+    "test:all": "npm test && npm run test:extension"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.20",

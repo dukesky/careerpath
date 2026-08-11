@@ -45,3 +45,8 @@ next-env.d.ts
 /.worktrees/
 /.claude/worktrees/
 /.superpowers/
+
+# chrome extension
+/extension/node_modules/
+/extension/dist/
+/extension/key.pem

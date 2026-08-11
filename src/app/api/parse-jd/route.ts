@@ -31,7 +31,7 @@ export async function POST(request: Request) {
 
   try {
     const parsed = await callLLM({
-      task: "parse",
+      task: "parse_jd",
       json: true,
       messages: buildJdParseMessages(capText(text, MAX_JD_CHARS)),
       maxTokens: 2000,

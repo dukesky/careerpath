@@ -238,12 +238,17 @@ export default function WorkspacePage() {
     setTailored(null);
     setRunPhase("running");
 
+    // One id per generate action, shared by both requests below, so the pair
+    // is charged as a single run instead of two.
+    const runId = crypto.randomUUID();
+
     const payload = {
       structuredResume: resume,
       structuredJD: parsedJd,
       extraInfo,
       quality,
       includeSummary,
+      runId,
     };
 
     try {
@@ -262,8 +267,8 @@ export default function WorkspacePage() {
         }),
       ]);
 
-      // Quota is gated on the tailor route.
-      if (tRes.status === 402) {
+      // Quota is gated on both routes (each checks before doing any work).
+      if (tRes.status === 402 || aRes.status === 402) {
         setRemaining(0);
         setShowWaitlist(true);
         setRunPhase("idle");

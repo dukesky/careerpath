@@ -8,7 +8,7 @@ import { withStats } from "./llm-stats";
  * swapping a model is a one-line change.
  */
 
-export type LLMTask = "parse" | "analyze" | "tailor" | "ocr";
+export type LLMTask = "parse" | "parse_jd" | "analyze" | "tailor" | "ocr";
 export type Quality = "fast" | "quality";
 export type ChatRole = "system" | "user" | "assistant";
 
@@ -22,7 +22,8 @@ export interface ChatMessage {
 // ---------------------------------------------------------------------------
 
 const MODEL_MAP: Record<LLMTask, string> = {
-  parse: "deepseek/deepseek-chat", // placeholder — swap freely
+  parse: "deepseek/deepseek-chat", // resume parsing — unchanged
+  parse_jd: "anthropic/claude-haiku-4.5", // on the critical path; must be fast
   analyze: "anthropic/claude-sonnet-4.6",
   tailor: "anthropic/claude-sonnet-4.6",
   ocr: "anthropic/claude-sonnet-4.6", // vision-capable; hardcoded, ignores `quality`
@@ -38,6 +39,7 @@ const QUALITY_MODELS: Record<Quality, string> = {
 // Sensible default sampling temperature per task.
 const DEFAULT_TEMPERATURE: Record<LLMTask, number> = {
   parse: 0.1,
+  parse_jd: 0.1,
   analyze: 0.3,
   tailor: 0.4,
   ocr: 0,

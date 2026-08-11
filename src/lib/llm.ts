@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { withStats } from "./llm-stats";
 
 /**
  * Thin wrapper around OpenRouter (OpenAI-compatible API).
@@ -169,13 +170,19 @@ export async function callLLM<T = unknown>(
   async function complete(
     msgs: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   ): Promise<string> {
-    const res = await getClient().chat.completions.create({
-      model,
-      messages: msgs,
-      temperature: temp,
-      ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    return withStats({ task, model, quality }, async () => {
+      const res = await getClient().chat.completions.create({
+        model,
+        messages: msgs,
+        temperature: temp,
+        ...(maxTokens ? { max_tokens: maxTokens } : {}),
+      });
+      return {
+        result: res.choices[0]?.message?.content?.trim() ?? "",
+        promptTokens: res.usage?.prompt_tokens ?? 0,
+        completionTokens: res.usage?.completion_tokens ?? 0,
+      };
     });
-    return res.choices[0]?.message?.content?.trim() ?? "";
   }
 
   const openAIMessages = toOpenAIMessages(messages, images);

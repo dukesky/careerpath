@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { apiPost } from "@/lib/api";
+import { apiPost, apiPostForm } from "@/lib/api";
 import { setToken, getToken } from "@/lib/storage";
 
 function fakeChromeStorage() {
@@ -105,5 +105,52 @@ describe("apiPost", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     const res = await apiPost("/api/analyze", {});
     expect(res).toMatchObject({ ok: false, kind: "network" });
+  });
+
+  it("does not set Content-Type on a multipart post", async () => {
+    await setToken("t1");
+    const fetchMock = vi.fn<typeof fetch>(async () => json({ resume: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.append("file", new Blob(["cv"]), "cv.pdf");
+    await apiPostForm("/api/parse-resume", form);
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBeUndefined();
+    expect(init.body).toBe(form);
+  });
+
+  it("resends the same FormData on a 401 retry", async () => {
+    await setToken("stale");
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ error: "expired" }, 401))
+      .mockResolvedValueOnce(json({ token: "renewed" }))
+      .mockResolvedValueOnce(json({ resume: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.append("file", new Blob(["cv"]), "cv.pdf");
+    const res = await apiPostForm("/api/parse-resume", form);
+
+    expect(res.ok).toBe(true);
+    expect((fetchMock.mock.calls[2][1] as RequestInit).body).toBe(form);
+  });
+
+  it("sends no Authorization header when no token can be obtained", async () => {
+    // No stored token, and the mint fails — ensureToken returns null. The
+    // request must still go out, unauthenticated, and be treated as success.
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ error: "not configured" }, 503))
+      .mockResolvedValueOnce(json({ jd: { company: "Acme" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost("/api/parse-jd", { text: "x" });
+
+    expect(res.ok).toBe(true);
+    const init = fetchMock.mock.calls[1][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 });

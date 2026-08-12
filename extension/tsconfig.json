@@ -11,7 +11,7 @@
     "skipLibCheck": true,
     "isolatedModules": true,
     "resolveJsonModule": true,
-    "types": ["chrome", "vitest/globals", "vite/client"],
+    "types": ["chrome", "vitest/globals", "vite/client", "@crxjs/vite-plugin/client"],
     "paths": {
       "@/*": ["./src/*"],
       "@shared/*": ["../shared/*"]

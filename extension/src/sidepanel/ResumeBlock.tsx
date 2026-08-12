@@ -18,6 +18,19 @@ export function ResumeBlock({
   const [pasting, setPasting] = useState(false);
   const [text, setText] = useState("");
 
+  // One place that turns a parsed resume into what we store. Both entry
+  // paths — file upload and pasted text — go through it, so a change to how
+  // the record is derived cannot apply to only one of them.
+  async function storeParsed(resume: ParsedResume) {
+    const record: StoredResume = {
+      resume,
+      parsedAt: new Date().toISOString(),
+      name: resume.contact.name || "Your resume",
+    };
+    await setResume(record);
+    onChange(record);
+  }
+
   async function upload(file: File) {
     setBusy(true);
     setError(null);
@@ -29,13 +42,7 @@ export function ResumeBlock({
       setError(res.message);
       return;
     }
-    const record: StoredResume = {
-      resume: res.data.resume,
-      parsedAt: new Date().toISOString(),
-      name: res.data.resume.contact.name || "Your resume",
-    };
-    await setResume(record);
-    onChange(record);
+    await storeParsed(res.data.resume);
   }
 
   async function submitText() {
@@ -53,13 +60,7 @@ export function ResumeBlock({
       setError(res.message);
       return;
     }
-    const record: StoredResume = {
-      resume: res.data.resume,
-      parsedAt: new Date().toISOString(),
-      name: res.data.resume.contact.name || "Your resume",
-    };
-    await setResume(record);
-    onChange(record);
+    await storeParsed(res.data.resume);
     setPasting(false);
     setText("");
   }
@@ -79,7 +80,7 @@ export function ResumeBlock({
           {busy ? "Reading…" : stored ? "Replace" : "Add resume"}
         </button>
         {stored && (
-          <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          <button onClick={() => setOpen((v) => !v)} aria-expanded={open} disabled={busy}>
             {open ? "Hide" : "Review"}
           </button>
         )}

@@ -87,4 +87,36 @@ describe("toBreakdown", () => {
     const r: ParsedResume = { ...EMPTY, summary: "   " };
     expect(toBreakdown(r).find((s) => s.label === "Summary")!.entries).toEqual([]);
   });
+
+  // A garbled parse can hand back an entry with no title, no detail, and no
+  // bullets. Keeping it would render an invisible empty div — the same
+  // "looks fine, is wrong" failure the feature exists to prevent. It must
+  // be dropped rather than shown as a blank line.
+  it("drops a wholly-blank experience entry but keeps a real one alongside it", () => {
+    const r: ParsedResume = {
+      ...EMPTY,
+      experience: [
+        { company: "", title: "", dates: "", bullets: [] },
+        {
+          company: "Acme",
+          title: "Backend Engineer",
+          dates: "2022–2024",
+          bullets: ["Built a thing"],
+        },
+      ],
+    };
+    const exp = toBreakdown(r).find((s) => s.label === "Experience")!;
+    expect(exp.entries).toEqual([
+      { title: "Backend Engineer · Acme", detail: "2022–2024", bullets: ["Built a thing"] },
+    ]);
+  });
+
+  it("treats a section made only of blank entries as not detected", () => {
+    const r: ParsedResume = {
+      ...EMPTY,
+      projects: [{ name: "", description: "", bullets: [] }],
+    };
+    const projects = toBreakdown(r).find((s) => s.label === "Projects")!;
+    expect(projects.entries).toEqual([]);
+  });
 });

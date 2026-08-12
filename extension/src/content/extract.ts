@@ -32,11 +32,21 @@ function clean(text: string): string {
   return text.replace(/\r/g, "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** JSON-LD descriptions are frequently HTML. Render to text without eval. */
+/**
+ * JSON-LD descriptions are frequently HTML. Render them to text through an
+ * INERT parse.
+ *
+ * Do not reach for `doc.createElement("div")` + `innerHTML` here. A detached
+ * div is not inert: the HTML parser still binds inline event-handler content
+ * attributes, so `<img src=x onerror=…>` in a description runs — and it runs
+ * in the page's realm, because the element's node document is the live page.
+ * A `<template>`'s content lives in a separate inert document that never
+ * loads resources or fires handlers.
+ */
 function stripHtml(doc: Document, html: string): string {
-  const el = doc.createElement("div");
-  el.innerHTML = html;
-  return el.textContent ?? "";
+  const tpl = doc.createElement("template");
+  tpl.innerHTML = html;
+  return tpl.content.textContent ?? "";
 }
 
 interface JobPostingLd {
@@ -67,25 +77,30 @@ function findJobPosting(node: unknown): JobPostingLd | null {
 function fromJsonLd(doc: Document): ExtractedJD | null {
   const blocks = doc.querySelectorAll('script[type="application/ld+json"]');
   for (const block of Array.from(blocks)) {
-    let parsed: unknown;
+    // The try covers the traversal, not just the parse. `findJobPosting`
+    // recurses, and a syntactically VALID but deeply nested block parses fine
+    // and then blows the stack with a RangeError. Guarding only JSON.parse
+    // would let one pathological page kill extraction outright instead of
+    // falling through to Readability — exactly the "one bad block must not
+    // sink the page" rule, applied to the case that actually reaches it.
     try {
-      parsed = JSON.parse(block.textContent ?? "");
+      const parsed: unknown = JSON.parse(block.textContent ?? "");
+      const posting = findJobPosting(parsed);
+      if (!posting) continue;
+
+      const description = asString(posting.description);
+      if (!description) continue;
+
+      const org = posting.hiringOrganization as { name?: unknown } | undefined;
+      return {
+        text: clean(stripHtml(doc, description)),
+        title: asString(posting.title),
+        company: asString(org?.name),
+        url: "",
+      };
     } catch {
-      continue; // one malformed block must not sink the page
+      continue;
     }
-    const posting = findJobPosting(parsed);
-    if (!posting) continue;
-
-    const description = asString(posting.description);
-    if (!description) continue;
-
-    const org = posting.hiringOrganization as { name?: unknown } | undefined;
-    return {
-      text: clean(stripHtml(doc, description)),
-      title: asString(posting.title),
-      company: asString(org?.name),
-      url: "",
-    };
   }
   return null;
 }

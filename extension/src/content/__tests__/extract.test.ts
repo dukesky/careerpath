@@ -97,4 +97,16 @@ describe("extractFromDocument", () => {
     if (!r.ok) return;
     expect(r.jd.title).toBe("Graph Role");
   });
+
+  // A valid-but-pathological block must not kill extraction. JSON.parse
+  // handles this depth fine; the recursive traversal is what blows the stack.
+  it("survives a deeply nested JSON-LD block and falls back to the article", () => {
+    const deep = "[".repeat(5000) + "]".repeat(5000);
+    const doc = docFrom(`
+      <html><head><script type="application/ld+json">${deep}</script></head>
+      <body><article><p>${LONG_JD}</p></article></body></html>
+    `);
+    expect(() => extractFromDocument(doc, "https://x.com/j/1")).not.toThrow();
+    expect(extractFromDocument(doc, "https://x.com/j/1").ok).toBe(true);
+  });
 });

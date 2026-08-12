@@ -20,8 +20,19 @@ async function mint(): Promise<string | null> {
   }
   // Store outside the fetch's try/catch: a storage failure here must not make
   // us report `null` and have the caller treat itself as anonymous when the
-  // server already handed us a perfectly valid token.
-  await setToken(token);
+  // server already handed us a perfectly valid token. But a storage failure
+  // must not make us REJECT either — ensureToken has no caller that catches
+  // (api.ts's `send` awaits it outside its try, and background/index.ts calls
+  // it via `void`), so an unwrapped rejection here would surface as a silent,
+  // uncaught panel failure or an unhandled rejection in the service worker
+  // instead of the working (if unpersisted) token we already have in hand.
+  try {
+    await setToken(token);
+  } catch {
+    // Not persisted — this token is still valid for the rest of this
+    // session, and returning it beats forcing an anonymous run or failing
+    // the click.
+  }
   return token;
 }
 

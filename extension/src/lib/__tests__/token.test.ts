@@ -88,6 +88,20 @@ describe("ensureToken", () => {
     expect(await getToken()).toBe("renewed");
   });
 
+  it("resolves to the minted token even when persisting it fails", async () => {
+    // A storage failure must not turn a successfully minted, valid token
+    // into a rejection: `send()` in api.ts awaits ensureToken() outside its
+    // try/catch, and background/index.ts calls it via `void` — neither has
+    // anywhere for a rejection to go.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ token: "minted" }), { status: 200 })),
+    );
+    vi.spyOn(chrome.storage.local, "set").mockRejectedValueOnce(new Error("quota exceeded"));
+
+    await expect(ensureToken()).resolves.toBe("minted");
+  });
+
   it("allows a fresh mint after the in-flight one settles", async () => {
     const fetchMock = vi
       .fn()

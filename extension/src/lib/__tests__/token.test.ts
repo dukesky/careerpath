@@ -68,4 +68,35 @@ describe("ensureToken", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     expect(await ensureToken()).toBeNull();
   });
+
+  it("dedupes concurrent forced refreshes into a single mint", async () => {
+    // run.ts fires /api/analyze and /api/tailor in parallel; if a shared
+    // token is rejected mid-run, both legs call ensureToken(true) around the
+    // same tick. Without in-flight dedup, that mints two device identities
+    // server-side and the two legs land in different quota buckets.
+    await setToken("stale");
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ token: "renewed" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const [a, b] = await Promise.all([ensureToken(true), ensureToken(true)]);
+
+    expect(a).toBe("renewed");
+    expect(b).toBe("renewed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await getToken()).toBe("renewed");
+  });
+
+  it("allows a fresh mint after the in-flight one settles", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "first" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: "second" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await ensureToken(true)).toBe("first");
+    expect(await ensureToken(true)).toBe("second");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

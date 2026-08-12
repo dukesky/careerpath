@@ -93,6 +93,14 @@ export async function runTailor(
 
   onUpdate({
     phase: "done",
+    // Terminal patches describe terminal state completely rather than
+    // assuming an earlier patch survived: App.tsx resets state on every JD
+    // URL change, including a return to the same posting after the user
+    // switches tabs mid-run. If this patch carried only `tailored`, that
+    // reset would wipe the analysis a "writing" patch already delivered, and
+    // Results.tsx (gated on `analysis &&`) would render nothing for a
+    // completed, charged run. Re-sending it here costs nothing.
+    analysis: analyzed.data.analysis,
     tailored: tailored.data.tailored,
     // Exactly one leg charges; the other's read may land before that charge
     // commits, so it can come back one too high. Show the lower of the two so

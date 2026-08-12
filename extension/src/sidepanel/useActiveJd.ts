@@ -7,7 +7,15 @@ import type { ExtractResult, ExtractedJD } from "@/content/extract";
 // install); CRXJS still bundles this file, rewrites its path per build, and
 // wires up HMR for it in dev. Do not replace this with a hardcoded string —
 // see useActiveJd.ts's history for why that broke silently.
-import contentScriptPath from "@/content/index.ts?script";
+//
+// The `&iife` is load-bearing, not decorative: `chrome.scripting.executeScript`
+// with `files` only runs classic (non-module) scripts. Per the plugin's own
+// type detection, plain `?script` resolves to the built IIFE path in a
+// production build but to an unhashed ESM path under `vite dev` — silently
+// breaking `executeScript` in dev. `iife` in the query string forces IIFE
+// output in BOTH serve and build, so this import resolves the same shape
+// either way.
+import contentScriptPath from "@/content/index.ts?script&iife";
 
 /**
  * Reads the JD from the active tab by injecting the content script on demand.
@@ -61,8 +69,17 @@ export function useActiveJd() {
       setJd(result.jd);
     } catch {
       if (seq !== readSeq.current) return; // superseded by a newer read
+      // Expected, not exceptional: `activeTab` grants host access only to
+      // the tab where the user invoked the extension, and Chrome drops that
+      // grant on navigation. This panel is window-global and follows tab
+      // switches, so `executeScript` is expected to be rejected on any tab
+      // the user did not just click the icon on. Telling the user to reload
+      // is actively wrong — reloading revokes the grant again. The real
+      // recovery path is re-invoking the extension on this tab. The
+      // structural fix (optional_host_permissions, or a per-tab panel) is
+      // B2; for now, name the actual fix in the copy.
       setJd(null);
-      setFailure("We couldn't read this page. Try reloading it.");
+      setFailure("Click the career-path icon to read this tab.");
     } finally {
       // A superseded read must not clear a newer read's loading state —
       // either the newer read is still in flight (loading should stay true)

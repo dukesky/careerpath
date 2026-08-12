@@ -182,12 +182,22 @@ Open [http://localhost:3000](http://localhost:3000). The workspace lives at
 
 ### Available scripts
 
-| Command         | What it does                          |
-| --------------- | ------------------------------------- |
-| `npm run dev`   | Start the dev server with hot reload. |
-| `npm run build` | Create a production build.            |
-| `npm run start` | Serve the production build locally.   |
-| `npm run lint`  | Run ESLint.                           |
+| Command                  | What it does                                          |
+| ------------------------ | ------------------------------------------------------ |
+| `npm run dev`             | Start the dev server with hot reload.                  |
+| `npm run build`           | Create a production build.                             |
+| `npm run start`           | Serve the production build locally.                    |
+| `npm run lint`            | Run ESLint.                                             |
+| `npm test`                | Run this app's Vitest suite.                            |
+| `npm run test:extension`  | Run the [Chrome extension](#chrome-extension)'s Vitest suite (`extension/`). |
+| `npm run test:all`        | Run both suites.                                        |
+
+`test:extension` and `test:all` shell out to `npm --prefix extension`. Since
+`extension/` is a separate package rather than an npm workspace, its
+dependencies aren't pulled in by the root `npm install` — run
+`npm --prefix extension install` once (see [Chrome extension](#chrome-extension))
+before either of those on a fresh clone, or they'll fail with a missing
+`extension/node_modules`.
 
 ## Environment variables
 
@@ -238,6 +248,46 @@ time with:
 ```bash
 vercel env pull .env.local
 ```
+
+## Chrome extension
+
+`extension/` is a separate, thin-client package (its own `package.json`, not an
+npm workspace) that lets you tailor your resume against the job posting in
+your active tab without leaving it. It talks to the same API as the web app —
+no prompts or model choices live in the extension itself.
+
+```bash
+# 1. Install its dependencies (separate from the root install)
+npm --prefix extension install
+
+# 2. Build it — against production...
+npm --prefix extension run build
+# ...or against a local API (http://localhost:3000)
+npm --prefix extension run build:dev
+
+# 3. Run its tests
+npm --prefix extension run test
+```
+
+Then load it unpacked:
+
+1. Open `chrome://extensions`, enable **Developer mode** (top right).
+2. Click **Load unpacked** and select `extension/dist`.
+
+The manifest pins a `key`, so the extension ID stays stable across rebuilds —
+currently `nipgolameclkfjekaggkmanahaddcbaj`. Add it to the server's
+`ALLOWED_EXTENSION_IDS` environment variable (comma-separated) so the API's
+CORS layer recognizes it. That check is **defense-in-depth, not the thing
+making requests work**: in MV3, a fetch from an extension page to a host
+listed in the manifest's `host_permissions` bypasses CORS regardless of
+`ALLOWED_EXTENSION_IDS`. When this extension is published to the Chrome Web
+Store, it will be assigned its own ID there — append that one to the list too
+rather than replacing the dev ID.
+
+B1 ships with no sign-in: every extension user is a signed-out device caller,
+sharing the same **3 runs per rolling 30-day window** allowance described
+above (`quota:device:<deviceId>`, identified by a server-signed token rather
+than anything the client can reset by clearing storage).
 
 ## Privacy
 

@@ -67,7 +67,15 @@ export function useActiveJd() {
         return;
       }
       setJd(result.jd);
-    } catch {
+    } catch (err) {
+      // This catch covers BOTH executeScript and sendMessage, and the two fail
+      // for completely different reasons that need completely different fixes
+      // ("Cannot access contents of the page" = no activeTab grant; "Could not
+      // establish connection" = injected but no listener). Swallowing it made
+      // the panel's copy the only signal, which is not enough to debug from.
+      console.warn(
+        JSON.stringify({ evt: "cp_extract_failed", error: String(err) }),
+      );
       if (seq !== readSeq.current) return; // superseded by a newer read
       // Expected, not exceptional: `activeTab` grants host access only to
       // the tab where the user invoked the extension, and Chrome drops that

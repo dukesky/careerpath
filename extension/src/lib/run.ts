@@ -94,6 +94,14 @@ export async function runTailor(
   onUpdate({
     phase: "done",
     tailored: tailored.data.tailored,
-    remaining: tailored.data.remaining,
+    // Exactly one leg charges; the other's read may land before that charge
+    // commits, so it can come back one too high. Show the lower of the two so
+    // the count the user sees never jumps back up.
+    remaining:
+      analyzed.data.remaining === null
+        ? tailored.data.remaining
+        : tailored.data.remaining === null
+          ? analyzed.data.remaining
+          : Math.min(analyzed.data.remaining, tailored.data.remaining),
   });
 }

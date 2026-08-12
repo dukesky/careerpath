@@ -64,12 +64,17 @@ describe("runTailor", () => {
     const { onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
 
-    const bodies = fetchMock.mock.calls
-      .map((c) => JSON.parse(String((c[1] as RequestInit).body)))
-      .filter((b) => "runId" in b);
-    expect(bodies).toHaveLength(2);
-    expect(bodies[0].runId).toBe(bodies[1].runId);
-    expect(bodies[0].runId).toBeTruthy();
+    const byUrl = new Map(
+      fetchMock.mock.calls.map((c) => [
+        String(c[0]),
+        JSON.parse(String((c[1] as RequestInit).body)),
+      ]),
+    );
+    const analyzeBody = [...byUrl].find(([u]) => u.endsWith("/api/analyze"))?.[1];
+    const tailorBody = [...byUrl].find(([u]) => u.endsWith("/api/tailor"))?.[1];
+
+    expect(analyzeBody?.runId).toBeTruthy();
+    expect(analyzeBody?.runId).toBe(tailorBody?.runId);
   });
 
   it("mints a new runId on a second run", async () => {
@@ -101,8 +106,8 @@ describe("runTailor", () => {
     const { patches, onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
 
-    const analysisAt = patches.findIndex((p) => p.analysis);
-    const tailoredAt = patches.findIndex((p) => p.tailored);
+    const analysisAt = patches.findIndex((p) => "analysis" in p && p.analysis);
+    const tailoredAt = patches.findIndex((p) => "tailored" in p && p.tailored);
     expect(analysisAt).toBeGreaterThanOrEqual(0);
     expect(tailoredAt).toBeGreaterThan(analysisAt);
     expect(patches.at(-1)?.phase).toBe("done");
@@ -128,6 +133,20 @@ describe("runTailor", () => {
     const { patches, onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
     expect(patches.at(-1)?.phase).toBe("error");
-    expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith("/api/analyze"))).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the lower remaining when the two legs disagree", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
+        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 2 });
+        return json({ tailored: {}, remaining: 3 });
+      }),
+    );
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+    expect(patches.at(-1)?.remaining).toBe(2);
   });
 });

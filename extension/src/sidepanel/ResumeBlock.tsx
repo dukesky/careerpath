@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { apiPostForm } from "@/lib/api";
 import { setResume, type StoredResume } from "@/lib/storage";
 import type { ParsedResume } from "@shared/contract";
+import { ResumeBreakdown } from "./ResumeBreakdown";
 
 export function ResumeBlock({
   stored,
@@ -13,6 +14,9 @@ export function ResumeBlock({
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [text, setText] = useState("");
 
   async function upload(file: File) {
     setBusy(true);
@@ -34,6 +38,32 @@ export function ResumeBlock({
     onChange(record);
   }
 
+  async function submitText() {
+    if (text.trim().length < 30) {
+      setError("That looks too short to be a resume.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const form = new FormData();
+    form.append("text", text);
+    const res = await apiPostForm<{ resume: ParsedResume }>("/api/parse-resume", form);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.message);
+      return;
+    }
+    const record: StoredResume = {
+      resume: res.data.resume,
+      parsedAt: new Date().toISOString(),
+      name: res.data.resume.contact.name || "Your resume",
+    };
+    await setResume(record);
+    onChange(record);
+    setPasting(false);
+    setText("");
+  }
+
   return (
     <section className="card">
       <div className="row">
@@ -48,6 +78,11 @@ export function ResumeBlock({
         <button onClick={() => fileRef.current?.click()} disabled={busy}>
           {busy ? "Reading…" : stored ? "Replace" : "Add resume"}
         </button>
+        {stored && (
+          <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+            {open ? "Hide" : "Review"}
+          </button>
+        )}
       </div>
       <input
         ref={fileRef}
@@ -61,6 +96,32 @@ export function ResumeBlock({
         }}
       />
       {error && <p className="error">{error}</p>}
+      {open && stored && (
+        <>
+          <ResumeBreakdown resume={stored.resume} />
+          {!pasting ? (
+            <button onClick={() => setPasting(true)}>
+              Parsed wrong? Paste your resume text instead
+            </button>
+          ) : (
+            <>
+              <textarea
+                className="paste"
+                rows={8}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Paste the full text of your resume here."
+              />
+              <div className="row">
+                <button onClick={() => setPasting(false)}>Cancel</button>
+                <button onClick={() => void submitText()} disabled={busy}>
+                  {busy ? "Reading…" : "Use this text"}
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
       <p className="muted tiny">
         Stored in this browser only — never uploaded for storage.
       </p>

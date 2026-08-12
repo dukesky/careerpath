@@ -21,13 +21,17 @@ export interface BreakdownSection {
   entries: BreakdownEntry[];
 }
 
+const present = (s: string): boolean => s.trim() !== "";
+
+// Filters blank bullets here, not just at each call site, so `hasContent`
+// below — which trusts `bullets.length` — sees the truth: a bullet list
+// made only of whitespace strings must count as no bullets, or an entry
+// with nothing else renders as visible empty list markers.
 const entry = (
   title: string,
   detail = "",
   bullets: string[] = [],
-): BreakdownEntry => ({ title, detail, bullets });
-
-const present = (s: string): boolean => s.trim() !== "";
+): BreakdownEntry => ({ title, detail, bullets: bullets.filter(present) });
 
 /**
  * An entry with no title, no detail, and no bullets is invisible in the UI —

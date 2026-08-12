@@ -8,6 +8,7 @@
 // avoids that entirely — it never needs `document`/`chrome` anyway.
 import { describe, it, expect } from "vitest";
 import manifestExport from "../../manifest.config";
+import { BROAD_ORIGINS } from "@/lib/permissions";
 
 // `defineManifest` is typed to return `ManifestV3 | Promise<ManifestV3> |
 // ManifestV3Fn` so it can support all three authoring styles, but this
@@ -51,5 +52,12 @@ describe("manifest", () => {
     ]);
     expect(manifest.host_permissions).not.toContain("http://*/*");
     expect(manifest.host_permissions).not.toContain("https://*/*");
+  });
+
+  // These are declared in two files with no compile-time link. A drift makes
+  // chrome.permissions.request reject at runtime, where it is caught and
+  // returns false — the button silently does nothing, with every test green.
+  it("declares exactly the origins the panel will request", () => {
+    expect(manifest.optional_host_permissions).toEqual(BROAD_ORIGINS);
   });
 });

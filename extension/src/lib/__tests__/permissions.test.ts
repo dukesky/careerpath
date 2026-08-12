@@ -30,12 +30,31 @@ describe("classifyInjectionError", () => {
     ).toBe("restricted");
   });
 
-  it("defaults an unrecognised error to permission, the actionable case", () => {
+  it("defaults an unrecognised error to unknown, not permission", () => {
     expect(classifyInjectionError(new Error("something else entirely"))).toBe(
-      "permission",
+      "unknown",
     );
-    expect(classifyInjectionError("not an error object")).toBe("permission");
-    expect(classifyInjectionError(undefined)).toBe("permission");
+    expect(classifyInjectionError("not an error object")).toBe("unknown");
+    expect(classifyInjectionError(undefined)).toBe("unknown");
+  });
+
+  // A real failure mode: the content script injected, but sendMessage raced
+  // a navigation and no listener answered. This is not a permission problem
+  // — the host may already be granted — so it must not route to "permission".
+  it("classifies a lost-connection sendMessage failure as unknown", () => {
+    const err = new Error(
+      "Could not establish connection. Receiving end does not exist.",
+    );
+    expect(classifyInjectionError(err)).toBe("unknown");
+  });
+
+  // file:// (and view-source:/about:) cannot be granted by
+  // chrome.permissions.request — file access is a separate Chrome checkbox —
+  // so these must be "restricted", not "permission".
+  it("classifies a file:// page as restricted", () => {
+    expect(
+      classifyInjectionError(new Error("Cannot access contents of file:///Users/x/resume.pdf")),
+    ).toBe("restricted");
   });
 });
 

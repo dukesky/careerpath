@@ -38,7 +38,7 @@ button.primary {
   font-weight: 600;
 }
 
-button.primary:disabled { opacity: 0.55; cursor: default; }
+button:disabled { opacity: 0.55; cursor: default; }
 
 main { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 header h1 { font-size: 15px; margin: 2px 0 0; }
@@ -59,7 +59,7 @@ header h1 { font-size: 15px; margin: 2px 0 0; }
 .bd-entry { margin: 4px 0 8px; }
 .bd-title { font-weight: 600; }
 .bd-bullets { margin: 4px 0 0; padding-left: 16px; }
-.bd-bullets li { margin-bottom: 2px; }
+.bd-bullets li { margin-bottom: 2px; overflow-wrap: anywhere; }
 .paste {
   width: 100%;
   font: inherit;

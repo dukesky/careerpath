@@ -23,15 +23,21 @@ import contentScriptPath from "@/content/index.ts?script&iife";
  * "permission" is worth offering a grant for.
  */
 export interface ReadFailure {
-  kind: "permission" | "restricted" | "no-posting" | "no-tab";
+  kind: "permission" | "restricted" | "unknown" | "no-posting" | "no-tab";
   message: string;
 }
 
 /**
  * Reads the JD from the active tab by injecting the content script on demand.
- * `activeTab` means the user clicking our icon IS the permission grant for
- * that tab — which is why the manifest asks for no host permissions on job
- * sites and the install prompt stays narrow.
+ *
+ * Page access does NOT come from `activeTab` alone: the side panel is
+ * window-global and follows tab switches, so there is no click on a specific
+ * tab for `activeTab` to key off. Instead, the manifest's `host_permissions`
+ * grant five job sites at install with no click needed, and
+ * `optional_host_permissions` declares a broad origin set the panel can
+ * request from a user gesture (see `lib/permissions.ts`) for everywhere
+ * else. `activeTab` remains declared as a residual — it covers the tab the
+ * user explicitly invoked the extension icon on, ahead of either of those.
  */
 export function useActiveJd() {
   const [jd, setJd] = useState<ExtractedJD | null>(null);
@@ -82,10 +88,15 @@ export function useActiveJd() {
       setJd(result.jd);
     } catch (err) {
       // This catch covers BOTH executeScript and sendMessage, and the two fail
-      // for completely different reasons that need completely different fixes
-      // ("Cannot access contents of the page" = no activeTab grant; "Could not
-      // establish connection" = injected but no listener). Swallowing it made
-      // the panel's copy the only signal, which is not enough to debug from.
+      // for completely different reasons that need completely different fixes:
+      // Chrome's host-permission wording ("Cannot access contents of the
+      // page...") means the site isn't covered by host_permissions or the
+      // broad optional grant, and IS worth offering the grant for. "Could not
+      // establish connection..." means the script injected fine but no
+      // listener answered (e.g. this read raced a navigation) — access was
+      // never the problem, so it must not be diagnosed as one. Swallowing
+      // this made the panel's copy the only signal, which is not enough to
+      // debug from.
       console.warn(
         JSON.stringify({ evt: "cp_extract_failed", error: String(err) }),
       );
@@ -95,10 +106,12 @@ export function useActiveJd() {
       setFailure(
         kind === "restricted"
           ? { kind, message: "This page can't be read by extensions." }
-          : {
-              kind,
-              message: "career-path doesn't have permission to read this site.",
-            },
+          : kind === "permission"
+            ? {
+                kind,
+                message: "career-path doesn't have permission to read this site.",
+              }
+            : { kind, message: "We couldn't read this page. Try reloading it." },
       );
     } finally {
       // A superseded read must not clear a newer read's loading state —

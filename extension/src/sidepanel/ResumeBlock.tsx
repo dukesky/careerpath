@@ -34,15 +34,18 @@ export function ResumeBlock({
   async function upload(file: File) {
     setBusy(true);
     setError(null);
-    const form = new FormData();
-    form.append("file", file);
-    const res = await apiPostForm<{ resume: ParsedResume }>("/api/parse-resume", form);
-    setBusy(false);
-    if (!res.ok) {
-      setError(res.message);
-      return;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await apiPostForm<{ resume: ParsedResume }>("/api/parse-resume", form);
+      if (!res.ok) {
+        setError(res.message);
+        return;
+      }
+      await storeParsed(res.data.resume);
+    } finally {
+      setBusy(false);
     }
-    await storeParsed(res.data.resume);
   }
 
   async function submitText() {
@@ -52,17 +55,20 @@ export function ResumeBlock({
     }
     setBusy(true);
     setError(null);
-    const form = new FormData();
-    form.append("text", text);
-    const res = await apiPostForm<{ resume: ParsedResume }>("/api/parse-resume", form);
-    setBusy(false);
-    if (!res.ok) {
-      setError(res.message);
-      return;
+    try {
+      const form = new FormData();
+      form.append("text", text);
+      const res = await apiPostForm<{ resume: ParsedResume }>("/api/parse-resume", form);
+      if (!res.ok) {
+        setError(res.message);
+        return;
+      }
+      await storeParsed(res.data.resume);
+      setPasting(false);
+      setText("");
+    } finally {
+      setBusy(false);
     }
-    await storeParsed(res.data.resume);
-    setPasting(false);
-    setText("");
   }
 
   return (

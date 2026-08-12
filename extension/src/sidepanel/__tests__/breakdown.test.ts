@@ -119,4 +119,26 @@ describe("toBreakdown", () => {
     const projects = toBreakdown(r).find((s) => s.label === "Projects")!;
     expect(projects.entries).toEqual([]);
   });
+
+  // hasContent() trusts bullets.length, so a bullet list made only of
+  // whitespace strings must not survive into a rendered entry: it would
+  // pass the length > 0 check while showing nothing but empty <li> markers.
+  it("drops whitespace-only bullets, so an entry with only blank bullets is dropped and a real entry keeps only its non-blank ones", () => {
+    const r: ParsedResume = {
+      ...EMPTY,
+      experience: [
+        { company: "", title: "", dates: "", bullets: ["   ", ""] },
+        {
+          company: "Acme",
+          title: "Backend Engineer",
+          dates: "2022–2024",
+          bullets: ["Built a thing", "   "],
+        },
+      ],
+    };
+    const exp = toBreakdown(r).find((s) => s.label === "Experience")!;
+    expect(exp.entries).toEqual([
+      { title: "Backend Engineer · Acme", detail: "2022–2024", bullets: ["Built a thing"] },
+    ]);
+  });
 });

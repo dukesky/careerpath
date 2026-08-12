@@ -18,6 +18,7 @@ import manifestExport from "../../manifest.config";
 const manifest = manifestExport as {
   content_scripts?: unknown;
   host_permissions?: string[];
+  optional_host_permissions?: string[];
 };
 
 describe("manifest", () => {
@@ -28,10 +29,27 @@ describe("manifest", () => {
     expect("content_scripts" in manifest).toBe(false);
   });
 
-  it("requests no host permission beyond the API origins", () => {
+  it("requests the API origins plus exactly the five supported job sites", () => {
     expect(manifest.host_permissions).toEqual([
       "http://localhost:3000/*",
       "https://careerpath-hazel.vercel.app/*",
+      "*://*.linkedin.com/*",
+      "*://*.greenhouse.io/*",
+      "*://*.lever.co/*",
+      "*://*.ashbyhq.com/*",
+      "*://*.myworkdayjobs.com/*",
     ]);
+  });
+
+  // Optional host permissions are NOT shown in the install prompt. Declaring
+  // them is what lets chrome.permissions.request ask for them later, from a
+  // user gesture — requesting an origin that is not declared here fails.
+  it("declares the broad origins as OPTIONAL, not granted at install", () => {
+    expect(manifest.optional_host_permissions).toEqual([
+      "http://*/*",
+      "https://*/*",
+    ]);
+    expect(manifest.host_permissions).not.toContain("http://*/*");
+    expect(manifest.host_permissions).not.toContain("https://*/*");
   });
 });

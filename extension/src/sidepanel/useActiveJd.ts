@@ -26,6 +26,7 @@ export function useActiveJd() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) {
+        setJd(null);
         setFailure("No active tab.");
         return;
       }
@@ -53,6 +54,26 @@ export function useActiveJd() {
 
   useEffect(() => {
     void read();
+  }, [read]);
+
+  // The panel is window-global and outlives tab switches, so a stale read
+  // would tailor against the posting the user just left. Also covers full
+  // (non-SPA) navigations in the current tab; SPA route changes are B2.
+  useEffect(() => {
+    const onActivated = () => void read();
+    const onUpdated = (
+      _tabId: number,
+      info: chrome.tabs.TabChangeInfo,
+      tab: chrome.tabs.Tab,
+    ) => {
+      if (info.status === "complete" && tab.active) void read();
+    };
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+    };
   }, [read]);
 
   return { jd, failure, loading, reread: read, setJd };

@@ -14,15 +14,15 @@ const PHASE_COPY: Record<string, string> = {
 };
 
 export function Results({ state }: { state: RunState }) {
-  if (state.phase === "error" && state.error) {
-    return <p className="error">{state.error.message}</p>;
-  }
-
   const progress = PHASE_COPY[state.phase];
   const { analysis, tailored } = state;
 
   return (
     <div>
+      {state.phase === "error" && state.error && (
+        <p className="error">{state.error.message}</p>
+      )}
+
       {progress && !analysis && <p className="muted">{progress}</p>}
 
       {analysis && (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExtractResult, ExtractedJD } from "@/content/extract";
 // CRXJS's `?script` import gives back the actual built filename for a script
 // that is NOT declared in the manifest's `content_scripts` — which is exactly
@@ -19,12 +19,24 @@ export function useActiveJd() {
   const [jd, setJd] = useState<ExtractedJD | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Tab events can fire in quick succession (A -> B -> C), and each call to
+  // `read()` starts its own independent async round-trip (query, then
+  // executeScript, then sendMessage) with no guaranteed order of completion.
+  // Without a generation guard, A's slower round-trip could resolve AFTER
+  // C's and overwrite `jd`/`failure` with stale data for a posting the user
+  // has already left — which then feeds App.tsx's `activeJdUrlRef`, the very
+  // thing that guard relies on being correct. Every `read()` claims the next
+  // sequence number; only the invocation still holding the current number at
+  // each commit point is allowed to write state.
+  const readSeq = useRef(0);
 
   const read = useCallback(async () => {
+    const seq = ++readSeq.current;
     setLoading(true);
     setFailure(null);
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (seq !== readSeq.current) return; // superseded by a newer read
       if (!tab?.id) {
         setJd(null);
         setFailure("No active tab.");
@@ -34,9 +46,12 @@ export function useActiveJd() {
         target: { tabId: tab.id },
         files: [contentScriptPath],
       });
+      if (seq !== readSeq.current) return; // superseded by a newer read
+
       const result = (await chrome.tabs.sendMessage(tab.id, {
         type: "CP_EXTRACT_JD",
       })) as ExtractResult | undefined;
+      if (seq !== readSeq.current) return; // superseded by a newer read
 
       if (!result || !result.ok) {
         setJd(null);
@@ -45,10 +60,14 @@ export function useActiveJd() {
       }
       setJd(result.jd);
     } catch {
+      if (seq !== readSeq.current) return; // superseded by a newer read
       setJd(null);
       setFailure("We couldn't read this page. Try reloading it.");
     } finally {
-      setLoading(false);
+      // A superseded read must not clear a newer read's loading state —
+      // either the newer read is still in flight (loading should stay true)
+      // or it already finished and set loading false itself.
+      if (seq === readSeq.current) setLoading(false);
     }
   }, []);
 

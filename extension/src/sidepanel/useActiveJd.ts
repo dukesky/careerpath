@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExtractResult, ExtractedJD } from "@/content/extract";
+import { classifyInjectionError } from "@/lib/permissions";
 // CRXJS's `?script` import gives back the actual built filename for a script
 // that is NOT declared in the manifest's `content_scripts` — which is exactly
 // what activeTab + chrome.scripting.executeScript needs. The manifest stays
@@ -18,6 +19,15 @@ import type { ExtractResult, ExtractedJD } from "@/content/extract";
 import contentScriptPath from "@/content/index.ts?script&iife";
 
 /**
+ * Why a read failed. The panel needs the kind, not just a sentence: only
+ * "permission" is worth offering a grant for.
+ */
+export interface ReadFailure {
+  kind: "permission" | "restricted" | "no-posting" | "no-tab";
+  message: string;
+}
+
+/**
  * Reads the JD from the active tab by injecting the content script on demand.
  * `activeTab` means the user clicking our icon IS the permission grant for
  * that tab — which is why the manifest asks for no host permissions on job
@@ -25,7 +35,7 @@ import contentScriptPath from "@/content/index.ts?script&iife";
  */
 export function useActiveJd() {
   const [jd, setJd] = useState<ExtractedJD | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<ReadFailure | null>(null);
   const [loading, setLoading] = useState(true);
   // Tab events can fire in quick succession (A -> B -> C), and each call to
   // `read()` starts its own independent async round-trip (query, then
@@ -47,7 +57,7 @@ export function useActiveJd() {
       if (seq !== readSeq.current) return; // superseded by a newer read
       if (!tab?.id) {
         setJd(null);
-        setFailure("No active tab.");
+        setFailure({ kind: "no-tab", message: "No active tab." });
         return;
       }
       await chrome.scripting.executeScript({
@@ -63,7 +73,10 @@ export function useActiveJd() {
 
       if (!result || !result.ok) {
         setJd(null);
-        setFailure("We couldn't read a job posting on this page.");
+        setFailure({
+          kind: "no-posting",
+          message: "We couldn't read a job posting on this page.",
+        });
         return;
       }
       setJd(result.jd);
@@ -77,17 +90,16 @@ export function useActiveJd() {
         JSON.stringify({ evt: "cp_extract_failed", error: String(err) }),
       );
       if (seq !== readSeq.current) return; // superseded by a newer read
-      // Expected, not exceptional: `activeTab` grants host access only to
-      // the tab where the user invoked the extension, and Chrome drops that
-      // grant on navigation. This panel is window-global and follows tab
-      // switches, so `executeScript` is expected to be rejected on any tab
-      // the user did not just click the icon on. Telling the user to reload
-      // is actively wrong — reloading revokes the grant again. The real
-      // recovery path is re-invoking the extension on this tab. The
-      // structural fix (optional_host_permissions, or a per-tab panel) is
-      // B2; for now, name the actual fix in the copy.
+      const kind = classifyInjectionError(err);
       setJd(null);
-      setFailure("Click the career-path icon to read this tab.");
+      setFailure(
+        kind === "restricted"
+          ? { kind, message: "This page can't be read by extensions." }
+          : {
+              kind,
+              message: "career-path doesn't have permission to read this site.",
+            },
+      );
     } finally {
       // A superseded read must not clear a newer read's loading state —
       // either the newer read is still in flight (loading should stay true)

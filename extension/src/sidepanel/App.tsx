@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getResume, type StoredResume } from "@/lib/storage";
 import { runTailor, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
+import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
@@ -22,11 +23,20 @@ export default function App() {
   // `busy` cannot be cleared by that effect because the effect never
   // touches it.
   const [busy, setBusy] = useState(false);
-  const { jd, failure, loading } = useActiveJd();
+  const { jd, failure, loading, reread } = useActiveJd();
+  const [hasBroadAccess, setHasBroadAccess] = useState(true);
+  const [granting, setGranting] = useState(false);
 
   useEffect(() => {
     void getResume().then(setStored);
   }, []);
+
+  // `hasBroadAccess` starts `true` so the button never flashes on mount
+  // before this async check resolves.
+  useEffect(() => {
+    if (failure?.kind !== "permission") return;
+    void hasBroadHostAccess().then(setHasBroadAccess);
+  }, [failure?.kind]);
 
   // `jd` is re-read on tab switch/navigation (see useActiveJd), so its `url`
   // is the panel's source of truth for "which posting am I looking at now."
@@ -64,6 +74,16 @@ export default function App() {
     }
   }
 
+  // Must be called from a click handler, not an effect: chrome.permissions.request
+  // requires a user gesture, or Chrome rejects it.
+  async function grantAccess() {
+    setGranting(true);
+    const granted = await requestBroadHostAccess();
+    setGranting(false);
+    setHasBroadAccess(granted);
+    if (granted) await reread();
+  }
+
   return (
     <main>
       <header>
@@ -80,7 +100,12 @@ export default function App() {
         <p className="muted tiny center">{state.remaining} free runs left</p>
       )}
       {!stored && <p className="muted tiny center">Add your resume to get started.</p>}
-      {failure && <p className="muted tiny center">{failure}</p>}
+      {failure && <p className="muted tiny center">{failure.message}</p>}
+      {failure?.kind === "permission" && !hasBroadAccess && (
+        <button onClick={() => void grantAccess()} disabled={granting}>
+          {granting ? "Waiting for Chrome…" : "Read this site"}
+        </button>
+      )}
 
       <Results state={state} />
     </main>

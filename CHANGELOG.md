@@ -1,0 +1,146 @@
+# Changelog
+
+Notable changes to career-path. Newest first.
+
+The web app has no version number; the extension carries its own in
+`extension/manifest.config.ts`. Dates are when the work landed on `main`.
+
+---
+
+## 2026-08-12 — Extension page access and resume review
+
+**Fixes the bug that made the extension unusable.** The side panel could not read
+any job posting. Chrome's error was
+`Cannot access contents of the page. Extension manifest must request permission
+to access the respective host.`
+
+The cause was a seam between three individually-correct decisions: the side panel
+is window-global (it outlives the tab it was opened from), page access came only
+from `activeTab` (which grants one tab from the gesture that invoked the
+extension and is dropped on navigation), and the panel follows tab switches. Any
+two compose; all three do not.
+
+### Added
+
+- `host_permissions` for five job sites — LinkedIn, Greenhouse, Lever, Ashby and
+  Workday's hosted domain. Postings there now read with no click and no prompt.
+  The install prompt names these domains; it does **not** say "all websites".
+- `optional_host_permissions` for `http://*/*` and `https://*/*`, **not** granted
+  at install and **not** shown in the install prompt. A **Read this site** button
+  in the panel requests them from a click, for sites outside the five above. The
+  grant is global and persistent, so the button appears at most once.
+- A read-only breakdown of the parsed resume, behind a **Review** disclosure on
+  the resume card. Shows contact, summary, experience, projects, skills and
+  education. A section the parser did not detect is shown as "Not detected"
+  rather than hidden — a wrong parse is otherwise invisible, because the tailored
+  output still reads fluently.
+- **Parsed wrong? Paste your resume text instead** — posts to the existing
+  `text` field of `/api/parse-resume`. Re-uploading the same PDF cannot help,
+  because the failure happens during text extraction from that file.
+
+### Changed
+
+- Read failures are now typed. A missing host permission offers the grant button;
+  a `chrome://` page, `file://` URL or the Web Store says the page cannot be read
+  and offers nothing; anything unrecognised says "We couldn't read this page.
+  Try reloading it." Previously every failure was diagnosed as a permission
+  problem, which on a pre-granted site would prompt the user for the broadest
+  possible grant to fix something it could not fix.
+
+### Known limits
+
+- A company white-labelling Workday, Greenhouse or Lever on its own domain
+  (`careers.example.com`) is not covered by the five patterns and falls to the
+  grant button.
+- Job boards embedded in an `<iframe>` are not read — injection targets the top
+  frame only.
+- Adding a `host_permissions` entry after publishing disables the extension for
+  existing users pending re-approval, so the five-site list is effectively frozen
+  at publish time. Broaden coverage through the optional grant instead.
+
+---
+
+## 2026-08-11 — Chrome extension (B1)
+
+A loadable MV3 side-panel extension in `extension/`, built with Vite + CRXJS.
+
+### Added
+
+- Side panel: company and role appear the instant it opens, with **zero network
+  requests**. One button runs the tailor flow; results render in two stages —
+  match score and per-requirement matrix first, then the rewrite and change log.
+- The base resume is parsed once and kept in `chrome.storage.local`. It is never
+  uploaded for storage — it travels in a request body and is not retained
+  server-side.
+- JD extraction from the live DOM: `schema.org/JobPosting` JSON-LD first, then
+  in-page Readability. Under 300 characters counts as a failed extraction.
+  Running in the user's own authenticated browser reaches postings the
+  server-side fetcher cannot.
+- Device-token lifecycle, an API client that refreshes once on `401` and never
+  loops, and a run orchestrator that sends one `runId` to both `/api/analyze` and
+  `/api/tailor` so a generate costs one unit of quota rather than two.
+
+### Known limits
+
+- **No sign-in.** Every user is the signed-out device tier: 3 runs per 30-day
+  window, with no in-panel way forward once exhausted. Not shippable outside the
+  team.
+- Extraction is generic. Purpose-written extractors for the five job sites, SPA
+  navigation handling, sign-in, and PDF/Markdown export are all still to come.
+- Build with `npm --prefix extension run build:dev` to point at a local API;
+  the default `build` compiles the production origin in and tree-shakes localhost
+  out.
+
+---
+
+## 2026-08-10 — Server foundation for the extension
+
+Hardened the API so a public extension can call it safely. No prompt or model
+behaviour changed.
+
+### Added
+
+- **Server-signed device tokens** (`POST /api/device-token`, HS256, 24h).
+  Extension code ships publicly and is trivially unpackable, so the previous
+  client-generated identifier was not an identity.
+- **Tiered quota.** Signed in: 5 per day. Extension device, signed out: 3 per
+  30-day window. Web anonymous: 5 per 30-day window, unchanged. A per-IP ceiling
+  of 20 per day applies on top, and a caller is blocked when either counter is
+  exhausted.
+- **One run costs one unit.** `/api/analyze` and `/api/tailor` share a
+  client-supplied `runId`; the first leg to succeed charges and the other does
+  not. Quota is consumed only on success. A replayed `runId` past the two legs
+  charges normally — an unbounded free window would let one attacker-chosen id
+  buy uncharged LLM calls.
+- **A quota gate on `/api/analyze`**, which previously had only rate limiting.
+- **CORS** for allowlisted `chrome-extension://` origins, handled once in
+  middleware.
+- **LLM instrumentation** — per-call timing and token counts, logged and rolled
+  up per task and model. This is the data behind choosing faster models.
+- A `/privacy` page, required before a Web Store listing.
+- Vitest. The repository previously had no test runner at all.
+
+### Changed
+
+- JD parsing moved to its own `parse_jd` task on a fast model, so it stops
+  sitting slowly on the critical path. Resume parsing is unaffected.
+- The README's privacy section no longer claims anonymous use stores nothing —
+  usage and rate-limit counters have always existed. The pipeline remains
+  stateless: resumes and job descriptions are never written to storage, and a
+  tailored result is persisted only when a signed-in user explicitly saves it.
+
+### Deployment requirements
+
+Two environment variables are new, and one existing pair became load-bearing:
+
+- `DEVICE_TOKEN_SECRET` (≥32 chars) — without it `/api/device-token` returns 503
+  and the extension degrades to anonymous.
+- `ALLOWED_EXTENSION_IDS` — comma-separated; empty means no extension origin is
+  accepted. Defence in depth rather than required, since MV3 fetches from
+  extension pages to `host_permissions` hosts bypass CORS.
+- **`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are now a hard
+  precondition, not an optimisation.** Without them `getKV()` falls back to a
+  per-process in-memory store; analyze and tailor are concurrent invocations that
+  land on different instances, so the `runId` marker is not shared and **every
+  generate charges twice**. The test suite runs entirely on the in-memory store
+  and cannot detect this.

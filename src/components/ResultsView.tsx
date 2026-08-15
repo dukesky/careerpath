@@ -278,7 +278,7 @@ function TailoredResumeCard({
     try {
       // Dynamic import keeps the heavy PDF library out of the initial bundle.
       const { generateResumePdf, resumePdfFilename } = await import(
-        "@/lib/resume-pdf"
+        "@shared/resume-pdf"
       );
       const blob = await generateResumePdf(resume);
       const url = URL.createObjectURL(blob);

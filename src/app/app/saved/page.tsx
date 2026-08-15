@@ -122,7 +122,7 @@ function SavedList() {
 
   async function exportPdf(item: SavedItem) {
     const { generateResumePdf, resumePdfFilename } = await import(
-      "@/lib/resume-pdf"
+      "@shared/resume-pdf"
     );
     const blob = await generateResumePdf(item.resume);
     const url = URL.createObjectURL(blob);

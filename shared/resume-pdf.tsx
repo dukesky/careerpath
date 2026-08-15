@@ -7,7 +7,7 @@ import {
   Font,
   pdf,
 } from "@react-pdf/renderer";
-import type { ParsedResume } from "./resume";
+import type { ParsedResume } from "./contract";
 
 // Disable automatic hyphenation so long tokens (URLs, "API Gateway)") never
 // break mid-word with an ugly trailing dash.

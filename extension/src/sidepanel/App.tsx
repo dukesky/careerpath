@@ -3,6 +3,7 @@ import { getResume, type StoredResume } from "@/lib/storage";
 import { runTailor, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import {
+  cacheKey,
   clearCachedRuns,
   countCachedRuns,
   getCachedRun,
@@ -70,7 +71,19 @@ export default function App() {
   // discipline, same reason.
   const runningForUrlRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const url = jd?.url;
+    // Normalized, not raw: `activeJdUrlRef` and `runningForUrlRef` (below) are
+    // both compared against this value, and cache.ts already keys entries on
+    // `cacheKey(url)` rather than the raw URL. Without normalizing here too,
+    // "same posting" means one thing to these guards and another to the
+    // cache: a navigation that only drops `?utm_source=…` changes the raw URL
+    // while normalizing to the same posting, so every raw comparison below
+    // would conclude "different posting" while getCachedRun/putCachedRun
+    // conclude "same" — wiping a live run's display and repainting a stale
+    // cached result over it, then losing the fresh result once it lands
+    // because the raw comparison fails again. cacheKey is idempotent, so
+    // re-normalizing an already-normalized value before getCachedRun/
+    // putCachedRun below is harmless.
+    const url = jd?.url ? cacheKey(jd.url) : undefined;
     activeJdUrlRef.current = url;
     // A run in flight for THIS posting already owns the display. Wiping and
     // restoring here would replace the live run with the PREVIOUS cached
@@ -119,7 +132,7 @@ export default function App() {
     // run is in flight, activeJdUrlRef.current moves on; a patch that lands
     // after that point is for a posting the user is no longer looking at,
     // so drop it instead of painting stale results over the new page.
-    const forUrl = jd.url;
+    const forUrl = cacheKey(jd.url);
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     runningForUrlRef.current = forUrl;
@@ -144,8 +157,17 @@ export default function App() {
           generatedAt: finishedAt,
         });
         setCachedCount(await countCachedRuns());
-        // Only stamp the display if the user is still on this posting.
-        if (activeJdUrlRef.current === forUrl) setGeneratedAt(finishedAt);
+        if (activeJdUrlRef.current === forUrl) {
+          // Paint the completed run rather than only stamping it. `latest` is a
+          // complete RunState, so this is a no-op on the normal path — but it
+          // also covers the window between runTailor resolving and the finally
+          // below, where the display can have been wiped by a tab switch back
+          // to this same posting while runningForUrlRef still suppressed the
+          // cache restore. Without it the user's freshly paid result is
+          // invisible until they switch tabs again.
+          setState(latest);
+          setGeneratedAt(finishedAt);
+        }
       }
     } finally {
       runningForUrlRef.current = undefined;

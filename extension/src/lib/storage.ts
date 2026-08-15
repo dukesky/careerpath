@@ -1,9 +1,12 @@
 import type { ParsedResume } from "@shared/contract";
 
 /**
- * Everything the extension keeps lives here, in chrome.storage.local — on the
+ * The base resume and the device token, in chrome.storage.local — on the
  * user's device, never uploaded for storage. The /privacy page commits to
  * this in writing; do not add a sync-storage or server-side mirror.
+ *
+ * Generated results are also persisted, in lib/cache.ts. Both are covered by
+ * the same promise, and both must stay local.
  */
 
 const RESUME_KEY = "cp_resume";

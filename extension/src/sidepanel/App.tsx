@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { getResume, type StoredResume } from "@/lib/storage";
 import { runTailor, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
+import {
+  clearCachedRuns,
+  countCachedRuns,
+  getCachedRun,
+  putCachedRun,
+} from "@/lib/cache";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
@@ -9,6 +15,12 @@ import { Results } from "./Results";
 export default function App() {
   const [stored, setStored] = useState<StoredResume | null>(null);
   const [state, setState] = useState<RunState>(INITIAL_RUN_STATE);
+  // When the currently-displayed result was generated, ISO 8601. Non-null for
+  // both a fresh run and a restored one — a result is a result.
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  // Drives the clear control, which stays hidden while there is nothing to
+  // clear. Refreshed after every write and after clearing.
+  const [cachedCount, setCachedCount] = useState(0);
   // Whether a runTailor() promise is currently unresolved. This is tracked
   // SEPARATELY from `state.phase` and set/cleared ONLY inside generate()'s
   // try/finally below — nothing else may write it. That separation is load-
@@ -29,6 +41,7 @@ export default function App() {
 
   useEffect(() => {
     void getResume().then(setStored);
+    void countCachedRuns().then(setCachedCount);
   }, []);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
@@ -41,16 +54,39 @@ export default function App() {
   // `jd` is re-read on tab switch/navigation (see useActiveJd), so its `url`
   // is the panel's source of truth for "which posting am I looking at now."
   // Track it in a ref (readable synchronously from the runTailor callback
-  // below) and reset any prior run's DISPLAYED results whenever it changes,
-  // keyed on `url` specifically — not the `jd` object, which is a fresh
-  // reference on every read even when the underlying posting hasn't changed
-  // — so this does not fire on every render. This intentionally leaves
-  // `busy` alone: switching tabs must clear what's on screen, but must not
-  // make the button clickable again while generate() is still running.
+  // below), keyed on `url` specifically — not the `jd` object, which is a
+  // fresh reference on every read even when the posting hasn't changed.
+  //
+  // This used to reset and stop. That is what destroyed a result the user had
+  // just paid for the moment they opened another tab. It now clears the
+  // display and then restores whatever this posting already has.
+  //
+  // It intentionally leaves `busy` alone: switching tabs must clear what's on
+  // screen, but must not make the button clickable again while generate() is
+  // still running.
   const activeJdUrlRef = useRef<string | undefined>(jd?.url);
   useEffect(() => {
-    activeJdUrlRef.current = jd?.url;
+    const url = jd?.url;
+    activeJdUrlRef.current = url;
     setState(INITIAL_RUN_STATE);
+    setGeneratedAt(null);
+    if (!url) return;
+    void getCachedRun(url).then((hit) => {
+      // chrome.storage reads are async and tab switches are fast, so this can
+      // resolve after the user has already moved on. Painting it then would
+      // show one posting's result underneath another posting's header.
+      if (!hit || activeJdUrlRef.current !== url) return;
+      setState({
+        phase: "done",
+        analysis: hit.analysis,
+        tailored: hit.tailored,
+        // Not cached: it is a live server-side count, and showing a stale one
+        // is worse than showing none. The next run refreshes it.
+        remaining: null,
+        error: null,
+      });
+      setGeneratedAt(hit.generatedAt);
+    });
   }, [jd?.url]);
 
   const canRun = Boolean(jd && stored) && !busy;
@@ -63,12 +99,31 @@ export default function App() {
     // so drop it instead of painting stale results over the new page.
     const forUrl = jd.url;
     setState(INITIAL_RUN_STATE);
+    setGeneratedAt(null);
     setBusy(true);
+    // Accumulate the run's own result HERE rather than reading it back out of
+    // `state` when the run finishes. The line below deliberately drops the
+    // final patch from the DISPLAY when the user has switched tabs — so
+    // `state` would hold nothing to cache, losing exactly the result this
+    // cache exists to preserve, in exactly the case that motivated it.
+    let latest: RunState = INITIAL_RUN_STATE;
     try {
       await runTailor(jd, stored.resume, (patch) => {
+        latest = { ...latest, ...patch };
         if (activeJdUrlRef.current !== forUrl) return;
         setState((prev) => ({ ...prev, ...patch }));
       });
+      if (latest.phase === "done" && latest.analysis && latest.tailored) {
+        const finishedAt = new Date().toISOString();
+        await putCachedRun(forUrl, {
+          analysis: latest.analysis,
+          tailored: latest.tailored,
+          generatedAt: finishedAt,
+        });
+        setCachedCount(await countCachedRuns());
+        // Only stamp the display if the user is still on this posting.
+        if (activeJdUrlRef.current === forUrl) setGeneratedAt(finishedAt);
+      }
     } finally {
       setBusy(false);
     }
@@ -84,6 +139,17 @@ export default function App() {
     if (granted) await reread();
   }
 
+  // Clearing wipes what is on screen too: a displayed result is, by this
+  // point, also a cached one, so leaving it up would make the control look
+  // like it did nothing. Disabled while a run is in flight (see the JSX) so
+  // it cannot yank a run's output out from under it mid-flight.
+  async function clearCache() {
+    await clearCachedRuns();
+    setCachedCount(0);
+    setState(INITIAL_RUN_STATE);
+    setGeneratedAt(null);
+  }
+
   return (
     <main>
       <header>
@@ -93,8 +159,14 @@ export default function App() {
 
       <ResumeBlock stored={stored} onChange={setStored} />
 
+      {cachedCount > 0 && (
+        <button className="textbtn" onClick={() => void clearCache()} disabled={busy}>
+          Clear {cachedCount} cached result{cachedCount === 1 ? "" : "s"}
+        </button>
+      )}
+
       <button className="primary" onClick={generate} disabled={!canRun}>
-        {busy ? "Working…" : "Tailor my resume"}
+        {busy ? "Working…" : state.tailored ? "Tailor again" : "Tailor my resume"}
       </button>
       {state.remaining !== null && (
         <p className="muted tiny center">{state.remaining} free runs left</p>
@@ -107,7 +179,7 @@ export default function App() {
         </button>
       )}
 
-      <Results state={state} company={jd?.company ?? ""} generatedAt={null} />
+      <Results state={state} company={jd?.company ?? ""} generatedAt={generatedAt} />
     </main>
   );
 }

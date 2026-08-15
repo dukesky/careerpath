@@ -604,7 +604,7 @@ with:
 npm --prefix extension run test -- cache relativeTime
 ```
 
-Expected: PASS — 13 cache tests + 6 relative-time tests.
+Expected: PASS — 12 cache tests + 5 relative-time tests.
 
 - [ ] **Step 8: Run the whole extension suite, lint and build**
 
@@ -612,7 +612,7 @@ Expected: PASS — 13 cache tests + 6 relative-time tests.
 npm --prefix extension run test && npm --prefix extension run lint && npm --prefix extension run build
 ```
 
-Expected: 80/80 (61 baseline + 19 new), lint clean, build green.
+Expected: 78/78 (61 baseline + 17 new), lint clean, build green.
 
 - [ ] **Step 9: Commit**
 
@@ -910,7 +910,7 @@ to:
 npx tsc --noEmit --project extension/tsconfig.json && npm --prefix extension run test && npm --prefix extension run lint && npm --prefix extension run build
 ```
 
-Expected: type-check clean, 80/80 tests, lint clean, build green.
+Expected: type-check clean, 78/78 tests, lint clean, build green.
 
 - [ ] **Step 8: Confirm the PDF library is a separate chunk, not in the panel's entry**
 
@@ -1160,7 +1160,7 @@ to:
 npx tsc --noEmit --project extension/tsconfig.json && npm --prefix extension run test && npm --prefix extension run lint && npm --prefix extension run build
 ```
 
-Expected: type-check clean, 80/80, lint clean, build green.
+Expected: type-check clean, 78/78, lint clean, build green.
 
 - [ ] **Step 10: Commit**
 

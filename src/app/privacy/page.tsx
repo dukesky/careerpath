@@ -20,7 +20,7 @@ export default function PrivacyPage() {
       <h1 className="mt-6 font-display text-3xl font-bold tracking-tight text-[#0E1220]">
         Privacy
       </h1>
-      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-11</p>
+      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-14</p>
 
       <p className="mt-6 text-sm leading-relaxed text-slate-600">
         career-path is built so your resume stays yours. This page lists exactly
@@ -36,7 +36,8 @@ export default function PrivacyPage() {
         <li>Job descriptions you paste, link, or screenshot.</li>
         <li>
           Tailored resumes — unless you sign in and click &ldquo;Save this
-          version&rdquo;.
+          version&rdquo;. The browser extension keeps a copy on your own
+          device; see below.
         </li>
       </ul>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
@@ -76,6 +77,14 @@ export default function PrivacyPage() {
         written to our servers for storage — it is sent with a request only
         when you ask for an analysis, and is discarded once that request
         completes.
+      </p>
+      <p className="mt-3 text-sm leading-relaxed text-slate-600">
+        The extension also keeps the results it generates — the match analysis
+        and the tailored resume — in that same local storage, so returning to a
+        job posting shows what it produced there before instead of charging you
+        for it again. The most recent 20 are kept. They are never uploaded, and
+        the panel has a &ldquo;Clear cached results&rdquo; button that removes
+        all of them.
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
         The extension reads the job posting on the page you are viewing, and

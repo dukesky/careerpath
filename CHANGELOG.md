@@ -7,6 +7,56 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-08-14 — Results layout, PDF download, and a per-posting cache
+
+### Added
+
+- **One-click PDF download.** The tailored resume downloads as a PDF from the
+  panel, with no extra network request — the layout renders in the browser. The
+  module that produces it moved to `shared/resume-pdf.tsx` and is now the single
+  source for both the web app and the extension, so the two cannot drift.
+- **Generated results survive tab switches and panel closes.** Each run is kept
+  in `chrome.storage.local` against the posting's URL. Returning shows it
+  immediately, stamped `generated <relative time>`, with the primary button
+  reading **Tailor again** so a cached result is never mistaken for a fresh one.
+  The 20 most recent are kept; the oldest is evicted after that.
+- **Clear cached results**, next to the resume card, and a matching line on
+  `/privacy`. The promise that nothing is stored unless you save it remains true
+  of our servers; it is no longer true of your own browser, and the page now
+  says so.
+
+### Changed
+
+- The results are ordered score → download → details. The change log,
+  requirement matrix and honest gaps moved below the download button: they
+  answer "why", which is the second question, and they were sitting between the
+  decision and the artifact.
+- **Copy tailored resume** is now **Copy as JSON** and lives in the details
+  section. It always copied raw JSON; the old label promised what the PDF button
+  now actually delivers.
+- The cache key is the posting URL with `utm_*`, `ref`, `source`, `trk` and the
+  fragment stripped, so the same posting reached from a search result and from a
+  shared link is one entry rather than two.
+
+### Known limits
+
+- **Generation still takes about a minute.** Nothing here changes that. The next
+  step is to read the per-task, per-model timings already being collected at
+  `stats:<task>:<model>` and find out how that minute divides between
+  `parse_jd`, `analyze` and `tailor` before swapping any model — guessing risks
+  spending the effort for a few seconds while losing rewrite quality.
+- The relative timestamp is computed when a result is painted and does not tick.
+  It refreshes on the next tab switch back.
+- The cache is per-device. It does not sync, by design.
+- The extension's manifest now declares `'wasm-unsafe-eval'` in its
+  `content_security_policy`. The PDF layout engine compiles to WebAssembly, and
+  MV3's default extension-page policy blocks WASM outright — without it the
+  download button fails on every click. It is not a permission and does not
+  appear in the install prompt, but a Web Store reviewer may ask, and this is
+  the answer.
+
+---
+
 ## 2026-08-12 — Extension page access and resume review
 
 **Fixes the bug that made the extension unusable.** The side panel could not read

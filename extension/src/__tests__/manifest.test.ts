@@ -20,6 +20,7 @@ const manifest = manifestExport as {
   content_scripts?: unknown;
   host_permissions?: string[];
   optional_host_permissions?: string[];
+  content_security_policy?: { extension_pages?: string };
 };
 
 describe("manifest", () => {
@@ -59,5 +60,18 @@ describe("manifest", () => {
   // returns false — the button silently does nothing, with every test green.
   it("declares exactly the origins the panel will request", () => {
     expect(manifest.optional_host_permissions).toEqual(BROAD_ORIGINS);
+  });
+
+  // The PDF layout engine (@react-pdf/layout -> yoga-layout) compiles to
+  // WebAssembly. MV3's default extension_pages CSP is `script-src 'self'`,
+  // which blocks WASM compilation outright — without 'wasm-unsafe-eval' the
+  // Download PDF button throws a CSP CompileError on every click, and every
+  // test in this suite (tsc, lint, vitest, vite build) stays green while the
+  // feature is completely broken at runtime. This assertion is the only
+  // thing that fails if that directive is ever dropped.
+  it("allows wasm-unsafe-eval for the PDF layout engine's WebAssembly", () => {
+    expect(manifest.content_security_policy?.extension_pages).toContain(
+      "'wasm-unsafe-eval'",
+    );
   });
 });

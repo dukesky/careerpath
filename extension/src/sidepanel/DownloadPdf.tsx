@@ -39,7 +39,8 @@ export function DownloadPdf({
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-    } catch {
+    } catch (err) {
+      console.error("PDF generation failed", err);
       setFailed(true);
     } finally {
       setBusy(false);

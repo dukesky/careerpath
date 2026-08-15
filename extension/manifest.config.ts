@@ -44,6 +44,15 @@ export default defineManifest({
   permissions: ["storage", "sidePanel", "activeTab", "scripting"],
   host_permissions: [...API_HOSTS, ...JOB_SITES],
   optional_host_permissions: OPTIONAL_HOSTS,
+  content_security_policy: {
+    // The PDF layout engine (@react-pdf/layout -> yoga-layout) is compiled to
+    // WebAssembly. MV3's default extension_pages CSP is `script-src 'self'`,
+    // which blocks WASM compilation outright: without 'wasm-unsafe-eval' the
+    // Download PDF button throws a CSP CompileError on every click and the
+    // panel can only report a generic failure. This is NOT a permission and
+    // does not appear in the install prompt.
+    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+  },
   background: {
     service_worker: "src/background/index.ts",
     type: "module",

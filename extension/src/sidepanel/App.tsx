@@ -65,9 +65,21 @@ export default function App() {
   // screen, but must not make the button clickable again while generate() is
   // still running.
   const activeJdUrlRef = useRef<string | undefined>(jd?.url);
+  // Which posting generate() currently owns the display for, or undefined.
+  // Written ONLY alongside `busy`, in generate()'s try/finally — same
+  // discipline, same reason.
+  const runningForUrlRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const url = jd?.url;
     activeJdUrlRef.current = url;
+    // A run in flight for THIS posting already owns the display. Wiping and
+    // restoring here would replace the live run with the PREVIOUS cached
+    // result — labelled "done", carrying its old timestamp — while the button
+    // still reads "Working…". In the ordering where this read resolves after
+    // the run's own write, it never corrects itself, and the user's freshly
+    // paid result is hidden behind an older one. That is the exact loss this
+    // cache exists to prevent, so leave a live run alone.
+    if (runningForUrlRef.current === url) return;
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     if (!url) return;
@@ -76,6 +88,9 @@ export default function App() {
       // resolve after the user has already moved on. Painting it then would
       // show one posting's result underneath another posting's header.
       if (!hit || activeJdUrlRef.current !== url) return;
+      // A run may also have STARTED while this read was pending — same stale
+      // paint, no tab switch needed.
+      if (runningForUrlRef.current === url) return;
       setState({
         phase: "done",
         analysis: hit.analysis,
@@ -100,6 +115,7 @@ export default function App() {
     const forUrl = jd.url;
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
+    runningForUrlRef.current = forUrl;
     setBusy(true);
     // Accumulate the run's own result HERE rather than reading it back out of
     // `state` when the run finishes. The line below deliberately drops the
@@ -125,6 +141,7 @@ export default function App() {
         if (activeJdUrlRef.current === forUrl) setGeneratedAt(finishedAt);
       }
     } finally {
+      runningForUrlRef.current = undefined;
       setBusy(false);
     }
   }

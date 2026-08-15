@@ -107,7 +107,7 @@ export default function App() {
         </button>
       )}
 
-      <Results state={state} />
+      <Results state={state} company={jd?.company ?? ""} generatedAt={null} />
     </main>
   );
 }

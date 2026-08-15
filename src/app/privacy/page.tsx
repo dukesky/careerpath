@@ -83,8 +83,8 @@ export default function PrivacyPage() {
         and the tailored resume — in that same local storage, so returning to a
         job posting shows what it produced there before instead of charging you
         for it again. The most recent 20 are kept. They are never uploaded, and
-        the panel has a &ldquo;Clear cached results&rdquo; button that removes
-        all of them.
+        the panel has a button that clears them — it shows how many are
+        cached, and removes all of them.
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
         The extension reads the job posting on the page you are viewing, and

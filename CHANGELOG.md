@@ -20,10 +20,10 @@ The web app has no version number; the extension carries its own in
   immediately, stamped `generated <relative time>`, with the primary button
   reading **Tailor again** so a cached result is never mistaken for a fresh one.
   The 20 most recent are kept; the oldest is evicted after that.
-- **Clear cached results**, next to the resume card, and a matching line on
-  `/privacy`. The promise that nothing is stored unless you save it remains true
-  of our servers; it is no longer true of your own browser, and the page now
-  says so.
+- **A clear-cache control** next to the resume card, labelled with the number of
+  cached results, and a matching line on `/privacy`. The promise that nothing is
+  stored unless you save it remains true of our servers; it is no longer true of
+  your own browser, and the page now says so.
 
 ### Changed
 

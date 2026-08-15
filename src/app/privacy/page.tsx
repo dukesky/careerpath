@@ -80,11 +80,12 @@ export default function PrivacyPage() {
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
         The extension also keeps the results it generates — the match analysis
-        and the tailored resume — in that same local storage, so returning to a
-        job posting shows what it produced there before instead of charging you
-        for it again. The most recent 20 are kept. They are never uploaded, and
-        the panel has a button that clears them — it shows how many are
-        cached, and removes all of them.
+        and the tailored resume — in that same local storage, each one keyed by
+        the posting&rsquo;s address, so up to 20 job-posting URLs are kept on
+        your device alongside them. Returning to a job posting shows what it
+        produced there before instead of charging you for it again. They are
+        never uploaded, and the panel has a button that clears them — it shows
+        how many are cached, and removes all of them.
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
         The extension reads the job posting on the page you are viewing, and

@@ -1,3 +1,18 @@
+/**
+ * Rendered by BOTH the Next.js web app and the Chrome extension's side panel
+ * (extension/src/sidepanel/DownloadPdf.tsx) — that is the whole point of this
+ * module living under shared/. The extension side imposes two constraints
+ * that a web-only change here can silently violate:
+ *
+ * - No fetching an external origin (`Font.register({ src: "https://…" })`,
+ *   `<Image src="https://…">`). The extension has no guaranteed host
+ *   permission for arbitrary origins — broad host access is only *optional*,
+ *   granted per click; see extension/manifest.config.ts.
+ * - No dependency that requires `unsafe-eval`. MV3 forbids it outright. The
+ *   WASM layout engine already needed `'wasm-unsafe-eval'`, declared in
+ *   extension/manifest.config.ts's `content_security_policy` — do not assume
+ *   a new dependency gets the same allowance for free.
+ */
 import {
   Document,
   Page,

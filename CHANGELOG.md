@@ -16,10 +16,11 @@ The web app has no version number; the extension carries its own in
   module that produces it moved to `shared/resume-pdf.tsx` and is now the single
   source for both the web app and the extension, so the two cannot drift.
 - **Generated results survive tab switches and panel closes.** Each run is kept
-  in `chrome.storage.local` against the posting's URL. Returning shows it
-  immediately, stamped `generated <relative time>`, with the primary button
-  reading **Tailor again** so a cached result is never mistaken for a fresh one.
-  The 20 most recent are kept; the oldest is evicted after that.
+  in `chrome.storage.local`, keyed by the posting's URL — the URL itself is
+  part of what's stored, alongside the analysis and tailored resume. Returning
+  shows it immediately, stamped `generated <relative time>`, with the primary
+  button reading **Tailor again** so a cached result is never mistaken for a
+  fresh one. The 20 most recent are kept; the oldest is evicted after that.
 - **A clear-cache control** next to the resume card, labelled with the number of
   cached results, and a matching line on `/privacy`. The promise that nothing is
   stored unless you save it remains true of our servers; it is no longer true of

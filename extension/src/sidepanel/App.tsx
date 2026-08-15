@@ -79,7 +79,14 @@ export default function App() {
     // the run's own write, it never corrects itself, and the user's freshly
     // paid result is hidden behind an older one. That is the exact loss this
     // cache exists to prevent, so leave a live run alone.
-    if (runningForUrlRef.current === url) return;
+    //
+    // `url &&` is load-bearing, not defensive noise. runningForUrlRef.current
+    // is `undefined` when idle, and `url` is ALSO `undefined` on any page with
+    // no detected posting (useActiveJd sets jd to null there). Without this
+    // guard the two `undefined`s compare equal, the wipe is skipped, and the
+    // previous posting's result stays frozen on screen while the user browses
+    // unrelated pages.
+    if (url && runningForUrlRef.current === url) return;
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     if (!url) return;

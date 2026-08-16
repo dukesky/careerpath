@@ -45,6 +45,8 @@ It downloads the *rewritten* resume, which is what the slower of the two paralle
 
 **Move the module to `shared/resume-pdf.tsx`** and have both the web app and the extension import it there. Copying it into the extension would create a second source of truth for how a resume looks on paper, and the two would drift.
 
+This shares the layout source, not the rendered bytes: `@react-pdf/renderer` depends on `@react-pdf/layout` — the line-breaking and metrics engine — through a caret range, so the two packages can legitimately resolve different engine minors. Guaranteeing identical output would need the whole `@react-pdf/*` subtree pinned with `overrides` in both packages. That is deliberately not done here; one editable layout is the benefit being bought.
+
 Consequences to handle:
 - The web app's dynamic `import("@/lib/resume-pdf")` in `ResultsView.tsx` re-points at the shared path.
 - The extension's tsconfig currently includes `../shared/contract.ts` specifically, not the directory; it gains the new file.

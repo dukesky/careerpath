@@ -10,8 +10,12 @@ import type { ParsedResume } from "@shared/contract";
  * first click and the browser caches it for later ones.
  *
  * The layout itself lives in shared/resume-pdf.tsx and is the SAME module the
- * web app renders from, so a resume downloaded here and one downloaded from
- * the site are byte-for-byte the same document.
+ * web app renders from, so there is one place to change how a resume looks on
+ * paper and the change reaches both surfaces. Note this is shared SOURCE, not
+ * guaranteed-identical output: @react-pdf/renderer pulls @react-pdf/layout —
+ * the line-breaking and metrics engine — through a caret range, so the two
+ * packages can resolve different engine minors and produce slightly different
+ * line breaks from the same input.
  */
 export function DownloadPdf({
   resume,

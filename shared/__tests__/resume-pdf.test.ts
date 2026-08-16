@@ -31,9 +31,12 @@ describe("@react-pdf/renderer version parity", () => {
   // specifically so both render a resume through the same layout engine. If
   // the two package.json files ever declare different @react-pdf/renderer
   // ranges, that promise is broken silently: the source stays identical but
-  // it is compiled by two different minor versions, and line-breaking and
-  // metrics changes between react-pdf minors are exactly the drift this
-  // module exists to prevent. Read the raw JSON with node:fs rather than
+  // it is compiled by two different minor versions. Note the LIMIT of this
+  // check: it compares the declared @react-pdf/renderer ranges only. The
+  // transitive @react-pdf/layout — the actual line-breaking and metrics
+  // engine — comes in through a caret range and can still resolve differently
+  // in the two packages. Closing that would need overrides pinning the whole
+  // @react-pdf/* subtree in both package.json files. Read the raw JSON with node:fs rather than
   // importing the package.json files — resolveJsonModule behaviour across
   // this package boundary (root vs. extension/) is not something to rely on.
   it("declares the same @react-pdf/renderer range in both package.json files", () => {

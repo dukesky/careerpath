@@ -694,8 +694,12 @@ import type { ParsedResume } from "@shared/contract";
  * first click and the browser caches it for later ones.
  *
  * The layout itself lives in shared/resume-pdf.tsx and is the SAME module the
- * web app renders from, so a resume downloaded here and one downloaded from
- * the site are byte-for-byte the same document.
+ * web app renders from, so there is one place to change how a resume looks on
+ * paper and the change reaches both surfaces. Note this is shared SOURCE, not
+ * guaranteed-identical output: @react-pdf/renderer pulls @react-pdf/layout —
+ * the line-breaking and metrics engine — through a caret range, so the two
+ * packages can resolve different engine minors and produce slightly different
+ * line breaks from the same input.
  */
 export function DownloadPdf({
   resume,
@@ -1252,7 +1256,10 @@ In `CHANGELOG.md`, insert directly after the `---` on line 8 (above the `## 2026
 - **One-click PDF download.** The tailored resume downloads as a PDF from the
   panel, with no extra network request — the layout renders in the browser. The
   module that produces it moved to `shared/resume-pdf.tsx` and is now the single
-  source for both the web app and the extension, so the two cannot drift.
+  source for both the web app and the extension, so the layout is changed in one
+  place. That shares the source, not the exact output — `@react-pdf/renderer`
+  depends on its layout engine through a caret range, so the two packages can
+  resolve different engine minors and break lines slightly differently.
 - **Generated results survive tab switches and panel closes.** Each run is kept
   in `chrome.storage.local` against the posting's URL. Returning shows it
   immediately, stamped `generated <relative time>`, with the primary button

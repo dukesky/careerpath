@@ -14,7 +14,10 @@ The web app has no version number; the extension carries its own in
 - **One-click PDF download.** The tailored resume downloads as a PDF from the
   panel, with no extra network request — the layout renders in the browser. The
   module that produces it moved to `shared/resume-pdf.tsx` and is now the single
-  source for both the web app and the extension, so the two cannot drift.
+  source for both the web app and the extension, so the layout is changed in one
+  place. That shares the source, not the exact output — `@react-pdf/renderer`
+  depends on its layout engine through a caret range, so the two packages can
+  resolve different engine minors and break lines slightly differently.
 - **Generated results survive tab switches and panel closes.** Each run is kept
   in `chrome.storage.local`, keyed by the posting's URL — the URL itself is
   part of what's stored, alongside the analysis and tailored resume. Returning

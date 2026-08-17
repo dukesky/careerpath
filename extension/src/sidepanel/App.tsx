@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getResume, type StoredResume } from "@/lib/storage";
-import { runTailor, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
+import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import {
   cacheKey,
@@ -19,6 +19,14 @@ export default function App() {
   // When the currently-displayed result was generated, ISO 8601. Non-null for
   // both a fresh run and a restored one — a result is a result.
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  // What the DISPLAYED result was generated with. Distinct from the draft
+  // below: the draft is what is typed but not yet sent.
+  const [appliedSupplement, setAppliedSupplement] = useState("");
+  const [supplementDraft, setSupplementDraft] = useState("");
+  // The run this posting's displayed result came from. Reusing it makes a
+  // regeneration free. "" means there is nothing to refine, so the next
+  // generate mints a fresh id and is charged.
+  const [runIdForPosting, setRunIdForPosting] = useState("");
   // Drives the clear control, which stays hidden while there is nothing to
   // clear. Refreshed after every write and after clearing.
   const [cachedCount, setCachedCount] = useState(0);
@@ -102,6 +110,9 @@ export default function App() {
     if (url && runningForUrlRef.current === url) return;
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
+    setAppliedSupplement("");
+    setSupplementDraft("");
+    setRunIdForPosting("");
     if (!url) return;
     void getCachedRun(url).then((hit) => {
       // chrome.storage reads are async and tab switches are fast, so this can
@@ -121,18 +132,27 @@ export default function App() {
         error: null,
       });
       setGeneratedAt(hit.generatedAt);
+      setAppliedSupplement(hit.extraInfo);
+      setSupplementDraft(hit.extraInfo);
+      setRunIdForPosting(hit.runId);
     });
   }, [jd?.url]);
 
   const canRun = Boolean(jd && stored) && !busy;
 
-  async function generate() {
+  async function generate(supplement: string) {
     if (!jd || !stored || busy) return;
     // Pin which posting this run is for. If the user switches tabs while a
     // run is in flight, activeJdUrlRef.current moves on; a patch that lands
     // after that point is for a posting the user is no longer looking at,
     // so drop it instead of painting stale results over the new page.
     const forUrl = cacheKey(jd.url);
+    // Refining reuses this posting's run id, which is what makes it free.
+    // A first generate — or one after a cache entry too old to carry an id —
+    // mints a new one and is charged.
+    const runId = supplement.trim().length > 0 && runIdForPosting
+      ? runIdForPosting
+      : newRunId();
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     runningForUrlRef.current = forUrl;
@@ -144,21 +164,28 @@ export default function App() {
     // cache exists to preserve, in exactly the case that motivated it.
     let latest: RunState = INITIAL_RUN_STATE;
     try {
-      await runTailor(jd, stored.resume, (patch) => {
-        latest = { ...latest, ...patch };
-        if (activeJdUrlRef.current !== forUrl) return;
-        setState((prev) => ({ ...prev, ...patch }));
-      });
+      await runTailor(
+        jd,
+        stored.resume,
+        (patch) => {
+          latest = { ...latest, ...patch };
+          if (activeJdUrlRef.current !== forUrl) return;
+          setState((prev) => ({ ...prev, ...patch }));
+        },
+        { extraInfo: supplement, runId },
+      );
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         const finishedAt = new Date().toISOString();
         await putCachedRun(forUrl, {
           analysis: latest.analysis,
           tailored: latest.tailored,
           generatedAt: finishedAt,
-          extraInfo: "", // filled in by Task 4
-          runId: "", // filled in by Task 4
+          extraInfo: supplement,
+          runId,
         });
         setCachedCount(await countCachedRuns());
+        setAppliedSupplement(supplement);
+        setRunIdForPosting(runId);
         if (activeJdUrlRef.current === forUrl) {
           // Paint the completed run rather than only stamping it. `latest` is a
           // complete RunState, so this is a no-op on the normal path — but it
@@ -213,7 +240,7 @@ export default function App() {
         </button>
       )}
 
-      <button className="primary" onClick={generate} disabled={!canRun}>
+      <button className="primary" onClick={() => void generate(supplementDraft)} disabled={!canRun}>
         {busy ? "Working…" : state.tailored ? "Tailor again" : "Tailor my resume"}
       </button>
       {state.remaining !== null && (
@@ -227,7 +254,18 @@ export default function App() {
         </button>
       )}
 
-      <Results state={state} company={jd?.company ?? ""} generatedAt={generatedAt} />
+      <Results
+        state={state}
+        company={jd?.company ?? ""}
+        generatedAt={generatedAt}
+        appliedSupplement={appliedSupplement}
+        supplement={{
+          text: supplementDraft,
+          onChange: setSupplementDraft,
+          onSubmit: () => void generate(supplementDraft),
+          busy,
+        }}
+      />
     </main>
   );
 }

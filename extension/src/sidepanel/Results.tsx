@@ -2,6 +2,8 @@ import type { RunState } from "@/lib/run";
 import type { ReqStatus } from "@shared/contract";
 import { relativeTime } from "@/lib/relativeTime";
 import { DownloadPdf } from "./DownloadPdf";
+import { SupplementBox, type SupplementProps } from "./SupplementBox";
+import { supplementPlaceholder } from "./gapHint";
 
 const STATUS_MARK: Record<ReqStatus, string> = {
   met: "✅",
@@ -25,10 +27,15 @@ export function Results({
   state,
   company,
   generatedAt,
+  appliedSupplement,
+  supplement,
 }: {
   state: RunState;
   company: string;
   generatedAt: string | null;
+  /** What the DISPLAYED result was generated with, not what is typed below. */
+  appliedSupplement: string;
+  supplement: SupplementProps;
 }) {
   const progress = PHASE_COPY[state.phase];
   const { analysis, tailored } = state;
@@ -60,6 +67,11 @@ export function Results({
               <DownloadPdf resume={tailored.resume} company={company} />
               {generatedAt && (
                 <p className="muted tiny center">generated {relativeTime(generatedAt)}</p>
+              )}
+              {appliedSupplement.trim().length > 0 && (
+                <p className="muted tiny center">
+                  Includes experience you added that isn&rsquo;t on your resume.
+                </p>
               )}
             </>
           )}
@@ -123,6 +135,8 @@ export function Results({
               Copy as JSON
             </button>
           )}
+
+          <SupplementBox {...supplement} placeholder={supplementPlaceholder(analysis)} />
         </section>
       )}
     </div>

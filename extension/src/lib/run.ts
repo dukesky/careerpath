@@ -20,12 +20,29 @@ export const INITIAL_RUN_STATE: RunState = {
   error: null,
 };
 
-/** Collision-resistant enough for a per-run key, and defined everywhere. */
-function newRunId(): string {
+/**
+ * Collision-resistant enough for a per-run key, and defined everywhere.
+ *
+ * Exported because the PANEL decides whether a generate is new or a
+ * refinement: a fresh run mints an id here, a refinement passes back the id
+ * it cached, and the server charges accordingly.
+ */
+export function newRunId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export interface RunOptions {
+  /** Experience the user says their resume does not mention. */
+  extraInfo?: string;
+  /**
+   * Reuse a previous run's id to refine that result for free — the server
+   * grants a bounded number of free refinements per charged run. Omit to
+   * start a fresh, charged run.
+   */
+  runId?: string;
 }
 
 /**
@@ -44,6 +61,7 @@ export async function runTailor(
   jd: ExtractedJD,
   resume: ParsedResume,
   onUpdate: (patch: Partial<RunState>) => void,
+  opts: RunOptions = {},
 ): Promise<void> {
   const fail = (kind: ApiErrorKind, message: string) =>
     onUpdate({ phase: "error", error: { kind, message } });
@@ -53,11 +71,11 @@ export async function runTailor(
   const parsed = await apiPost<{ jd: ParsedJD }>("/api/parse-jd", { text: jd.text });
   if (!parsed.ok) return fail(parsed.kind, parsed.message);
 
-  const runId = newRunId();
+  const runId = opts.runId || newRunId();
   const payload = {
     structuredResume: resume,
     structuredJD: parsed.data.jd,
-    extraInfo: "",
+    extraInfo: opts.extraInfo ?? "",
     quality: "quality",
     runId,
   };

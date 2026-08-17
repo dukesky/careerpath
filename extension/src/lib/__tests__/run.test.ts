@@ -149,4 +149,34 @@ describe("runTailor", () => {
     await runTailor(JD, RESUME, onUpdate);
     expect(patches.at(-1)?.remaining).toBe(2);
   });
+
+  it("reuses a supplied runId instead of minting one", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).includes("parse-jd")) return json({ jd: {} });
+      return json({ analysis: {}, tailored: {}, remaining: 4 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {}, { runId: "reused-id" });
+
+    const ids = fetchMock.mock.calls
+      .filter((c) => !String(c[0]).includes("parse-jd"))
+      .map((c) => JSON.parse(String((c[1] as RequestInit).body)).runId);
+    expect(ids).toEqual(["reused-id", "reused-id"]);
+  });
+
+  it("sends the supplement to both analyze and tailor", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).includes("parse-jd")) return json({ jd: {} });
+      return json({ analysis: {}, tailored: {}, remaining: 4 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {}, { extraInfo: "I used PyTorch on X" });
+
+    const sent = fetchMock.mock.calls
+      .filter((c) => !String(c[0]).includes("parse-jd"))
+      .map((c) => JSON.parse(String((c[1] as RequestInit).body)).extraInfo);
+    expect(sent).toEqual(["I used PyTorch on X", "I used PyTorch on X"]);
+  });
 });

@@ -68,6 +68,19 @@ export function Results({
               {generatedAt && (
                 <p className="muted tiny center">generated {relativeTime(generatedAt)}</p>
               )}
+              {/* The supplement feeds the ANALYSIS leg as well as the rewrite, so
+                  the match score above is no longer derived from the parsed
+                  resume alone — it is derived from the resume plus whatever the
+                  user typed in the box below. That is a material fact about the
+                  number on screen, so the panel says so.
+
+                  The downloaded PDF (DownloadPdf, above) deliberately carries no
+                  equivalent mark. This is not an oversight to fix by threading
+                  `appliedSupplement` into shared/resume-pdf.tsx — the PDF is the
+                  user's own document, going to an employer of their choosing, and
+                  stamping a disclosure onto what they send oversteps. The
+                  disclosure belongs here, in the panel that computed the score,
+                  not on the artifact the user controls. */}
               {appliedSupplement.trim().length > 0 && (
                 <p className="muted tiny center">
                   Includes experience you added that isn&rsquo;t on your resume.

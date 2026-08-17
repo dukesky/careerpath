@@ -52,8 +52,8 @@ The web app has no version number; the extension carries its own in
 - Cache entries written before this release carry no `runId`, so the first
   regeneration of an older posting is charged as a new run.
 - If a regeneration fails and you then switch tabs before retrying, the text you
-  typed is lost — drafts are held per posting and cleared when you navigate
-  away. Retrying without leaving the posting keeps it.
+  typed is lost — the draft is cleared when you navigate away from a posting.
+  Retrying without leaving the posting keeps it.
 
 ---
 

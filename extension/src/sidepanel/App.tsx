@@ -79,6 +79,12 @@ export default function App() {
   // Written ONLY alongside `busy`, in generate()'s try/finally — same
   // discipline, same reason.
   const runningForUrlRef = useRef<string | undefined>(undefined);
+  // The supplement the in-flight run was started with. `supplementDraft` is a
+  // single global piece of state, but the effect below early-returns for a
+  // posting whose run is still going — so without this, switching A -> B -> A
+  // mid-run leaves B's text in the box under A, and regenerating would submit
+  // B's claimed experience as A's. Written only where `busy` is.
+  const runningSupplementRef = useRef("");
   useEffect(() => {
     // Normalized, not raw: `activeJdUrlRef` and `runningForUrlRef` (below) are
     // both compared against this value, and cache.ts already keys entries on
@@ -108,7 +114,13 @@ export default function App() {
     // guard the two `undefined`s compare equal, the wipe is skipped, and the
     // previous posting's result stays frozen on screen while the user browses
     // unrelated pages.
-    if (url && runningForUrlRef.current === url) return;
+    if (url && runningForUrlRef.current === url) {
+      // Returning to a posting whose run is still going. Leave the display to
+      // the run, but put its own supplement back — the draft may hold another
+      // posting's text from the tab we just came from.
+      setSupplementDraft(runningSupplementRef.current);
+      return;
+    }
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     setAppliedSupplement("");
@@ -158,6 +170,7 @@ export default function App() {
     setGeneratedAt(null);
     setAppliedSupplement("");
     runningForUrlRef.current = forUrl;
+    runningSupplementRef.current = supplement;
     setBusy(true);
     // Accumulate the run's own result HERE rather than reading it back out of
     // `state` when the run finishes. The line below deliberately drops the
@@ -209,6 +222,7 @@ export default function App() {
       }
     } finally {
       runningForUrlRef.current = undefined;
+      runningSupplementRef.current = "";
       setBusy(false);
     }
   }

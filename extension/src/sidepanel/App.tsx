@@ -155,6 +155,8 @@ export default function App() {
           analysis: latest.analysis,
           tailored: latest.tailored,
           generatedAt: finishedAt,
+          extraInfo: "", // filled in by Task 4
+          runId: "", // filled in by Task 4
         });
         setCachedCount(await countCachedRuns());
         if (activeJdUrlRef.current === forUrl) {

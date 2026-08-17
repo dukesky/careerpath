@@ -19,7 +19,7 @@ const RESUME: ParsedResume = {
   education: [],
 };
 
-function run(score: number): CachedRun {
+function run(score: number, extraInfo = "", runId = "rid"): CachedRun {
   const analysis: GapAnalysis = {
     overall_match_score: score,
     rationale: "",
@@ -32,7 +32,13 @@ function run(score: number): CachedRun {
     change_log: [],
     projected_match_score: score + 10,
   };
-  return { analysis, tailored, generatedAt: "2026-08-14T10:00:00.000Z" };
+  return {
+    analysis,
+    tailored,
+    generatedAt: "2026-08-14T10:00:00.000Z",
+    extraInfo,
+    runId,
+  };
 }
 
 function fakeChromeStorage() {
@@ -144,5 +150,36 @@ describe("result cache", () => {
     // and it recovers — a write over the corrupt value must still land
     await putCachedRun("https://acme.com/jobs/1", run(62));
     expect(await countCachedRuns()).toBe(1);
+  });
+
+  it("round-trips the supplement text and the run id", async () => {
+    await putCachedRun("https://acme.com/jobs/1", run(62, "I used PyTorch on X", "run-7"));
+    const hit = await getCachedRun("https://acme.com/jobs/1");
+    expect(hit?.extraInfo).toBe("I used PyTorch on X");
+    expect(hit?.runId).toBe("run-7");
+  });
+
+  // Entries written before these fields existed are already in real users'
+  // browsers. A missing extraInfo must read as "" rather than undefined, or
+  // the panel renders the string "undefined" in its textarea; a missing runId
+  // must read as "" so the next generate mints a fresh one and is charged
+  // normally, which is the right degradation.
+  it("reads an entry written before these fields existed", async () => {
+    await chrome.storage.local.set({
+      cp_results: JSON.stringify([
+        {
+          key: "https://acme.com/jobs/legacy",
+          analysis: run(50).analysis,
+          tailored: run(50).tailored,
+          generatedAt: "2026-08-13T09:00:00.000Z",
+        },
+      ]),
+    });
+
+    const hit = await getCachedRun("https://acme.com/jobs/legacy");
+    expect(hit).not.toBeNull();
+    expect(hit?.extraInfo).toBe("");
+    expect(hit?.runId).toBe("");
+    expect(hit?.analysis.overall_match_score).toBe(50);
   });
 });

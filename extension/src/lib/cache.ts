@@ -19,12 +19,29 @@ export interface CachedRun {
   tailored: TailorResult;
   /** ISO 8601, when the run finished. */
   generatedAt: string;
+  /** Experience the user said their resume omits. "" when they added none. */
+  extraInfo: string;
+  /**
+   * The server-side run this result came from. Reusing it refines that run
+   * for free; the server grants a bounded number of free refinements per
+   * charged run. "" for entries written before this field existed — those
+   * simply cost a new unit, which is the right degradation.
+   */
+  runId: string;
 }
 
 interface CacheEntry extends CachedRun {
   /** Normalized posting URL — see cacheKey. */
   key: string;
 }
+
+/**
+ * What a stored entry may ACTUALLY look like. Entries written before
+ * `extraInfo` and `runId` existed are already in real users' browsers, so
+ * every read must treat them as optional even though the type above does not.
+ */
+type StoredEntry = Omit<CacheEntry, "extraInfo" | "runId"> &
+  Partial<Pick<CacheEntry, "extraInfo" | "runId">>;
 
 /**
  * The posting URL with tracking parameters and the fragment removed.
@@ -64,13 +81,13 @@ export function cacheKey(rawUrl: string): string {
  * A corrupt or unreadable blob reads as empty rather than throwing. A cache is
  * expendable; a panel that cannot render because of one is not.
  */
-async function readAll(): Promise<CacheEntry[]> {
+async function readAll(): Promise<StoredEntry[]> {
   try {
     const got = await chrome.storage.local.get([RESULTS_KEY]);
     const raw = got[RESULTS_KEY];
     if (typeof raw !== "string") return [];
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as CacheEntry[]) : [];
+    return Array.isArray(parsed) ? (parsed as StoredEntry[]) : [];
   } catch {
     return [];
   }
@@ -84,6 +101,8 @@ export async function getCachedRun(url: string): Promise<CachedRun | null> {
     analysis: hit.analysis,
     tailored: hit.tailored,
     generatedAt: hit.generatedAt,
+    extraInfo: hit.extraInfo ?? "",
+    runId: hit.runId ?? "",
   };
 }
 

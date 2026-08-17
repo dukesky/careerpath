@@ -287,6 +287,7 @@ export default function App() {
           onChange: setSupplementDraft,
           onSubmit: () => void generate(supplementDraft),
           busy,
+          canRun,
         }}
       />
 

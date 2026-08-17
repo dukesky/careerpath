@@ -3,6 +3,14 @@ export interface SupplementProps {
   onChange: (value: string) => void;
   onSubmit: () => void;
   busy: boolean;
+  /**
+   * Whether a run can actually be started right now (a posting is detected
+   * AND a resume is stored). A cache restore can paint an analysis — and this
+   * box along with it — with no resume in storage, e.g. after the user clears
+   * it. Without this, the button stays enabled and the click is a silent
+   * no-op against generate()'s own `!jd || !stored` guard.
+   */
+  canRun: boolean;
 }
 
 /**
@@ -18,6 +26,7 @@ export function SupplementBox({
   onChange,
   onSubmit,
   busy,
+  canRun,
   placeholder,
 }: SupplementProps & { placeholder: string }) {
   return (
@@ -31,7 +40,7 @@ export function SupplementBox({
         placeholder={placeholder}
         disabled={busy}
       />
-      <button onClick={onSubmit} disabled={busy || text.trim().length === 0}>
+      <button onClick={onSubmit} disabled={busy || !canRun || text.trim().length === 0}>
         {busy ? "Regenerating…" : "Add experience and regenerate"}
       </button>
     </>

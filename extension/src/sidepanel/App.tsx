@@ -246,6 +246,9 @@ export default function App() {
     setCachedCount(0);
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
+    setAppliedSupplement("");
+    setSupplementDraft("");
+    setRunIdForPosting("");
   }
 
   return (

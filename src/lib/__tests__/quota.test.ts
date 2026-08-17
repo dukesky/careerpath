@@ -7,6 +7,7 @@ import {
   DEVICE_TRIAL_LIMIT,
   LEGACY_ANON_LIMIT,
   DAILY_IP_LIMIT,
+  RUN_TTL_SECONDS,
 } from "@/lib/quota";
 import type { Caller } from "@/lib/auth";
 
@@ -106,12 +107,60 @@ describe("run idempotency", () => {
   });
 
   // Regression guard for a metered-resource bypass: the routes check quota
-  // BEFORE the LLM work and charge AFTER it, so an unbounded free-ride on a
-  // reused runId would let one attacker-chosen id buy uncharged runs until the
-  // marker expired.
-  it("charges again when a runId is replayed beyond the two legs", async () => {
-    for (let i = 0; i < 4; i++) await consumeRun(user, IP, "replayed");
-    expect((await getQuota(user, IP)).used).toBe(3);
+  // BEFORE the LLM work and charge AFTER it, so an UNBOUNDED free-ride on a
+  // reused runId would let one attacker-chosen id buy uncharged LLM calls
+  // until the marker expired. The window is deliberately bounded, not removed
+  // — free refinement is a feature, unmetered refinement is a hole.
+  it("charges again once a runId is replayed past the free-refinement window", async () => {
+    // Legs 1-2 are the charged generate; 3-4 and 5-6 are two free refinements.
+    for (let i = 0; i < 6; i++) await consumeRun(user, IP, "refined");
+    expect((await getQuota(user, IP)).used).toBe(1);
+
+    await consumeRun(user, IP, "refined");
+    expect((await getQuota(user, IP)).used).toBe(2);
+  });
+
+  it("does not charge the tier for refinements inside the free window", async () => {
+    await consumeRun(user, IP, "refined"); // leg 1 — charges
+    await consumeRun(user, IP, "refined"); // leg 2 — the other half of the pair
+    expect((await getQuota(user, IP)).used).toBe(1);
+
+    await consumeRun(user, IP, "refined"); // refinement 1
+    await consumeRun(user, IP, "refined");
+    expect((await getQuota(user, IP)).used).toBe(1);
+
+    await consumeRun(user, IP, "refined"); // refinement 2
+    await consumeRun(user, IP, "refined");
+    expect((await getQuota(user, IP)).used).toBe(1);
+  });
+
+  // Free of the caller's TIER is the feature. Free of the per-IP ceiling is
+  // not: that ceiling bounds spend rather than rationing a user, and skipping
+  // it here would silently raise the real ceiling from DAILY_IP_LIMIT pairs
+  // per day to three times that.
+  it("counts a free refinement against the per-IP ceiling", async () => {
+    for (let i = 0; i < DAILY_IP_LIMIT - 2; i++) {
+      await consumeRun({ kind: "user", userId: `filler${i}` }, IP, `f${i}`);
+    }
+    await consumeRun(user, IP, "refined"); // leg 1 — takes the IP to LIMIT - 1
+    await consumeRun(user, IP, "refined"); // leg 2 — no IP charge
+
+    const bystander: Caller = { kind: "user", userId: "bystander" };
+    expect((await getQuota(bystander, IP)).exhausted).toBe(false);
+
+    await consumeRun(user, IP, "refined"); // refinement 1 — IP only
+    await consumeRun(user, IP, "refined");
+
+    expect((await getQuota(user, IP)).used).toBe(1);
+    expect((await getQuota(bystander, IP)).exhausted).toBe(true);
+  });
+
+  // The panel caches results for weeks and offers to refine a posting long
+  // after the run that produced it. If this window shrinks back toward the
+  // ten minutes it used to be, refinement silently starts charging and
+  // nothing on screen explains why.
+  it("keeps a runId refinable for well over a working session", () => {
+    expect(RUN_TTL_SECONDS).toBeGreaterThanOrEqual(24 * 60 * 60);
   });
 
   // This exercises the in-memory store only, whose `incr` body is fully

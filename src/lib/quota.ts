@@ -7,6 +7,11 @@ import { callerKey, type Caller } from "./auth";
  * One "run" = one analyze + tailor flow. Both endpoints send the same client-
  * generated runId; the first SUCCESSFUL one charges, the other does not.
  *
+ * Reusing that runId again refines the same result for free, up to
+ * FREE_REFINES times, so a user can answer a gap the analysis found without
+ * paying twice. Free of the caller's tier only — the per-IP ceiling still
+ * counts every generate.
+ *
  * A caller is blocked when EITHER its tier counter OR the per-IP ceiling is
  * exhausted.
  */
@@ -18,7 +23,16 @@ export const DAILY_IP_LIMIT = 20; // abuse ceiling, per day
 
 const DAY_TTL_SECONDS = 48 * 60 * 60;
 const LONG_TTL_SECONDS = 30 * 24 * 60 * 60;
-const RUN_TTL_SECONDS = 10 * 60;
+/**
+ * How long a runId stays refinable.
+ *
+ * MUST stay well above a working session. The panel caches results for weeks
+ * and offers to refine a posting long after the run; at the ten minutes this
+ * used to be, a user returning the next day would be charged for a
+ * refinement the product tells them is free, with nothing on screen to
+ * explain it. There is a test asserting the floor.
+ */
+export const RUN_TTL_SECONDS = 48 * 60 * 60;
 
 /**
  * `remaining` and `exhausted` are authoritative — always use these to decide
@@ -34,8 +48,22 @@ export interface QuotaState {
   exhausted: boolean;
 }
 
-/** A run has exactly two legs: analyze and tailor. */
-const RUN_LEGS = 2;
+/** A generate has exactly two legs: analyze and tailor. */
+const LEGS_PER_GENERATE = 2;
+
+/**
+ * How many times a charged generate may be re-run for free.
+ *
+ * Refining a posting with supplementary experience must not cost a second
+ * unit — but "free" cannot mean "unmetered". Extension code ships publicly
+ * and is trivially unpackable, so an unbounded free-ride on a reused runId
+ * would let one attacker-chosen id buy uncharged LLM calls until the marker
+ * expired. This bound is what keeps that closed. Raising it raises the worst
+ * case per IP per day proportionally.
+ */
+const FREE_REFINES = 2;
+
+const MAX_FREE_LEGS = LEGS_PER_GENERATE * (1 + FREE_REFINES);
 
 /** UTC calendar day, so a "daily" allowance is well-defined server-side. */
 function dayKey(): string {
@@ -120,13 +148,29 @@ export async function consumeRun(
 
   // incr is atomic: exactly one caller sees 1, so exactly one charges.
   const seen = await kv.incr(marker, RUN_TTL_SECONDS);
-  // Legs 2..RUN_LEGS ride free on leg 1's charge — that is the whole point of
-  // the marker. Anything past that is a REPLAYED runId: the routes check quota
-  // before doing the work and charge after, so an unbounded free-ride window
-  // would let one id buy unlimited uncharged LLM calls until the marker
-  // expires. Past the pair, charge normally.
-  if (seen > 1 && seen <= RUN_LEGS) return getQuota(caller, ip);
 
+  if (seen > 1 && seen <= MAX_FREE_LEGS) {
+    // Inside the free window: the second leg of the charged generate, or
+    // either leg of a free refinement. The caller's TIER is not charged —
+    // that is the feature. The per-IP ceiling still is, once per generate,
+    // because it bounds spend rather than rationing a user; skipping it here
+    // would silently raise the real ceiling to (1 + FREE_REFINES) times
+    // DAILY_IP_LIMIT.
+    //
+    // KNOWN IMPRECISION, accepted: this parity test assumes legs arrive in
+    // pairs. They do not always — if analyze fails while tailor succeeds only
+    // one leg is counted, and every later pair is shifted by one, so the IP
+    // charge can land on a refinement's second leg instead of its first. The
+    // security-relevant property is MAX_FREE_LEGS, which holds regardless of
+    // parity; exact IP accounting under partial failure is not worth tracking
+    // leg identity server-side.
+    if (seen % LEGS_PER_GENERATE === 1 && hasIp(ip)) {
+      await kv.incr(ipKey(ip), DAY_TTL_SECONDS);
+    }
+    return getQuota(caller, ip);
+  }
+
+  // Past the free window this is a REPLAYED runId. Charge normally.
   const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([

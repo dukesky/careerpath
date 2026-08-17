@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { resetKV } from "@/lib/kv";
+import { resetKV, getKV } from "@/lib/kv";
 import {
   getQuota,
   consumeRun,
@@ -168,9 +168,15 @@ describe("run idempotency", () => {
     // The free branch has its own hasIp() guard. Without it, every caller the
     // platform gives no IP for would share one quota:ip:unknown counter — the
     // global-bucket defect this file has produced before.
+    //
+    // Asserted directly against the store rather than through getQuota:
+    // getQuota gates its own IP READ on the same hasIp() check, so a write to
+    // quota:ip:unknown:<day> is never read back through it — deleting the
+    // `&& hasIp(ip)` guard from consumeRun's free branch would leave a
+    // getQuota-based assertion green even though it mints the shared bucket.
     for (let i = 0; i < 3; i++) await consumeRun(user, "unknown", "no-ip-run");
-    expect((await getQuota(user, "unknown")).used).toBe(1);
-    expect((await getQuota({ kind: "user", userId: "other" }, "unknown")).exhausted).toBe(false);
+    const today = new Date().toISOString().slice(0, 10); // matches quota.ts's dayKey()
+    expect(await getKV().getCount(`quota:ip:unknown:${today}`)).toBe(0);
   });
 
   // The panel caches results for weeks and offers to refine a posting long

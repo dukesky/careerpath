@@ -34,6 +34,8 @@ describe("manifest", () => {
   it("requests the API origins plus exactly the five supported job sites", () => {
     expect(manifest.host_permissions).toEqual([
       "http://localhost:3000/*",
+      "https://career-allpath.com/*",
+      "https://www.career-allpath.com/*",
       "https://careerpath-hazel.vercel.app/*",
       "*://*.linkedin.com/*",
       "*://*.greenhouse.io/*",

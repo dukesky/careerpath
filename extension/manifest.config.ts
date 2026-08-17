@@ -3,8 +3,17 @@ import { defineManifest } from "@crxjs/vite-plugin";
 // API origins the panel and worker fetch. Listing them as host_permissions
 // lets extension pages make these requests directly; the server's CORS
 // allowlist is the second layer, not the only one.
+// The Vercel origin stays alongside the custom domain deliberately. Adding a
+// host permission AFTER publishing disables the extension for every existing
+// user until they re-approve it; removing one costs nothing. So while DNS and
+// the Vercel domain binding settle, carry both and drop the vercel.app entry
+// later, rather than shipping a single origin that might not resolve yet.
+// Both apex and www are listed because a match pattern is exact about the
+// host, and Vercel serves one as a redirect to the other.
 const API_HOSTS = [
   "http://localhost:3000/*",
+  "https://career-allpath.com/*",
+  "https://www.career-allpath.com/*",
   "https://careerpath-hazel.vercel.app/*",
 ];
 

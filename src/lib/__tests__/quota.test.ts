@@ -116,8 +116,17 @@ describe("run idempotency", () => {
     for (let i = 0; i < 6; i++) await consumeRun(user, IP, "refined");
     expect((await getQuota(user, IP)).used).toBe(1);
 
+    // Leg 7 opens a charged pair...
     await consumeRun(user, IP, "refined");
     expect((await getQuota(user, IP)).used).toBe(2);
+
+    // ...and leg 8 closes it. A generate past the window must cost ONE unit,
+    // exactly what a fresh runId would cost — not two.
+    await consumeRun(user, IP, "refined");
+    expect((await getQuota(user, IP)).used).toBe(2);
+
+    await consumeRun(user, IP, "refined"); // leg 9 — the next pair
+    expect((await getQuota(user, IP)).used).toBe(3);
   });
 
   it("does not charge the tier for refinements inside the free window", async () => {
@@ -153,6 +162,15 @@ describe("run idempotency", () => {
 
     expect((await getQuota(user, IP)).used).toBe(1);
     expect((await getQuota(bystander, IP)).exhausted).toBe(true);
+  });
+
+  it("does not mint a shared bucket for a refinement from an unknown IP", async () => {
+    // The free branch has its own hasIp() guard. Without it, every caller the
+    // platform gives no IP for would share one quota:ip:unknown counter — the
+    // global-bucket defect this file has produced before.
+    for (let i = 0; i < 3; i++) await consumeRun(user, "unknown", "no-ip-run");
+    expect((await getQuota(user, "unknown")).used).toBe(1);
+    expect((await getQuota({ kind: "user", userId: "other" }, "unknown")).exhausted).toBe(false);
   });
 
   // The panel caches results for weeks and offers to refine a posting long

@@ -58,8 +58,16 @@ const LEGS_PER_GENERATE = 2;
  * unit — but "free" cannot mean "unmetered". Extension code ships publicly
  * and is trivially unpackable, so an unbounded free-ride on a reused runId
  * would let one attacker-chosen id buy uncharged LLM calls until the marker
- * expired. This bound is what keeps that closed. Raising it raises the worst
- * case per IP per day proportionally.
+ * expired. This bound is what keeps that closed.
+ *
+ * What raising it costs, precisely — because the obvious guess is wrong: NOT
+ * the per-IP ceiling. The IP counter below fires once per generate for any
+ * value of FREE_REFINES, so LLM legs per IP per day stay at
+ * 2 * DAILY_IP_LIMIT. What scales is the caller's TIER: a tier of N buys
+ * N * (1 + FREE_REFINES) generates. For callers the platform gives no IP for
+ * (see hasIp), the tier is the ONLY bound, so the signed-out device trial is
+ * worth DEVICE_TRIAL_LIMIT * (1 + FREE_REFINES) generates rather than
+ * DEVICE_TRIAL_LIMIT.
  */
 const FREE_REFINES = 2;
 
@@ -149,6 +157,11 @@ export async function consumeRun(
   // incr is atomic: exactly one caller sees 1, so exactly one charges.
   const seen = await kv.incr(marker, RUN_TTL_SECONDS);
 
+  // Legs pair up: an odd `seen` is a generate's first leg, an even one its
+  // second. That pairing holds FOREVER — inside the free window and past it.
+  // The window decides WHAT a leg charges, not WHETHER it charges.
+  const isFirstLegOfGenerate = seen % LEGS_PER_GENERATE === 1;
+
   if (seen > 1 && seen <= MAX_FREE_LEGS) {
     // Inside the free window: the second leg of the charged generate, or
     // either leg of a free refinement. The caller's TIER is not charged —
@@ -164,13 +177,23 @@ export async function consumeRun(
     // security-relevant property is MAX_FREE_LEGS, which holds regardless of
     // parity; exact IP accounting under partial failure is not worth tracking
     // leg identity server-side.
-    if (seen % LEGS_PER_GENERATE === 1 && hasIp(ip)) {
+    if (isFirstLegOfGenerate && hasIp(ip)) {
       await kv.incr(ipKey(ip), DAY_TTL_SECONDS);
     }
     return getQuota(caller, ip);
   }
 
-  // Past the free window this is a REPLAYED runId. Charge normally.
+  if (seen > MAX_FREE_LEGS && !isFirstLegOfGenerate) {
+    // Past the window a reused runId is charged like any other — but it is
+    // still a PAIR. Without this, both legs charge and one generate costs two
+    // units, which only ever punishes a real user: an attacker would mint
+    // fresh ids and pay the normal rate anyway, so double-charging replay
+    // deters nothing. Charging once per pair here is exactly what a fresh
+    // runId would cost.
+    return getQuota(caller, ip);
+  }
+
+  // `seen === 1`, or the first leg of a generate past the free window.
   const tier = tierFor(caller, ip);
   const ipCounts = hasIp(ip);
   const [used, ipUsed] = await Promise.all([

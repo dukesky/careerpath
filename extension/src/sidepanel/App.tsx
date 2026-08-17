@@ -9,6 +9,7 @@ import {
   getCachedRun,
   putCachedRun,
 } from "@/lib/cache";
+import { API_BASE } from "@/lib/config";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
@@ -274,6 +275,19 @@ export default function App() {
           busy,
         }}
       />
+
+      {/* A plain anchor, not chrome.tabs.create: opening a tab this way needs
+          no `tabs` permission. The page is Clerk-gated, so a signed-out user
+          lands on the sign-in prompt — the honest outcome, since the panel
+          has no session to hand over. */}
+      <a
+        className="outlink"
+        href={`${API_BASE}/app/saved`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Your saved resumes ↗
+      </a>
     </main>
   );
 }

@@ -20,7 +20,7 @@ export default function PrivacyPage() {
       <h1 className="mt-6 font-display text-3xl font-bold tracking-tight text-[#0E1220]">
         Privacy
       </h1>
-      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-14</p>
+      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-16</p>
 
       <p className="mt-6 text-sm leading-relaxed text-slate-600">
         career-path is built so your resume stays yours. This page lists exactly
@@ -79,8 +79,9 @@ export default function PrivacyPage() {
         completes.
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
-        The extension also keeps the results it generates — the match analysis
-        and the tailored resume — in that same local storage, each one keyed by
+        The extension also keeps the results it generates — the match analysis,
+        the tailored resume, and anything you add about experience your resume
+        omits — in that same local storage, each one keyed by
         the posting&rsquo;s address, so up to 20 job-posting URLs are kept on
         your device alongside them. Returning to a job posting shows what it
         produced there before instead of charging you for it again. They are

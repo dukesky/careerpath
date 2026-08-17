@@ -7,6 +7,56 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-08-16 — Answer a gap without paying twice
+
+### Added
+
+- **Supplementary experience.** When the analysis reports a requirement as
+  missing and you actually have it, a box at the bottom of the details takes
+  what your resume left out and regenerates from it. The placeholder names the
+  requirements *this* analysis marked missing rather than a fixed example. It
+  is free text on purpose: a per-gap "I have this" button would be one click to
+  assert an experience, and making you write what you actually did is the guard
+  against the one thing this product promises never to do.
+- **Refining is free.** A charged run now buys up to two regenerations of the
+  same posting under the same `runId`, for signed-in and signed-out callers
+  alike. Free of your allowance only — the per-IP ceiling still counts every
+  generate, because it bounds spend rather than rationing a user. The bound is
+  deliberate: extension code ships publicly, and an unlimited free-ride on a
+  reused id would let one attacker-chosen id buy uncharged model calls.
+- **Your saved resumes ↗** at the bottom of the panel, opening the web app's
+  saved list. Signed out, it lands on the sign-in prompt — the extension has no
+  session to carry over.
+
+### Changed
+
+- The panel marks a result generated from supplementary experience, under the
+  score. The supplement feeds the analysis as well as the rewrite, so the match
+  score rises — which means the number is no longer derived from the parsed
+  document alone, and the panel has to say so. **The downloaded PDF carries no
+  such mark**: that is your document, and stamping a disclosure onto what you
+  send an employer oversteps.
+- A `runId` stays refinable for 48 hours, up from 10 minutes. The old window
+  was shorter than the result cache's lifetime, so a user returning the next day
+  would have been charged for a refinement they were told was free.
+
+### Known limits
+
+- Refinement is one shot at a time, not a conversation. The design that would
+  help you articulate the experience over a few turns needs a new endpoint, a
+  new class of metered call, and prompt work to stop the model proposing
+  phrasings you then rubber-stamp. Its output would fill this same field, so
+  nothing here is wasted if it gets built.
+- Supplementary text is per posting. The same experience typed against five
+  jobs is typed five times.
+- Cache entries written before this release carry no `runId`, so the first
+  regeneration of an older posting is charged as a new run.
+- If a regeneration fails and you then switch tabs before retrying, the text you
+  typed is lost — drafts are held per posting and cleared when you navigate
+  away. Retrying without leaving the posting keeps it.
+
+---
+
 ## 2026-08-14 — Results layout, PDF download, and a per-posting cache
 
 ### Added

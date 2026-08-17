@@ -18,12 +18,13 @@ The web app has no version number; the extension carries its own in
   is free text on purpose: a per-gap "I have this" button would be one click to
   assert an experience, and making you write what you actually did is the guard
   against the one thing this product promises never to do.
-- **Refining is free.** A charged run now buys up to two regenerations of the
-  same posting under the same `runId`, for signed-in and signed-out callers
-  alike. Free of your allowance only — the per-IP ceiling still counts every
-  generate, because it bounds spend rather than rationing a user. The bound is
-  deliberate: extension code ships publicly, and an unlimited free-ride on a
-  reused id would let one attacker-chosen id buy uncharged model calls.
+- **Refining is free, as long as you still have runs left.** A charged run now
+  buys up to two regenerations of the same posting under the same `runId`, for
+  signed-in and signed-out callers alike. Free of your allowance only — the
+  per-IP ceiling still counts every generate, because it bounds spend rather
+  than rationing a user. The bound is deliberate: extension code ships
+  publicly, and an unlimited free-ride on a reused id would let one
+  attacker-chosen id buy uncharged model calls.
 - **Your saved resumes ↗** at the bottom of the panel, opening the web app's
   saved list. Signed out, it lands on the sign-in prompt — the extension has no
   session to carry over.

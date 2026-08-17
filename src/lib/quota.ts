@@ -65,9 +65,14 @@ const LEGS_PER_GENERATE = 2;
  * value of FREE_REFINES, so LLM legs per IP per day stay at
  * 2 * DAILY_IP_LIMIT. What scales is the caller's TIER: a tier of N buys
  * N * (1 + FREE_REFINES) generates. For callers the platform gives no IP for
- * (see hasIp), the tier is the ONLY bound, so the signed-out device trial is
- * worth DEVICE_TRIAL_LIMIT * (1 + FREE_REFINES) generates rather than
- * DEVICE_TRIAL_LIMIT.
+ * (see hasIp), the tier is the ONLY bound. Note the routes gate on
+ * `exhausted` BEFORE doing the work, and `exhausted` reads the tier counter a
+ * refinement does not charge — so the LAST charged run of an allowance gets no
+ * refinements at all, and the real worth is
+ * N * (1 + FREE_REFINES) - FREE_REFINES generates, not N * (1 + FREE_REFINES).
+ * Closing that would mean letting the routes skip the gate when the marker
+ * exists and is below MAX_FREE_LEGS, which is safe because consumeRun enforces
+ * the bound regardless — deliberately not done here.
  */
 const FREE_REFINES = 2;
 

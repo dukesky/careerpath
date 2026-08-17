@@ -135,7 +135,18 @@ export function Results({
               Copy as JSON
             </button>
           )}
+        </section>
+      )}
 
+      {/* Outside the Details card on purpose. That card is gated on
+          `analysis`, which generate() nulls at the start of every run — so a
+          box inside it unmounts for the whole regeneration and stays gone
+          after a failure, hiding the paragraph the user just typed and hiding
+          the "Regenerating…" label on the button that triggered it. Rendering
+          while the draft is non-empty keeps the text visible and editable
+          through a failed run. */}
+      {(analysis || supplement.text.trim().length > 0) && (
+        <section className="card">
           <SupplementBox {...supplement} placeholder={supplementPlaceholder(analysis)} />
         </section>
       )}

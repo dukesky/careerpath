@@ -155,6 +155,7 @@ export default function App() {
       : newRunId();
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
+    setAppliedSupplement("");
     runningForUrlRef.current = forUrl;
     setBusy(true);
     // Accumulate the run's own result HERE rather than reading it back out of
@@ -184,9 +185,16 @@ export default function App() {
           runId,
         });
         setCachedCount(await countCachedRuns());
-        setAppliedSupplement(supplement);
-        setRunIdForPosting(runId);
+        // These describe THIS posting's displayed result, so they belong
+        // inside the guard with setState. Outside it, a run finishing while
+        // the user is on another posting stamps that posting with this run's
+        // marker and run id — mislabelling it, and spending this id's free
+        // refinements under the wrong entry. Nothing is lost by guarding
+        // them: the correct values went into the cache entry above and come
+        // back on the next restore.
         if (activeJdUrlRef.current === forUrl) {
+          setAppliedSupplement(supplement);
+          setRunIdForPosting(runId);
           // Paint the completed run rather than only stamping it. `latest` is a
           // complete RunState, so this is a no-op on the normal path — but it
           // also covers the window between runTailor resolving and the finally

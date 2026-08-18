@@ -212,11 +212,21 @@ export default function App() {
       );
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         const finishedAt = new Date().toISOString();
-        // Carry the existing baseline forward; only a posting with no valid
-        // cached entry gets a fresh measurement. This is the whole fix — the
-        // alternative, recomputing it per run, is what made the left number
-        // fall from 72 to 62 after the user added experience.
-        const baseline = baselineForPosting ?? latest.analysis.overall_match_score;
+        // Read the baseline from storage rather than from `baselineForPosting`.
+        // That state is null between the JD-change effect firing and its
+        // storage read resolving, and the button is live during that window —
+        // so a user who clicks regenerate on a still-blank panel would
+        // otherwise re-measure and durably overwrite the stored baseline,
+        // which is the exact symptom this whole change exists to remove.
+        //
+        // Keyed by `forUrl`, and deliberately NOT via a ref: a ref is mutated
+        // by the JD-change effect, so it would hand another posting's baseline
+        // to this run. This lookup also gives the right answer when the resume
+        // has changed — getCachedRun rejects the entry on the fingerprint, so
+        // a new resume correctly gets a new measurement.
+        const cachedForBaseline = await getCachedRun(forUrl, fingerprint);
+        const baseline =
+          cachedForBaseline?.baselineScore ?? latest.analysis.overall_match_score;
         await putCachedRun(forUrl, {
           analysis: latest.analysis,
           tailored: latest.tailored,

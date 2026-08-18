@@ -55,6 +55,11 @@ export function Results({
       {analysis && (
         <section className="card">
           <div className="score">
+            {/* The fallback matters only during the FIRST run: analyze lands
+                before tailor, so there is briefly no stored baseline, and the
+                value shown here is the one that is about to BECOME it — so
+                nothing jumps when the run completes and the real baseline is
+                set. */}
             {roundToFive(baselineScore ?? analysis.overall_match_score)}
             {tailored && (
               <span className="after"> → {roundToFive(tailored.projected_match_score)}</span>

@@ -5,7 +5,7 @@ import type { GapAnalysis, ParsedResume, TailorResult } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
 import { setResume, type StoredResume } from "@/lib/storage";
-import { putCachedRun, type CachedRun } from "@/lib/cache";
+import { getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import App from "../App";
 
@@ -81,6 +81,33 @@ vi.mock("@/lib/run", async (importOriginal) => {
     ) => {
       runTailorCalls.push({ opts });
       return runTailorImpl(jd, resume, onUpdate, opts);
+    },
+  };
+});
+
+// ---------------------------------------------------------------------------
+// Mock `@/lib/cache`'s `getCachedRun` ONLY — every other export (`putCachedRun`,
+// `cacheKey`, `countCachedRuns`, `clearCachedRuns`) stays real via
+// importActual, since most tests seed and read the actual faked
+// chrome.storage. `getCachedRun` alone gets an override hook so ONE test
+// (Finding 2, below) can hold open the JD-change effect's OWN restore call —
+// the only place in App.tsx that calls it besides generate()'s post-run
+// check — to reproduce a click landing before that restore resolves. Every
+// other test leaves the override unset, so this call passes straight
+// through to the real implementation.
+// ---------------------------------------------------------------------------
+type GetCachedRunFn = typeof import("@/lib/cache").getCachedRun;
+
+let getCachedRunOverride: GetCachedRunFn | null = null;
+let getCachedRunCallCount = 0;
+
+vi.mock("@/lib/cache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/cache")>();
+  return {
+    ...actual,
+    getCachedRun: (url: string, fingerprint: string) => {
+      getCachedRunCallCount += 1;
+      return (getCachedRunOverride ?? actual.getCachedRun)(url, fingerprint);
     },
   };
 });
@@ -198,6 +225,8 @@ describe("App - cross-posting state", () => {
     activeJdState = { jd: null, failure: null, loading: false };
     runTailorImpl = async () => {};
     runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -394,6 +423,16 @@ describe("App - cross-posting state", () => {
   // The bug this whole plan exists for: the user generated once, added
   // experience, regenerated — and the LEFT number moved, reading as "adding
   // information made my resume worse". It was resampling, not a real change.
+  //
+  // The two assertions below check the WHOLE rendered string, not just the
+  // left half. `toContain("70")` alone is not enough to pin the freeze: the
+  // second run's right-hand (projected) number also rounds to 70 by
+  // coincidence when left unfrozen, so a `toContain` check on "70" passes
+  // whether or not the baseline actually held — it would even pass with
+  // `roundToFive` deleted from the right-hand number entirely. The exact
+  // strings below discriminate all three regressions: dropping the freeze
+  // gives "60 → …", dropping left rounding gives "72 → …", dropping right
+  // rounding gives "… → 88 match".
   it("keeps the baseline fixed when the same posting is regenerated", async () => {
     // First run: analyze says 72. That becomes this posting's baseline.
     // Second run: analyze says 62 — the same drift the user hit. The panel
@@ -419,15 +458,17 @@ describe("App - cross-posting state", () => {
     await flush();
 
     const score = () => container.querySelector(".score")?.textContent ?? "";
-    expect(score()).toContain("70");
+    expect(score()).toBe("70 → 80 match");
 
     // Second run, same posting: analyze drifts down to 62. The baseline must
-    // not move with it.
+    // not move with it. The projected score is deliberately NOT 72 here —
+    // that would round to the same 70 as the frozen baseline and let this
+    // assertion pass whether or not the freeze actually happened.
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
         phase: "done",
         analysis: analysisFixture(62),
-        tailored: tailoredFixture(72),
+        tailored: tailoredFixture(88),
         remaining: 2,
       });
     };
@@ -437,6 +478,71 @@ describe("App - cross-posting state", () => {
     });
     await flush();
 
-    expect(score()).toContain("70");
+    expect(score()).toBe("70 → 90 match");
+  });
+
+  // Finding 2: `baselineForPosting` (React state) is null from the moment
+  // the JD-change effect fires until its OWN getCachedRun read resolves, and
+  // `canRun` only needs `stored` — not a landed restore — so the button is
+  // live throughout that window. A click there must not let generate()
+  // re-measure and durably overwrite the baseline already sitting in
+  // storage.
+  it("does not let a regenerate started before the restore lands overwrite the stored baseline (Finding 2)", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+
+    // Hold open the JD-change effect's OWN restore call — the only OTHER
+    // caller of getCachedRun besides generate()'s post-run check — so
+    // `baselineForPosting` is still null when the click below lands. This
+    // reproduces the race without touching chrome.storage's own timing.
+    let releaseRestore: (() => void) | null = null;
+    const actualCache = await vi.importActual<typeof import("@/lib/cache")>("@/lib/cache");
+    getCachedRunOverride = (url, fingerprint) =>
+      new Promise((resolve) => {
+        releaseRestore = () => resolve(actualCache.getCachedRun(url, fingerprint));
+      });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // The restore call landed and is being held open — confirms the race
+    // window is real, not accidentally skipped.
+    expect(getCachedRunCallCount).toBe(1);
+    // The supplement box is gated on `analysis`, which is still null because
+    // the restore hasn't landed — the panel really is still blank.
+    expect(container.querySelector("textarea.paste")).toBeNull();
+    // But the button is clickable NOW. That liveness is the bug.
+    expect(findButton(container, "Tailor my resume")).toBeTruthy();
+
+    // Let generate()'s OWN getCachedRun call (the Finding 2 fix) resolve
+    // normally against real storage, so the run below measures whatever the
+    // fix actually reads — not another held-open promise.
+    getCachedRunOverride = null;
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(55),
+        tailored: tailoredFixture(65),
+        remaining: 5,
+      });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    // The regenerate must have read the baseline already in storage (72),
+    // not re-measured from this run's fresh analyze score (55).
+    const restored = await getCachedRun(JD_A.url, resumeFingerprint(RESUME));
+    expect(restored?.baselineScore).toBe(72);
+
+    // Let the original restore settle too, so nothing dangles into another
+    // test.
+    await act(async () => {
+      releaseRestore?.();
+    });
+    await flush();
   });
 });

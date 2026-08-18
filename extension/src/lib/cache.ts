@@ -133,7 +133,13 @@ export async function getCachedRun(
   const key = cacheKey(url);
   const hit = (await readAll()).find((e) => e.key === key);
   if (!hit) return null;
-  if (!hit.resumeFingerprint || typeof hit.baselineScore !== "number") return null;
+  // `Number.isFinite` rather than `typeof ... === "number"`: it returns false
+  // for non-numbers too (no coercion), so it still catches a missing field,
+  // but it also catches Infinity/-Infinity/NaN — reachable via a hand-edited
+  // storage blob (JSON.parse('{"baselineScore":1e999}') is Infinity), which
+  // would otherwise sail through the typeof check and make roundToFive render
+  // NaN on screen.
+  if (!hit.resumeFingerprint || !Number.isFinite(hit.baselineScore)) return null;
   if (hit.resumeFingerprint !== fingerprint) return null;
   return {
     analysis: hit.analysis,
@@ -141,7 +147,11 @@ export async function getCachedRun(
     generatedAt: hit.generatedAt,
     extraInfo: hit.extraInfo ?? "",
     runId: hit.runId ?? "",
-    baselineScore: hit.baselineScore,
+    // Number.isFinite (unlike `typeof x === "number"`) is not a type guard —
+    // it's typed `(number: unknown) => boolean`, so TS does not narrow
+    // `hit.baselineScore` from `number | undefined` here even though the
+    // check above already ruled out both `undefined` and non-finite values.
+    baselineScore: hit.baselineScore as number,
     resumeFingerprint: hit.resumeFingerprint,
   };
 }

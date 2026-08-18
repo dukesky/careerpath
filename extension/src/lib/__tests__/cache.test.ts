@@ -183,6 +183,32 @@ describe("result cache", () => {
     expect(await getCachedRun("https://acme.com/jobs/1", "newresum")).toBeNull();
   });
 
+  // Only reachable by hand-editing chrome.storage.local — every real write
+  // path clamps the score to 0-100 — but a corrupted value must not sail
+  // through the provenance check and hand `roundToFive` an Infinity to
+  // render as NaN. JSON.stringify(Infinity) produces `null`, not a number
+  // literal (JSON has no way to represent Infinity), so `baselineScore` is
+  // spliced into the raw JSON text by hand rather than round-tripped through
+  // JSON.stringify, which would silently launder it into `null` and test the
+  // wrong case.
+  it("ignores an entry whose baselineScore is not finite", async () => {
+    const entry = {
+      key: "https://acme.com/jobs/1",
+      analysis: run(62).analysis,
+      tailored: run(62).tailored,
+      generatedAt: "2026-08-14T10:00:00.000Z",
+      extraInfo: "",
+      runId: "rid",
+      baselineScore: 0,
+      resumeFingerprint: FP,
+    };
+    const raw = JSON.stringify([entry]).replace('"baselineScore":0', '"baselineScore":1e999');
+    expect(raw).toContain("1e999");
+    await chrome.storage.local.set({ cp_results: raw });
+
+    expect(await getCachedRun("https://acme.com/jobs/1", FP)).toBeNull();
+  });
+
   // Entries written before these fields existed carry no provenance, so we
   // cannot vouch for which resume produced them. Discarding them is the
   // intended outcome of the one rule, not a migration gap.

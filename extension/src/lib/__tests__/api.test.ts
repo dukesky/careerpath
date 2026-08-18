@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { apiPost, apiPostForm } from "@/lib/api";
 import { setToken, getToken } from "@/lib/storage";
+import { setClerkTokenSource } from "@/lib/session";
+import * as tokenLib from "@/lib/token";
 
 function fakeChromeStorage() {
   const data: Record<string, unknown> = {};
@@ -25,6 +27,10 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 describe("apiPost", () => {
   beforeEach(() => {
     vi.stubGlobal("chrome", fakeChromeStorage());
+    // Default every test to a signed-out Clerk session so existing
+    // device-token coverage is unaffected; tests that care about the Clerk
+    // identity set their own source explicitly.
+    setClerkTokenSource(async () => null);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -152,5 +158,47 @@ describe("apiPost", () => {
     expect(res.ok).toBe(true);
     const init = fetchMock.mock.calls[1][1] as RequestInit;
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it("refreshes the device token once and retries on a device-token 401", async () => {
+    // No Clerk source set (beforeEach defaults it to signed-out), so
+    // currentAuthToken resolves to a { kind: "device" } token backed by the
+    // stored device token below.
+    await setToken("stale");
+    const ensureTokenSpy = vi.spyOn(tokenLib, "ensureToken");
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ error: "expired" }, 401))
+      .mockResolvedValueOnce(json({ token: "renewed" }))
+      .mockResolvedValueOnce(json({ jd: { company: "Acme" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost<{ jd: { company: string } }>("/api/parse-jd", { text: "x" });
+
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(ensureTokenSpy).toHaveBeenCalledWith(true);
+  });
+
+  // The regression guard for the silent downgrade: a Clerk session's 401 must
+  // not be treated as an expired device token. If the fork in `send` were
+  // removed, this would fall through to the allowRefresh branch, `fetch`
+  // would run a second time (a mint call plus the retry), and the result
+  // would come back as `{ ok: false, kind: "auth" }` instead.
+  it("does not refresh or retry on a Clerk-session 401", async () => {
+    setClerkTokenSource(async () => "clerk-token");
+    const ensureTokenSpy = vi.spyOn(tokenLib, "ensureToken");
+    const fetchMock = vi.fn<typeof fetch>(async () => json({ error: "expired" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost("/api/parse-jd", { text: "x" });
+
+    expect(res).toEqual({
+      ok: false,
+      kind: "session_expired",
+      message: "Your session expired. Sign in again to continue.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(ensureTokenSpy).not.toHaveBeenCalledWith(true);
   });
 });

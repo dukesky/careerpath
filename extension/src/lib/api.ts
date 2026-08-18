@@ -1,7 +1,14 @@
 import { API_BASE } from "./config";
 import { ensureToken } from "./token";
+import { currentAuthToken } from "./session";
 
-export type ApiErrorKind = "quota" | "auth" | "rate_limit" | "server" | "network";
+export type ApiErrorKind =
+  | "quota"
+  | "auth"
+  | "session_expired"
+  | "rate_limit"
+  | "server"
+  | "network";
 
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -41,26 +48,45 @@ async function toFailure<T>(res: Response): Promise<ApiResult<T>> {
 }
 
 /**
- * One request, with the bearer token attached. A 401 means the device token
- * expired: mint a fresh one and retry ONCE. Never loop — a server that keeps
- * rejecting a freshly minted token is broken, and retrying would hammer it.
+ * One request, carrying whichever identity currently applies.
+ *
+ * The 401 handling FORKS on that identity, and the fork is load-bearing:
+ *
+ * - A device token is ours. Expiry is routine — mint another and retry ONCE.
+ *   Never loop: a server that rejects a freshly minted token is broken, and
+ *   retrying would hammer it.
+ * - A Clerk token is the user's SESSION. There is nothing to mint. Refreshing
+ *   here would fetch a device token, the retry would SUCCEED, and the user
+ *   would silently continue as a signed-out device on 3 runs per 30 days
+ *   while the panel still showed their email and their daily allowance. The
+ *   quota on screen would be a lie and nothing would look broken. So: no
+ *   refresh, no retry, and a distinct error kind the panel turns into
+ *   "your session expired".
  */
 async function send<T>(
   path: string,
   init: RequestInit,
   allowRefresh = true,
 ): Promise<ApiResult<T>> {
-  const token = await ensureToken();
+  const auth = await currentAuthToken();
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string>) ?? {}),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (auth) headers.Authorization = `Bearer ${auth.token}`;
 
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   } catch {
     return { ok: false, kind: "network", message: "Couldn't reach career-path." };
+  }
+
+  if (res.status === 401 && auth?.kind === "clerk") {
+    return {
+      ok: false,
+      kind: "session_expired",
+      message: "Your session expired. Sign in again to continue.",
+    };
   }
 
   if (res.status === 401 && allowRefresh) {

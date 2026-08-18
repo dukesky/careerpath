@@ -288,6 +288,7 @@ export default function App() {
     setAppliedSupplement("");
     setSupplementDraft("");
     setRunIdForPosting("");
+    setBaselineForPosting(null);
   }
 
   return (

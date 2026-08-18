@@ -137,6 +137,8 @@ function cachedRun(score: number, extraInfo: string, runId: string): CachedRun {
     generatedAt: "2026-08-14T10:00:00.000Z",
     extraInfo,
     runId,
+    baselineScore: score,
+    resumeFingerprint: "task3-fingerprint",
   };
 }
 

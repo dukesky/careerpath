@@ -28,6 +28,19 @@ export interface CachedRun {
    * simply cost a new unit, which is the right degradation.
    */
   runId: string;
+  /**
+   * The analyze score from the FIRST run for this (posting, resume) pair,
+   * carried forward unchanged by every later run. "Before" means what the
+   * word says — it does not move because the user told us more about
+   * themselves. Recomputing it per run is what made the panel show a score
+   * DROPPING after the user added experience.
+   */
+  baselineScore: number;
+  /**
+   * Which resume produced this run — see lib/fingerprint.ts. An entry whose
+   * fingerprint does not match the resume loaded now is treated as absent.
+   */
+  resumeFingerprint: string;
 }
 
 interface CacheEntry extends CachedRun {
@@ -36,12 +49,17 @@ interface CacheEntry extends CachedRun {
 }
 
 /**
- * What a stored entry may ACTUALLY look like. Entries written before
- * `extraInfo` and `runId` existed are already in real users' browsers, so
- * every read must treat them as optional even though the type above does not.
+ * What a stored entry may ACTUALLY look like. Entries predating each of these
+ * fields are already in real users' browsers, so every read must treat them as
+ * optional even though the type above does not.
  */
-type StoredEntry = Omit<CacheEntry, "extraInfo" | "runId"> &
-  Partial<Pick<CacheEntry, "extraInfo" | "runId">>;
+type StoredEntry = Omit<
+  CacheEntry,
+  "extraInfo" | "runId" | "baselineScore" | "resumeFingerprint"
+> &
+  Partial<
+    Pick<CacheEntry, "extraInfo" | "runId" | "baselineScore" | "resumeFingerprint">
+  >;
 
 /**
  * The posting URL with tracking parameters and the fragment removed.
@@ -93,16 +111,38 @@ async function readAll(): Promise<StoredEntry[]> {
   }
 }
 
-export async function getCachedRun(url: string): Promise<CachedRun | null> {
+/**
+ * A cached run for this posting, or null.
+ *
+ * ONE rule decides: an entry counts only if it carries provenance we can
+ * check — a fingerprint and a numeric baseline — and that provenance matches
+ * the resume loaded now. Everything else is treated as absent: nothing
+ * displayed, no runId reused, the posting regenerates from scratch.
+ *
+ * No fallbacks, no special cases. One comprehensible predicate is worth more
+ * than three rules that each handle a variant, and this one subsumes
+ * migration: entries written before these fields existed have no fingerprint,
+ * so they are discarded here. That is the intended outcome. We cannot confirm
+ * which resume produced them, and not showing what we cannot vouch for is the
+ * rule this whole design exists to establish.
+ */
+export async function getCachedRun(
+  url: string,
+  fingerprint: string,
+): Promise<CachedRun | null> {
   const key = cacheKey(url);
   const hit = (await readAll()).find((e) => e.key === key);
   if (!hit) return null;
+  if (!hit.resumeFingerprint || typeof hit.baselineScore !== "number") return null;
+  if (hit.resumeFingerprint !== fingerprint) return null;
   return {
     analysis: hit.analysis,
     tailored: hit.tailored,
     generatedAt: hit.generatedAt,
     extraInfo: hit.extraInfo ?? "",
     runId: hit.runId ?? "",
+    baselineScore: hit.baselineScore,
+    resumeFingerprint: hit.resumeFingerprint,
   };
 }
 

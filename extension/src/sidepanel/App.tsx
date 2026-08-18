@@ -127,7 +127,7 @@ export default function App() {
     setSupplementDraft("");
     setRunIdForPosting("");
     if (!url) return;
-    void getCachedRun(url).then((hit) => {
+    void getCachedRun(url, "task3-fingerprint").then((hit) => { // Task 3 passes the real fingerprint
       // chrome.storage reads are async and tab switches are fast, so this can
       // resolve after the user has already moved on. Painting it then would
       // show one posting's result underneath another posting's header.
@@ -197,6 +197,8 @@ export default function App() {
           generatedAt: finishedAt,
           extraInfo: supplement,
           runId,
+          baselineScore: latest.analysis.overall_match_score,
+          resumeFingerprint: "task3-fingerprint", // Task 3 passes the real fingerprint
         });
         setCachedCount(await countCachedRuns());
         // These describe THIS posting's displayed result, so they belong

@@ -19,7 +19,14 @@ const RESUME: ParsedResume = {
   education: [],
 };
 
-function run(score: number, extraInfo = "", runId = "rid"): CachedRun {
+const FP = "aaaaaaaa";
+
+function run(
+  score: number,
+  extraInfo = "",
+  runId = "rid",
+  fingerprint = FP,
+): CachedRun {
   const analysis: GapAnalysis = {
     overall_match_score: score,
     rationale: "",
@@ -38,6 +45,8 @@ function run(score: number, extraInfo = "", runId = "rid"): CachedRun {
     generatedAt: "2026-08-14T10:00:00.000Z",
     extraInfo,
     runId,
+    baselineScore: score,
+    resumeFingerprint: fingerprint,
   };
 }
 
@@ -96,12 +105,12 @@ describe("result cache", () => {
   });
 
   it("returns null for a posting with no cached run", async () => {
-    expect(await getCachedRun("https://acme.com/jobs/1")).toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/1", FP)).toBeNull();
   });
 
   it("round-trips a run", async () => {
     await putCachedRun("https://acme.com/jobs/1", run(62));
-    const hit = await getCachedRun("https://acme.com/jobs/1");
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
     expect(hit?.analysis.overall_match_score).toBe(62);
     expect(hit?.tailored.projected_match_score).toBe(72);
     expect(hit?.generatedAt).toBe("2026-08-14T10:00:00.000Z");
@@ -109,7 +118,7 @@ describe("result cache", () => {
 
   it("hits the same entry when the url carries tracking parameters", async () => {
     await putCachedRun("https://acme.com/jobs/1", run(62));
-    const hit = await getCachedRun("https://acme.com/jobs/1?utm_source=linkedin#top");
+    const hit = await getCachedRun("https://acme.com/jobs/1?utm_source=linkedin#top", FP);
     expect(hit?.analysis.overall_match_score).toBe(62);
   });
 
@@ -117,7 +126,7 @@ describe("result cache", () => {
     await putCachedRun("https://acme.com/jobs/1", run(62));
     await putCachedRun("https://acme.com/jobs/1", run(70));
     expect(await countCachedRuns()).toBe(1);
-    expect((await getCachedRun("https://acme.com/jobs/1"))?.analysis.overall_match_score).toBe(70);
+    expect((await getCachedRun("https://acme.com/jobs/1", FP))?.analysis.overall_match_score).toBe(70);
   });
 
   it("evicts the oldest once past the cap", async () => {
@@ -125,14 +134,14 @@ describe("result cache", () => {
       await putCachedRun(`https://acme.com/jobs/${i}`, run(i));
     }
     expect(await countCachedRuns()).toBe(MAX_CACHED_RUNS);
-    expect(await getCachedRun("https://acme.com/jobs/0")).not.toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/0", FP)).not.toBeNull();
 
     await putCachedRun("https://acme.com/jobs/last", run(99));
 
     expect(await countCachedRuns()).toBe(MAX_CACHED_RUNS);
-    expect(await getCachedRun("https://acme.com/jobs/0")).toBeNull();
-    expect(await getCachedRun("https://acme.com/jobs/last")).not.toBeNull();
-    expect(await getCachedRun("https://acme.com/jobs/1")).not.toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/0", FP)).toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/last", FP)).not.toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/1", FP)).not.toBeNull();
   });
 
   it("clears everything", async () => {
@@ -140,13 +149,13 @@ describe("result cache", () => {
     await putCachedRun("https://acme.com/jobs/2", run(63));
     await clearCachedRuns();
     expect(await countCachedRuns()).toBe(0);
-    expect(await getCachedRun("https://acme.com/jobs/1")).toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/1", FP)).toBeNull();
   });
 
   it("treats a corrupt blob as empty instead of throwing", async () => {
     await chrome.storage.local.set({ cp_results: "{not json" });
     expect(await countCachedRuns()).toBe(0);
-    expect(await getCachedRun("https://acme.com/jobs/1")).toBeNull();
+    expect(await getCachedRun("https://acme.com/jobs/1", FP)).toBeNull();
     // and it recovers — a write over the corrupt value must still land
     await putCachedRun("https://acme.com/jobs/1", run(62));
     expect(await countCachedRuns()).toBe(1);
@@ -154,17 +163,30 @@ describe("result cache", () => {
 
   it("round-trips the supplement text and the run id", async () => {
     await putCachedRun("https://acme.com/jobs/1", run(62, "I used PyTorch on X", "run-7"));
-    const hit = await getCachedRun("https://acme.com/jobs/1");
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
     expect(hit?.extraInfo).toBe("I used PyTorch on X");
     expect(hit?.runId).toBe("run-7");
   });
 
-  // Entries written before these fields existed are already in real users'
-  // browsers. A missing extraInfo must read as "" rather than undefined, or
-  // the panel renders the string "undefined" in its textarea; a missing runId
-  // must read as "" so the next generate mints a fresh one and is charged
-  // normally, which is the right degradation.
-  it("reads an entry written before these fields existed", async () => {
+  it("round-trips the baseline and the fingerprint", async () => {
+    await putCachedRun("https://acme.com/jobs/1", run(62, "", "rid", "beef1234"));
+    const hit = await getCachedRun("https://acme.com/jobs/1", "beef1234");
+    expect(hit?.baselineScore).toBe(62);
+    expect(hit?.resumeFingerprint).toBe("beef1234");
+  });
+
+  // The point of the fingerprint: the user replaced their resume, so this
+  // entry describes a document that no longer exists. Showing it would tell
+  // them we analysed their current resume when we did not.
+  it("ignores an entry whose fingerprint does not match the current resume", async () => {
+    await putCachedRun("https://acme.com/jobs/1", run(62, "", "rid", "oldresum"));
+    expect(await getCachedRun("https://acme.com/jobs/1", "newresum")).toBeNull();
+  });
+
+  // Entries written before these fields existed carry no provenance, so we
+  // cannot vouch for which resume produced them. Discarding them is the
+  // intended outcome of the one rule, not a migration gap.
+  it("ignores an entry written before the fingerprint existed", async () => {
     await chrome.storage.local.set({
       cp_results: JSON.stringify([
         {
@@ -172,14 +194,12 @@ describe("result cache", () => {
           analysis: run(50).analysis,
           tailored: run(50).tailored,
           generatedAt: "2026-08-13T09:00:00.000Z",
+          extraInfo: "",
+          runId: "old-run",
         },
       ]),
     });
 
-    const hit = await getCachedRun("https://acme.com/jobs/legacy");
-    expect(hit).not.toBeNull();
-    expect(hit?.extraInfo).toBe("");
-    expect(hit?.runId).toBe("");
-    expect(hit?.analysis.overall_match_score).toBe(50);
+    expect(await getCachedRun("https://acme.com/jobs/legacy", FP)).toBeNull();
   });
 });

@@ -21,6 +21,8 @@ const manifest = manifestExport as {
   host_permissions?: string[];
   optional_host_permissions?: string[];
   content_security_policy?: { extension_pages?: string };
+  icons?: Record<string, string>;
+  action?: { default_title?: string; default_icon?: Record<string, string> };
 };
 
 describe("manifest", () => {
@@ -75,5 +77,23 @@ describe("manifest", () => {
     expect(manifest.content_security_policy?.extension_pages).toContain(
       "'wasm-unsafe-eval'",
     );
+  });
+
+  // Without these Chrome shows the default puzzle piece — which is what it
+  // showed for the extension's entire life before this.
+  it("declares icons at every size Chrome asks for", () => {
+    expect(manifest.icons).toEqual({
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png",
+    });
+  });
+
+  it("gives the toolbar button an icon", () => {
+    expect(manifest.action?.default_icon).toEqual({
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+    });
   });
 });

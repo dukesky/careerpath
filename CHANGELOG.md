@@ -7,6 +7,52 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-08-17 — The match score stops moving
+
+### Fixed
+
+- **The "before" score is measured once per posting and never recomputed.**
+  Generating a posting, adding experience and regenerating used to show the
+  left-hand number *falling* — 72 → 72 first, then 62 → 72 — which read as
+  "telling you more about me made my resume worse". It was resampling, not a
+  real change: that number came from a fresh model call each time, at a
+  temperature where a ±10 swing on a 0-100 judgment is ordinary. It is now
+  captured on the first run for a posting and carried forward unchanged.
+- **`analyze` runs at temperature 0.** It is a judgment task; reproducibility
+  is what it needs. `tailor` stays at 0.4 — the same call writes the rewritten
+  prose, and cooling it to steady one number would flatten the writing.
+- **Cached results are tied to the resume that produced them.** Every entry now
+  carries a fingerprint of that resume, and an entry whose fingerprint does not
+  match the resume loaded now is treated as absent. Before this, replacing your
+  resume left every cached analysis and rewrite on screen, computed from the old
+  one, with nothing saying so.
+
+### Changed
+
+- Both scores render in multiples of five. An integer on a 0-100 scale claimed
+  a precision these numbers do not have: they come from two different model
+  calls that never see each other, and the right-hand one is genuinely
+  recomputed on every regeneration. Rounding stops a meaningless three-point
+  wobble reading as a real change.
+
+### Known limits
+
+- The two numbers still come from two uncalibrated instruments, so the *gap*
+  between them carries noise even though the left one no longer moves. Fixing
+  that properly means running the rewrite after the analysis so it can be
+  anchored to it — which would serialize two calls that currently run in
+  parallel and roughly double an already-slow generation. Not done.
+- **Replacing your resume invalidates all 20 cached postings**, each costing a
+  run to regenerate. That is the price of tying results to the resume that
+  produced them, and it falls hardest on the signed-out extension tier.
+- Cache entries written before this release carry no fingerprint and are
+  discarded on first read — there is no way to confirm which resume produced
+  them.
+- **"Clear N cached results" still counts every stored entry**, including ones
+  hidden by a fingerprint mismatch. The control is about what occupies storage
+  and does delete all of them, so N can exceed the number of results you can
+  currently see.
+
 ## 2026-08-16 — Answer a gap without paying twice
 
 ### Added

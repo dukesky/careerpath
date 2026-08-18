@@ -37,10 +37,21 @@ const QUALITY_MODELS: Record<Quality, string> = {
 };
 
 // Sensible default sampling temperature per task.
+//
+// `analyze` is 0 deliberately. It is a judgment task whose output includes a
+// 0-100 match score the panel shows as a "before" number, and at 0.3 the same
+// resume against the same posting scored 72 on one run and 62 on the next —
+// which read to the user as "adding information made my resume worse".
+// Reproducibility is the property worth having here; raise this and that
+// drift comes back.
+//
+// `tailor` stays at 0.4 even though it also emits a score, because the same
+// call writes the rewritten prose. Cooling it to stabilise one number would
+// flatten the writing, which is the thing the product is actually for.
 const DEFAULT_TEMPERATURE: Record<LLMTask, number> = {
   parse: 0.1,
   parse_jd: 0.1,
-  analyze: 0.3,
+  analyze: 0,
   tailor: 0.4,
   ocr: 0,
 };

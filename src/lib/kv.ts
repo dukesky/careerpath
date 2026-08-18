@@ -110,10 +110,45 @@ function resolveRedisCreds(): { url: string; token: string } | null {
   return url && token ? { url, token } : null;
 }
 
+/**
+ * Warned once per PROCESS, not per store. "This deployment has no Redis" is a
+ * fact about the environment, so resetKV() — which is test-only — deliberately
+ * does not re-arm it.
+ */
+let warnedNoRedis = false;
+
 export function getKV(): KVStore {
   if (store) return store;
   const creds = resolveRedisCreds();
-  store = creds ? new UpstashStore(creds.url, creds.token) : new MemoryStore();
+  if (creds) {
+    store = new UpstashStore(creds.url, creds.token);
+    return store;
+  }
+
+  // Loud on purpose. The in-memory store is correct for local dev and WRONG in
+  // production: analyze and tailor are concurrent serverless invocations that
+  // land on different instances, so the runId marker they are supposed to
+  // share is not shared at all. Every generate charges twice, the free
+  // refinements a charged run is meant to buy never apply, and the per-model
+  // timing rollups reset with the process instead of accumulating.
+  //
+  // None of that is visible from the outside, which is how it survived four
+  // release cycles here. isRedisConfigured() below has existed for exactly
+  // this check the whole time and was never called from anywhere — a silent
+  // fallback is how a precondition becomes an outage nobody can see.
+  if (!warnedNoRedis) {
+    warnedNoRedis = true;
+    console.warn(
+      JSON.stringify({
+        evt: "kv_no_redis_falling_back_to_memory",
+        detail:
+          "Set UPSTASH_REDIS_REST_URL/TOKEN (or KV_REST_API_URL/TOKEN). " +
+          "Without them quota is per-process: generates double-charge across " +
+          "instances and free refinements never apply.",
+      }),
+    );
+  }
+  store = new MemoryStore();
   return store;
 }
 

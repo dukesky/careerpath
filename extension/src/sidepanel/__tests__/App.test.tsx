@@ -6,6 +6,7 @@ import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
 import { setResume, type StoredResume } from "@/lib/storage";
 import { putCachedRun, type CachedRun } from "@/lib/cache";
+import { resumeFingerprint } from "@/lib/fingerprint";
 import App from "../App";
 
 // No @testing-library/react here (see the module doc below for why), so this
@@ -138,7 +139,7 @@ function cachedRun(score: number, extraInfo: string, runId: string): CachedRun {
     extraInfo,
     runId,
     baselineScore: score,
-    resumeFingerprint: "task3-fingerprint",
+    resumeFingerprint: resumeFingerprint(RESUME),
   };
 }
 

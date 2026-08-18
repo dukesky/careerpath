@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getResume, type StoredResume } from "@/lib/storage";
 import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
+import { resumeFingerprint } from "@/lib/fingerprint";
 import {
   cacheKey,
   clearCachedRuns,
@@ -48,6 +49,14 @@ export default function App() {
   const { jd, failure, loading, reread } = useActiveJd();
   const [hasBroadAccess, setHasBroadAccess] = useState(true);
   const [granting, setGranting] = useState(false);
+
+  // Recomputed only when the stored resume object changes, because it walks
+  // the whole resume. It is also an effect dependency below, which is what
+  // makes replacing a resume clear a displayed result.
+  const fingerprint = useMemo(
+    () => (stored ? resumeFingerprint(stored.resume) : ""),
+    [stored],
+  );
 
   useEffect(() => {
     void getResume().then(setStored);
@@ -126,8 +135,8 @@ export default function App() {
     setAppliedSupplement("");
     setSupplementDraft("");
     setRunIdForPosting("");
-    if (!url) return;
-    void getCachedRun(url, "").then((hit) => { // Task 3 passes the real fingerprint
+    if (!url || !fingerprint) return;
+    void getCachedRun(url, fingerprint).then((hit) => {
       // chrome.storage reads are async and tab switches are fast, so this can
       // resolve after the user has already moved on. Painting it then would
       // show one posting's result underneath another posting's header.
@@ -149,7 +158,12 @@ export default function App() {
       setSupplementDraft(hit.extraInfo);
       setRunIdForPosting(hit.runId);
     });
-  }, [jd?.url]);
+    // `fingerprint` is a dependency deliberately, not incidentally: it is the
+    // mechanism by which replacing a resume clears a displayed result. The
+    // fingerprint changes, this effect re-runs, the display is wiped, and the
+    // now-invalid entry fails getCachedRun's provenance rule so nothing is
+    // restored over it.
+  }, [jd?.url, fingerprint]);
 
   const canRun = Boolean(jd && stored) && !busy;
 
@@ -198,7 +212,7 @@ export default function App() {
           extraInfo: supplement,
           runId,
           baselineScore: latest.analysis.overall_match_score,
-          resumeFingerprint: "", // Task 3 passes the real fingerprint
+          resumeFingerprint: fingerprint,
         });
         setCachedCount(await countCachedRuns());
         // These describe THIS posting's displayed result, so they belong

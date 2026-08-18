@@ -11,7 +11,8 @@ The web app has no version number; the extension carries its own in
 
 ### Fixed
 
-- **The "before" score is measured once per posting and never recomputed.**
+- **In the extension's side panel, the "before" score is measured once per
+  posting and never recomputed.**
   Generating a posting, adding experience and regenerating used to show the
   left-hand number *falling* — 72 → 72 first, then 62 → 72 — which read as
   "telling you more about me made my resume worse". It was resampling, not a
@@ -29,11 +30,11 @@ The web app has no version number; the extension carries its own in
 
 ### Changed
 
-- Both scores render in multiples of five. An integer on a 0-100 scale claimed
-  a precision these numbers do not have: they come from two different model
-  calls that never see each other, and the right-hand one is genuinely
-  recomputed on every regeneration. Rounding stops a meaningless three-point
-  wobble reading as a real change.
+- In the extension's side panel, both scores render in multiples of five. An
+  integer on a 0-100 scale claimed a precision these numbers do not have: they
+  come from two different model calls that never see each other, and the
+  right-hand one is genuinely recomputed on every regeneration. Rounding stops
+  a meaningless three-point wobble reading as a real change.
 
 ### Known limits
 
@@ -52,6 +53,16 @@ The web app has no version number; the extension carries its own in
   hidden by a fingerprint mismatch. The control is about what occupies storage
   and does delete all of them, so N can exceed the number of results you can
   currently see.
+- The freeze and the rounding are **the side panel only**. The web app still
+  renders both scores raw and still re-measures the "before" number on every
+  run. It does get the temperature change, since both share the same route.
+- Replacing your resume while a run is in flight leaves that run's result on
+  screen when it lands, computed from the resume you just replaced. It is not
+  cached as current — the entry is written under the fingerprint captured when
+  the run started, so it is discarded on the next read — but nothing on screen
+  says so until you navigate away.
+
+---
 
 ## 2026-08-16 — Answer a gap without paying twice
 

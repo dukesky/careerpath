@@ -57,6 +57,11 @@ export default function App() {
     () => (stored ? resumeFingerprint(stored.resume) : ""),
     [stored],
   );
+  // This posting's frozen baseline, restored from cache or set by the first
+  // run. Null means "not measured yet", and the display falls back to the
+  // current analyze score — which is the value about to become the baseline,
+  // so nothing jumps when the run completes.
+  const [baselineForPosting, setBaselineForPosting] = useState<number | null>(null);
 
   useEffect(() => {
     void getResume().then(setStored);
@@ -135,6 +140,7 @@ export default function App() {
     setAppliedSupplement("");
     setSupplementDraft("");
     setRunIdForPosting("");
+    setBaselineForPosting(null);
     if (!url || !fingerprint) return;
     void getCachedRun(url, fingerprint).then((hit) => {
       // chrome.storage reads are async and tab switches are fast, so this can
@@ -157,6 +163,7 @@ export default function App() {
       setAppliedSupplement(hit.extraInfo);
       setSupplementDraft(hit.extraInfo);
       setRunIdForPosting(hit.runId);
+      setBaselineForPosting(hit.baselineScore);
     });
     // `fingerprint` is a dependency deliberately, not incidentally: it is the
     // mechanism by which replacing a resume clears a displayed result. The
@@ -205,13 +212,18 @@ export default function App() {
       );
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         const finishedAt = new Date().toISOString();
+        // Carry the existing baseline forward; only a posting with no valid
+        // cached entry gets a fresh measurement. This is the whole fix — the
+        // alternative, recomputing it per run, is what made the left number
+        // fall from 72 to 62 after the user added experience.
+        const baseline = baselineForPosting ?? latest.analysis.overall_match_score;
         await putCachedRun(forUrl, {
           analysis: latest.analysis,
           tailored: latest.tailored,
           generatedAt: finishedAt,
           extraInfo: supplement,
           runId,
-          baselineScore: latest.analysis.overall_match_score,
+          baselineScore: baseline,
           resumeFingerprint: fingerprint,
         });
         setCachedCount(await countCachedRuns());
@@ -225,6 +237,7 @@ export default function App() {
         if (activeJdUrlRef.current === forUrl) {
           setAppliedSupplement(supplement);
           setRunIdForPosting(runId);
+          setBaselineForPosting(baseline);
           // Paint the completed run rather than only stamping it. `latest` is a
           // complete RunState, so this is a no-op on the normal path — but it
           // also covers the window between runTailor resolving and the finally
@@ -300,6 +313,7 @@ export default function App() {
         state={state}
         company={jd?.company ?? ""}
         generatedAt={generatedAt}
+        baselineScore={baselineForPosting}
         appliedSupplement={appliedSupplement}
         supplement={{
           text: supplementDraft,

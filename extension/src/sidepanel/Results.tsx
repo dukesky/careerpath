@@ -4,6 +4,7 @@ import { relativeTime } from "@/lib/relativeTime";
 import { DownloadPdf } from "./DownloadPdf";
 import { SupplementBox, type SupplementProps } from "./SupplementBox";
 import { supplementPlaceholder } from "./gapHint";
+import { roundToFive } from "./score";
 
 const STATUS_MARK: Record<ReqStatus, string> = {
   met: "✅",
@@ -27,12 +28,15 @@ export function Results({
   state,
   company,
   generatedAt,
+  baselineScore,
   appliedSupplement,
   supplement,
 }: {
   state: RunState;
   company: string;
   generatedAt: string | null;
+  /** This posting's frozen baseline, or null before it has been measured. */
+  baselineScore: number | null;
   /** What the DISPLAYED result was generated with, not what is typed below. */
   appliedSupplement: string;
   supplement: SupplementProps;
@@ -51,8 +55,10 @@ export function Results({
       {analysis && (
         <section className="card">
           <div className="score">
-            {analysis.overall_match_score}
-            {tailored && <span className="after"> → {tailored.projected_match_score}</span>}
+            {roundToFive(baselineScore ?? analysis.overall_match_score)}
+            {tailored && (
+              <span className="after"> → {roundToFive(tailored.projected_match_score)}</span>
+            )}
             <span className="muted tiny"> match</span>
           </div>
           {analysis.rationale && <p className="muted">{analysis.rationale}</p>}

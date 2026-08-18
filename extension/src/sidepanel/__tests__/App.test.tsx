@@ -390,4 +390,53 @@ describe("App - cross-posting state", () => {
     expect(secondRunId).toBeTruthy();
     expect(secondRunId).not.toBe("cached-run-id");
   });
+
+  // The bug this whole plan exists for: the user generated once, added
+  // experience, regenerated — and the LEFT number moved, reading as "adding
+  // information made my resume worse". It was resampling, not a real change.
+  it("keeps the baseline fixed when the same posting is regenerated", async () => {
+    // First run: analyze says 72. That becomes this posting's baseline.
+    // Second run: analyze says 62 — the same drift the user hit. The panel
+    // must still show 70 on the left (72 rounded), not 60.
+    await setResume(STORED_RESUME);
+    // A has no cache entry — this is a fresh, unrefined generate.
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(72),
+        tailored: tailoredFixture(82),
+        remaining: 3,
+      });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    const score = () => container.querySelector(".score")?.textContent ?? "";
+    expect(score()).toContain("70");
+
+    // Second run, same posting: analyze drifts down to 62. The baseline must
+    // not move with it.
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(62),
+        tailored: tailoredFixture(72),
+        remaining: 2,
+      });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor again").click();
+    });
+    await flush();
+
+    expect(score()).toContain("70");
+  });
 });

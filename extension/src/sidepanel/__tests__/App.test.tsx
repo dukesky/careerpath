@@ -545,4 +545,49 @@ describe("App - cross-posting state", () => {
     });
     await flush();
   });
+
+  // Finding 6: every OTHER test in this file caches its entries under
+  // resumeFingerprint(RESUME) — the same resume App renders with — so the
+  // fingerprint mismatch branch (the `useMemo`, the `!fingerprint` guard, the
+  // effect dependency, and `setBaselineForPosting(hit.baselineScore)`) has
+  // never actually run in a test. This is the one that exercises it: the
+  // entry is seeded under a fingerprint that cannot equal the real resume's,
+  // computed the same way every other cache write in this file computes it.
+  it("does not display or reuse a cached entry whose fingerprint does not match the loaded resume (Finding 6)", async () => {
+    await setResume(STORED_RESUME);
+    // Non-empty extraInfo matters here, not just for realism: the runId
+    // assertion below is only meaningful if a wiring bug that wrongly
+    // restores this entry would ALSO populate the supplement box, since
+    // generate()'s free-refinement branch only reuses `runIdForPosting` when
+    // the submitted supplement is non-empty. With extraInfo "", the primary
+    // button would mint a fresh id either way and the assertion would pass
+    // for the wrong reason.
+    await putCachedRun(JD_A.url, {
+      ...cachedRun(72, "experience that belongs to a different resume", "cached-run-mismatched-fp"),
+      resumeFingerprint: "mismatched-fingerprint",
+    });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // Display half of criterion 3 / the arrival half of criterion 5: a
+    // fingerprint-mismatched entry must not be painted, so the score card
+    // App.tsx renders on `analysis` must not exist.
+    expect(container.querySelector(".score")).toBeNull();
+    // Confirms the panel really is in the fresh, unrestored state rather
+    // than partially restored.
+    expect(container.querySelector("textarea.paste")).toBeNull();
+
+    // runId half of criterion 3: regenerating from here must not reuse the
+    // stale entry's run id.
+    runTailorImpl = async () => {};
+    const primaryButton = container.querySelector("button.primary") as HTMLButtonElement;
+    expect(primaryButton).toBeTruthy();
+    await act(async () => {
+      primaryButton.click();
+    });
+    await flush();
+
+    expect(runTailorCalls.at(-1)?.opts?.runId).not.toBe("cached-run-mismatched-fp");
+  });
 });

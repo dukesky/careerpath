@@ -38,27 +38,43 @@ function signInUrl(): string {
  * source function report "signed in, no token" as a real problem instead of
  * "still starting up" — see session.ts's `ClerkAuthState` doc comment for
  * why that distinction is the whole point of this task's contract change.
+ *
+ * Cleared on rejection (see the `.catch` below), NOT on success. The panel
+ * is long-lived — this promise can outlive many requests — so a `load()`
+ * that fails once (Clerk's Frontend API unreachable for a moment at panel
+ * startup) must not poison every later call for the rest of the page's
+ * life. Without the reset, `installClerkTokenSource`'s source would throw
+ * on every subsequent call, `session.ts` would report `session_unavailable`
+ * forever, and `api.ts` would refuse every request until the panel was
+ * closed and reopened — a transient blip turned permanent. The success path
+ * still memoizes the resolved client normally, so concurrent callers keep
+ * sharing one `load()`.
  */
 let clerkPromise: Promise<ClerkClient> | undefined;
 
+async function createAndLoad(): Promise<ClerkClient> {
+  const client = createClerkClient({ publishableKey: CLERK_PUBLISHABLE_KEY });
+  const url = signInUrl();
+  await client.load({
+    afterSignOutUrl: url,
+    signInForceRedirectUrl: url,
+    signUpForceRedirectUrl: url,
+    // NOT optional: without this the OAuth leg (Google) cannot redirect
+    // back into a chrome-extension:// URL and sign-in fails at its last
+    // step. Verified against @clerk/shared's ClerkOptions type, which
+    // does include allowedRedirectProtocols — the brief's assumption
+    // held here.
+    allowedRedirectProtocols: ["chrome-extension:"],
+  });
+  return client;
+}
+
 function load(): Promise<ClerkClient> {
   if (!clerkPromise) {
-    clerkPromise = (async () => {
-      const client = createClerkClient({ publishableKey: CLERK_PUBLISHABLE_KEY });
-      const url = signInUrl();
-      await client.load({
-        afterSignOutUrl: url,
-        signInForceRedirectUrl: url,
-        signUpForceRedirectUrl: url,
-        // NOT optional: without this the OAuth leg (Google) cannot redirect
-        // back into a chrome-extension:// URL and sign-in fails at its last
-        // step. Verified against @clerk/shared's ClerkOptions type, which
-        // does include allowedRedirectProtocols — the brief's assumption
-        // held here.
-        allowedRedirectProtocols: ["chrome-extension:"],
-      });
-      return client;
-    })();
+    clerkPromise = createAndLoad().catch((err: unknown) => {
+      clerkPromise = undefined;
+      throw err;
+    });
   }
   return clerkPromise;
 }

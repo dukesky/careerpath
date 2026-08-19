@@ -82,21 +82,18 @@ export default defineManifest({
   side_panel: {
     default_path: "src/sidepanel/index.html",
   },
-  // The sign-in page is reached via chrome.runtime.getURL, not a manifest
-  // field CRXJS already knows to expose (side_panel, background, content
-  // scripts). NOT empirically confirmed — see task-4-report.md: this
-  // environment could not get Chrome to load ANY unpacked extension
-  // (verified with a trivial one-line manifest too), so direct-navigation
-  // behavior with vs. without this entry was never actually observed.
-  // Included on the brief's explicit recommendation and because it is
-  // low-risk (the content script's own resource is already exposed the same
-  // way, below) — remove it if a real browser test shows it unnecessary.
-  web_accessible_resources: [
-    {
-      resources: ["src/signin/index.html"],
-      matches: ["<all_urls>"],
-    },
-  ],
+  // No web_accessible_resources entry for the sign-in page, deliberately.
+  // web_accessible_resources gates access from WEB contexts (a page fetching
+  // or framing an extension resource); opening this page via
+  // chrome.runtime.getURL + chrome.tabs.create from the panel, and direct
+  // address-bar navigation (how the Task 4 gate opens it), both work without
+  // one. An entry here would instead be pure downside for an auth page
+  // specifically: with the extension ID pinned by `key` above, any website
+  // could probe for this extension and iframe a live sign-in form. See
+  // task-4-report.md's fix report for the reasoning and how to tell, from a
+  // real gate run, whether this is ever actually needed — if the page will
+  // not open without it, add it back scoped (NOT `<all_urls>`) and record
+  // that as a finding rather than a precaution.
   icons: {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",

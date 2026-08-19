@@ -30,7 +30,7 @@ describe("apiPost", () => {
     // Default every test to a signed-out Clerk session so existing
     // device-token coverage is unaffected; tests that care about the Clerk
     // identity set their own source explicitly.
-    setClerkTokenSource(async () => null);
+    setClerkTokenSource(async () => ({ signedIn: false }));
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -186,7 +186,7 @@ describe("apiPost", () => {
   // would run a second time (a mint call plus the retry), and the result
   // would come back as `{ ok: false, kind: "auth" }` instead.
   it("does not refresh or retry on a Clerk-session 401", async () => {
-    setClerkTokenSource(async () => "clerk-token");
+    setClerkTokenSource(async () => ({ signedIn: true, token: "clerk-token" }));
     const ensureTokenSpy = vi.spyOn(tokenLib, "ensureToken");
     const fetchMock = vi.fn<typeof fetch>(async () => json({ error: "expired" }, 401));
     vi.stubGlobal("fetch", fetchMock);
@@ -200,5 +200,28 @@ describe("apiPost", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(ensureTokenSpy).not.toHaveBeenCalledWith(true);
+  });
+
+  // Regression guard for the finding in task-2-report.md's fix report: the
+  // Clerk-source-throws path used to fall back to a device token, which never
+  // 401s — it just succeeds, silently spending a device-bucket run on a
+  // signed-in user. `signedIn: true, token: null` is the same shape of
+  // uncertainty (Clerk says signed in but hands back nothing usable), so
+  // `send` must refuse before issuing any request rather than let
+  // `currentAuthToken` degrade it to a device identity that would sail
+  // through.
+  it("refuses to spend a run when the session state is unavailable", async () => {
+    setClerkTokenSource(async () => ({ signedIn: true, token: null }));
+    const fetchMock = vi.fn<typeof fetch>(async () => json({ jd: { company: "Acme" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiPost("/api/parse-jd", { text: "x" });
+
+    expect(res).toEqual({
+      ok: false,
+      kind: "session_expired",
+      message: "We couldn't confirm your session. Sign in again to continue.",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

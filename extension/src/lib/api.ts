@@ -50,7 +50,17 @@ async function toFailure<T>(res: Response): Promise<ApiResult<T>> {
 /**
  * One request, carrying whichever identity currently applies.
  *
- * The 401 handling FORKS on that identity, and the fork is load-bearing:
+ * Before anything is sent: if `currentAuthToken` could not establish an
+ * identity — Clerk reports the user signed in but hands back no token, or
+ * the Clerk source itself failed — the request is refused with NO fetch.
+ * Falling back to the device token here would spend a run against an
+ * identity we can't attribute: the device token never 401s, so it would just
+ * succeed against the 3-per-30-days bucket while the panel still shows a
+ * signed-in user their daily allowance. See `session.ts` for why "we don't
+ * know" must never collapse into "assume signed out".
+ *
+ * Otherwise, the 401 handling FORKS on the identity, and the fork is
+ * load-bearing:
  *
  * - A device token is ours. Expiry is routine — mint another and retry ONCE.
  *   Never loop: a server that rejects a freshly minted token is broken, and
@@ -69,6 +79,15 @@ async function send<T>(
   allowRefresh = true,
 ): Promise<ApiResult<T>> {
   const auth = await currentAuthToken();
+
+  if (auth?.kind === "session_unavailable") {
+    return {
+      ok: false,
+      kind: "session_expired",
+      message: "We couldn't confirm your session. Sign in again to continue.",
+    };
+  }
+
   const headers: Record<string, string> = {
     ...((init.headers as Record<string, string>) ?? {}),
   };

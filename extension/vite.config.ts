@@ -12,6 +12,18 @@ export default defineConfig({
       "@shared": fileURLToPath(new URL("../shared", import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      // CRXJS auto-discovers HTML it finds referenced FROM the manifest
+      // (side_panel's default_path, background, content scripts). The
+      // sign-in page is reached only via chrome.runtime.getURL — nothing in
+      // the manifest points at it — so it needs an explicit input or CRXJS
+      // never emits it at all.
+      input: {
+        signin: fileURLToPath(new URL("./src/signin/index.html", import.meta.url)),
+      },
+    },
+  },
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],

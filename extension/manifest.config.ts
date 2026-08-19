@@ -82,6 +82,21 @@ export default defineManifest({
   side_panel: {
     default_path: "src/sidepanel/index.html",
   },
+  // The sign-in page is reached via chrome.runtime.getURL, not a manifest
+  // field CRXJS already knows to expose (side_panel, background, content
+  // scripts). NOT empirically confirmed — see task-4-report.md: this
+  // environment could not get Chrome to load ANY unpacked extension
+  // (verified with a trivial one-line manifest too), so direct-navigation
+  // behavior with vs. without this entry was never actually observed.
+  // Included on the brief's explicit recommendation and because it is
+  // low-risk (the content script's own resource is already exposed the same
+  // way, below) — remove it if a real browser test shows it unnecessary.
+  web_accessible_resources: [
+    {
+      resources: ["src/signin/index.html"],
+      matches: ["<all_urls>"],
+    },
+  ],
   icons: {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",

@@ -86,3 +86,19 @@ header h1 { font-size: 15px; margin: 2px 0 0; }
   text-decoration: none;
 }
 .outlink:hover { text-decoration: underline; }
+
+/* The sign-in page is a full browser tab, not the 400px panel — centered
+   column with room to breathe, but built from the same tokens so it still
+   reads as career-path rather than a different product. */
+.signin-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 48px 16px;
+}
+.signin-page header { text-align: center; max-width: 360px; }
+.signin-page header h1 { font-size: 20px; margin: 4px 0; }
+.signin-mount { width: 100%; max-width: 400px; }

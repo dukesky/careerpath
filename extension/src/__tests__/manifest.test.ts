@@ -9,6 +9,7 @@
 import { describe, it, expect } from "vitest";
 import manifestExport from "../../manifest.config";
 import { BROAD_ORIGINS } from "@/lib/permissions";
+import { CLERK_FRONTEND_API } from "@/lib/config";
 
 // `defineManifest` is typed to return `ManifestV3 | Promise<ManifestV3> |
 // ManifestV3Fn` so it can support all three authoring styles, but this
@@ -18,6 +19,7 @@ import { BROAD_ORIGINS } from "@/lib/permissions";
 // actually produces, rather than fighting the union on every assertion.
 const manifest = manifestExport as {
   content_scripts?: unknown;
+  permissions?: string[];
   host_permissions?: string[];
   optional_host_permissions?: string[];
   content_security_policy?: { extension_pages?: string };
@@ -33,18 +35,48 @@ describe("manifest", () => {
     expect("content_scripts" in manifest).toBe(false);
   });
 
-  it("requests the API origins plus exactly the five supported job sites", () => {
+  it("requests the API origins, the Clerk host, plus exactly the five supported job sites", () => {
     expect(manifest.host_permissions).toEqual([
       "http://localhost:3000/*",
       "https://career-allpath.com/*",
       "https://www.career-allpath.com/*",
       "https://careerpath-hazel.vercel.app/*",
+      "https://fair-lemur-34.clerk.accounts.dev/*",
       "*://*.linkedin.com/*",
       "*://*.greenhouse.io/*",
       "*://*.lever.co/*",
       "*://*.ashbyhq.com/*",
       "*://*.myworkdayjobs.com/*",
     ]);
+  });
+
+  // Clerk's SDK reads cookies on its own frontend API domain.
+  it("requests the cookies permission Clerk needs", () => {
+    expect(manifest.permissions).toContain("cookies");
+  });
+
+  // Without this the extension cannot reach Clerk at all and sign-in does not
+  // exist. It widens the install prompt, which the page-access design worked
+  // to keep narrow — an accepted, deliberate cost.
+  it("requests the Clerk frontend API host", () => {
+    expect(
+      manifest.host_permissions?.some((h) => h.includes("clerk")),
+    ).toBe(true);
+  });
+
+  // manifest.config.ts declares the Clerk host literally (it runs in Node at
+  // build time, before src/lib/config.ts's import.meta.env.MODE branching is
+  // available to it) rather than importing CLERK_FRONTEND_API. That means
+  // nothing at compile time stops the two from drifting apart — this
+  // repository has been bitten three times by exactly that shape of bug, a
+  // constant load-bearing across two files with nothing pinning them
+  // together. If someone changes CLERK_FRONTEND_API in config.ts without
+  // updating manifest.config.ts's literal (or vice versa), this is the test
+  // that catches it; every other assertion here would stay green because
+  // they only look at one side.
+  it("does not let the manifest's Clerk host drift from CLERK_FRONTEND_API", () => {
+    const clerkOrigin = new URL(CLERK_FRONTEND_API).origin;
+    expect(manifest.host_permissions).toContain(`${clerkOrigin}/*`);
   });
 
   // Optional host permissions are NOT shown in the install prompt. Declaring

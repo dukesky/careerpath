@@ -15,6 +15,15 @@ const API_HOSTS = [
   "https://career-allpath.com/*",
   "https://www.career-allpath.com/*",
   "https://careerpath-hazel.vercel.app/*",
+  // Clerk's Frontend API host. Declared literally, NOT imported, because this
+  // file is loaded directly by Vite's Node bootstrap (via vite.config.ts)
+  // before import.meta.env is available to it — see src/lib/config.ts's
+  // CLERK_FRONTEND_API for the same value with the runtime-facing comment.
+  // MUST match CLERK_FRONTEND_API's origin exactly, or Clerk requests fail
+  // at runtime while every test that doesn't check this one stays green;
+  // src/__tests__/manifest.test.ts pins the two together so a change to
+  // either file with the other left behind fails the suite.
+  "https://fair-lemur-34.clerk.accounts.dev/*",
 ];
 
 // The five job sites the product targets. Granted at install, so the panel
@@ -50,7 +59,11 @@ export default defineManifest({
   // Public key only — extension/key.pem is gitignored.
   key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Vc+YGvX/ss6iiR+VEOn8RfC3uKWCtIiQweZcyavaUPjX02cbOUH2JvUR7127aeih6Br08+nfARjmm+CmezOBZPq02VFgDkPpVeCtvJWWBZ8BLZ2MZTMapwcoR09QRCwkb2mdRSf5G0LmYQS8M+ArS2OHH+I5l9TFRvoCnxTHCGbTqPSFdBr9pnilbMeGl9WYwV7Gm78HVocgPEtdXvRTNsq2GCE3TpPu7vlDKCWEDakOSuK/kVFb9GYLHLjFp6juqcxbQKDHduW7KMOo5teoAuokGikcZiPT9zbfvD9SO1LLuX8PtH2e58J/Ltmt8XUG6FEzajrFGcJMyIHwVVkGwIDAQAB",
   minimum_chrome_version: "114",
-  permissions: ["storage", "sidePanel", "activeTab", "scripting"],
+  // "cookies" is Clerk's: its SDK reads/writes session cookies on its own
+  // Frontend API domain to keep the extension signed in. This widens the
+  // install prompt, same as the Clerk host_permissions entry above — an
+  // accepted, deliberate cost of adding sign-in.
+  permissions: ["storage", "sidePanel", "activeTab", "scripting", "cookies"],
   host_permissions: [...API_HOSTS, ...JOB_SITES],
   optional_host_permissions: OPTIONAL_HOSTS,
   content_security_policy: {

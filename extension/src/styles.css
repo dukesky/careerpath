@@ -20,16 +20,27 @@ body {
   line-height: 1.5;
 }
 
-button {
+/* `a.btn` rides along with `button` so AccountBar's "Sign in" and the
+   exhausted-trial / session-expired CTAs — plain anchors, opened with
+   target="_blank" rather than chrome.tabs.create so they need no `tabs`
+   permission (see App.tsx's saved-resumes link for the same reasoning) —
+   look like the buttons beside them instead of default link text. */
+button,
+a.btn {
   font: inherit;
   cursor: pointer;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: #fff;
   padding: 6px 10px;
+  text-decoration: none;
+  color: inherit;
+  display: inline-block;
+  text-align: center;
 }
 
-button.primary {
+button.primary,
+a.btn.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
@@ -102,3 +113,37 @@ header h1 { font-size: 15px; margin: 2px 0 0; }
 .signin-page header { text-align: center; max-width: 360px; }
 .signin-page header h1 { font-size: 20px; margin: 4px 0; }
 .signin-mount { width: 100%; max-width: 400px; }
+
+/* SignOutDialog. Fixed over the whole 400px panel, not just its own card —
+   there is no separate window to open a real modal in. */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 18, 32, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 10;
+}
+.dialog {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 320px;
+}
+.dialog-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dialog-checkbox input { margin-top: 2px; }
+.dialog-actions { display: flex; gap: 8px; }
+.dialog-actions button { flex: 1; }

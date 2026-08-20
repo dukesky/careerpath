@@ -4,8 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import type { GapAnalysis, ParsedResume, TailorResult } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
-import { setResume, type StoredResume } from "@/lib/storage";
-import { getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
+import { getResume, setResume, type StoredResume } from "@/lib/storage";
+import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import App from "../App";
 
@@ -113,6 +113,47 @@ vi.mock("@/lib/cache", async (importOriginal) => {
 });
 
 // ---------------------------------------------------------------------------
+// Mock `@/lib/clerk` — Task 5 wires App.tsx to this module on mount. A real
+// import pulls in @clerk/chrome-extension, which pulls in
+// webextension-polyfill, which throws outside an actual extension runtime
+// ("This script should only be loaded in a browser extension") — this jsdom
+// environment fakes chrome.storage (below), not the whole extension host.
+//
+// `clerkState` is plain module state so a test can set signed-in/email
+// BEFORE rendering; `installClerkTokenSourceCalls` and `signOutCallCount`
+// are asserted on directly, since App.tsx calling the real functions is
+// exactly the behavior Task 5 requires and this mock would otherwise hide.
+// ---------------------------------------------------------------------------
+let clerkState: { signedIn: boolean; email: string | null } = {
+  signedIn: false,
+  email: null,
+};
+let installClerkTokenSourceCalls = 0;
+let signOutCallCount = 0;
+const SIGNIN_URL = "https://example.com/src/signin/index.html";
+
+vi.mock("@/lib/clerk", () => ({
+  installClerkTokenSource: () => {
+    installClerkTokenSourceCalls += 1;
+  },
+  isSignedIn: async () => clerkState.signedIn,
+  currentUserEmail: async () => clerkState.email,
+  signOut: async () => {
+    signOutCallCount += 1;
+  },
+  signInPageUrl: () => SIGNIN_URL,
+}));
+
+// Applies to EVERY test in this file, both describe blocks below — clerk
+// state must not leak from one test into the next regardless of which
+// describe registered it.
+beforeEach(() => {
+  clerkState = { signedIn: false, email: null };
+  installClerkTokenSourceCalls = 0;
+  signOutCallCount = 0;
+});
+
+// ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 const RESUME: ParsedResume = {
@@ -205,6 +246,25 @@ function findButton(container: HTMLElement, text: string): HTMLButtonElement {
     throw new Error(`button "${text}" not found. Present: ${JSON.stringify(labels)}`);
   }
   return btn;
+}
+
+function hasButton(container: HTMLElement, text: string): boolean {
+  return Array.from(container.querySelectorAll("button")).some(
+    (b) => b.textContent?.trim() === text,
+  );
+}
+
+function findAnchor(container: HTMLElement, text: string): HTMLAnchorElement {
+  const a = Array.from(container.querySelectorAll("a")).find(
+    (el) => el.textContent?.trim() === text,
+  );
+  if (!a) {
+    const labels = Array.from(container.querySelectorAll("a")).map((el) =>
+      el.textContent?.trim(),
+    );
+    throw new Error(`anchor "${text}" not found. Present: ${JSON.stringify(labels)}`);
+  }
+  return a;
 }
 
 function typeInto(el: HTMLTextAreaElement, value: string) {
@@ -589,5 +649,269 @@ describe("App - cross-posting state", () => {
     await flush();
 
     expect(runTailorCalls.at(-1)?.opts?.runId).not.toBe("cached-run-mismatched-fp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5: AccountBar, SignOutDialog, the exhausted-trial prompt, and
+// session_expired — all reached through App, per this package's testing
+// reality (see the task's brief). A separate describe block, with its own
+// container/root, rather than folding into the block above: that one's
+// beforeEach/afterEach and helper closures are scoped to its own `describe`,
+// and duplicating the ~10 lines of harness here is cheaper than threading
+// this suite's state through it.
+// ---------------------------------------------------------------------------
+describe("App - account bar, sign-out, and session handling", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // Same reasoning as the other describe block's `flush` — chrome.storage's
+  // fake is itself async, and so is this suite's own clerk mock (isSignedIn/
+  // currentUserEmail both resolve via a real Promise), so a state update
+  // they cause can be a few microtask hops behind whatever `act` directly
+  // awaited.
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("calls installClerkTokenSource exactly once on mount — without it every request is a device request", async () => {
+    await renderApp();
+    expect(installClerkTokenSourceCalls).toBe(1);
+  });
+
+  it("shows the Sign in control with its reason when signed out, and no Sign out control", async () => {
+    await renderApp();
+
+    const link = findAnchor(container, "Sign in");
+    expect(link.getAttribute("href")).toBe(SIGNIN_URL);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(container.textContent).toContain(
+      "raise your limit from 3 runs every 30 days to 5 runs a day",
+    );
+    expect(hasButton(container, "Sign out")).toBe(false);
+  });
+
+  it("shows the account email and Sign out once signed in, and picks up the remaining count from RunState — not a separate fetch", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(findButton(container, "Sign out")).toBeTruthy();
+    // No run has reported a `remaining` yet (RunState starts at
+    // INITIAL_RUN_STATE), so there is nothing truthful to show.
+    expect(container.textContent).not.toContain("left today");
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 3,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    // This is the number generate() got back from THIS run — AccountBar must
+    // display exactly it, not a value it looked up on its own.
+    expect(container.textContent).toContain("3 runs left today");
+  });
+
+  it("sign-out with the box checked (the default) ends the session AND clears the resume, the cache, and the displayed run", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+    await renderApp();
+
+    // The cached run restores on mount — confirms there is a displayed
+    // result and a resume on screen before sign-out touches anything.
+    expect(container.querySelector(".score")).toBeTruthy();
+    expect(container.textContent).toContain("Ada Lovelace");
+    expect(findButton(container, "Clear 1 cached result")).toBeTruthy();
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    expect(dialog).toBeTruthy();
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true); // checked BY DEFAULT
+    const label = dialog.querySelector(".dialog-checkbox") as HTMLElement;
+    expect(label.textContent?.trim()).toBe(
+      "Also remove my resume and saved results from this browser.",
+    );
+
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(1);
+    // The session ended...
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+    expect(hasButton(container, "Sign out")).toBe(false);
+    // ...AND, because the box was checked, everything else did too: storage
+    // itself (not just the display)...
+    expect(await getResume()).toBeNull();
+    expect(await countCachedRuns()).toBe(0);
+    // ...and the panel's own displayed state, so nothing from the previous
+    // session lingers on screen.
+    expect(container.querySelector(".score")).toBeNull();
+    expect(container.textContent).not.toContain("Ada Lovelace");
+    expect(
+      Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.startsWith("Clear"),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("sign-out with the box UNCHECKED ends only the session — resume, cache, and the displayed run all survive", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+    await renderApp();
+
+    expect(container.querySelector(".score")).toBeTruthy();
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+
+    act(() => {
+      checkbox.click(); // uncheck
+    });
+    expect(checkbox.checked).toBe(false);
+
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(1);
+    // The session still ended...
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+    // ...but NOTHING local was touched: neither storage...
+    expect(await getResume()).not.toBeNull();
+    expect(await countCachedRuns()).toBe(1);
+    // ...nor the panel's own display.
+    expect(container.querySelector(".score")).toBeTruthy();
+    expect(container.textContent).toContain("Ada Lovelace");
+    expect(findButton(container, "Clear 1 cached result")).toBeTruthy();
+  });
+
+  it("offers sign-in when a SIGNED-OUT caller's trial is exhausted, distinct from a generic auth error", async () => {
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "error",
+        error: { kind: "quota", message: "You've used all your free runs." },
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("You've used all your free runs.");
+    const cta = findAnchor(container, "Sign in for more runs");
+    expect(cta.getAttribute("href")).toBe(SIGNIN_URL);
+
+    // A generic auth failure has no such offer — nothing Clerk-shaped to
+    // route back to for a caller who was never signed in in the first
+    // place.
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({ phase: "error", error: { kind: "auth", message: "Not authorized." } });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Sign in for more runs",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("renders session_expired with its own route back to sign-in, distinct from a generic auth error", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "error",
+        error: {
+          kind: "session_expired",
+          message: "Your session expired. Sign in again to continue.",
+        },
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Your session expired. Sign in again to continue.");
+    const cta = findAnchor(container, "Sign in again");
+    expect(cta.getAttribute("href")).toBe(SIGNIN_URL);
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({ phase: "error", error: { kind: "auth", message: "Not authorized." } });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Sign in again",
+      ),
+    ).toBeUndefined();
   });
 });

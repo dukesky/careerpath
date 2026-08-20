@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getResume, type StoredResume } from "@/lib/storage";
 import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
@@ -11,9 +11,16 @@ import {
   putCachedRun,
 } from "@/lib/cache";
 import { API_BASE } from "@/lib/config";
+import {
+  currentUserEmail,
+  installClerkTokenSource,
+  isSignedIn,
+  signInPageUrl,
+} from "@/lib/clerk";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
+import { AccountBar } from "./AccountBar";
 
 export default function App() {
   const [stored, setStored] = useState<StoredResume | null>(null);
@@ -49,6 +56,14 @@ export default function App() {
   const { jd, failure, loading, reread } = useActiveJd();
   const [hasBroadAccess, setHasBroadAccess] = useState(true);
   const [granting, setGranting] = useState(false);
+  // Identity, for AccountBar. Both are one-shot Clerk reads (see lib/clerk.ts)
+  // — there is no push notification when a sign-in completes in the separate
+  // tab it opens in, so this starts signed-out and is re-checked below on
+  // mount and whenever the panel's document becomes visible again, which is
+  // the moment a user returns from that tab. `remaining` is NOT duplicated
+  // here: AccountBar reads it straight off `state.remaining`.
+  const [signedIn, setSignedIn] = useState(false);
+  const [email, setEmail] = useState<string | null>(null);
 
   // Recomputed only when the stored resume object changes, because it walks
   // the whole resume. It is also an effect dependency below, which is what
@@ -67,6 +82,42 @@ export default function App() {
     void getResume().then(setStored);
     void countCachedRuns().then(setCachedCount);
   }, []);
+
+  // isSignedIn()/currentUserEmail() are one-shot reads (see lib/clerk.ts),
+  // so this is the one place that re-queries them; everything else — the
+  // mount effect below and the visibility effect after it — just calls this.
+  const refreshAccount = useCallback(async () => {
+    const signed = await isSignedIn();
+    setSignedIn(signed);
+    setEmail(signed ? await currentUserEmail() : null);
+  }, []);
+
+  // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
+  // session.ts as the source api.ts consults for every request (see
+  // clerk.ts's own doc comment). It MUST run exactly once, and here, at the
+  // panel's bootstrap — without it every request carries the device
+  // identity and this whole feature is inert, silently: nothing throws,
+  // requests just never look signed in.
+  useEffect(() => {
+    installClerkTokenSource();
+    void refreshAccount();
+  }, [refreshAccount]);
+
+  // Sign-in happens in a separate tab (see AccountBar) — Clerk's
+  // chrome-extension sync host does not work inside a side panel, so there
+  // is no push notification back into this panel when it completes. The
+  // panel document regaining visibility is the best available signal that
+  // the user has come back from that tab, so re-check then. Best-effort: if
+  // a browser never fires this for a side panel that was never actually
+  // hidden, the user still sees the right state on the next full panel
+  // open — this just saves them that reopen in the common case.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshAccount();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshAccount]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
   // before this async check resolves.
@@ -291,12 +342,43 @@ export default function App() {
     setBaselineForPosting(null);
   }
 
+  // SignOutDialog has already awaited signOut() (and, if requested, the
+  // clearResume()/clearCachedRuns() pair) by the time this is called — see
+  // AccountBar/SignOutDialog. This only updates React state.
+  //
+  // The account identity resets UNCONDITIONALLY: ending the session is what
+  // "sign out" means, box or no box. The resume/results reset is gated on
+  // `removedLocalData`, mirroring exactly what SignOutDialog cleared in
+  // storage — leaving them untouched on screen when nothing was actually
+  // cleared underneath would make the panel lie about what is still there.
+  function handleSignedOut(removedLocalData: boolean) {
+    setSignedIn(false);
+    setEmail(null);
+    if (removedLocalData) {
+      setStored(null);
+      setCachedCount(0);
+      setState(INITIAL_RUN_STATE);
+      setGeneratedAt(null);
+      setAppliedSupplement("");
+      setSupplementDraft("");
+      setRunIdForPosting("");
+      setBaselineForPosting(null);
+    }
+  }
+
   return (
     <main>
       <header>
         <div className="label">{jd?.company || (loading ? "Reading page…" : "career-path")}</div>
         <h1>{jd?.title || (failure ? "No posting found" : " ")}</h1>
       </header>
+
+      <AccountBar
+        signedIn={signedIn}
+        email={email}
+        remaining={state.remaining}
+        onSignedOut={handleSignedOut}
+      />
 
       <ResumeBlock stored={stored} onChange={setStored} />
 
@@ -334,6 +416,38 @@ export default function App() {
           canRun,
         }}
       />
+
+      {/* The single place a signed-out user hits a dead end today: the free
+          trial (3 runs / 30 days) is exhausted and there was no way forward
+          in the panel. A signed-in user's OWN daily quota running out gets
+          no such offer here — 5/day is already the raised allowance, and
+          there is nothing further to sign into. */}
+      {state.phase === "error" && state.error?.kind === "quota" && !signedIn && (
+        <section className="card">
+          <p className="muted tiny">
+            Sign in to raise your limit from 3 runs every 30 days to 5 runs a day.
+          </p>
+          <a className="btn primary" href={signInPageUrl()} target="_blank" rel="noreferrer">
+            Sign in for more runs
+          </a>
+        </section>
+      )}
+
+      {/* Task 2's api.ts forks a Clerk 401 into this distinct error kind
+          specifically so the user could be TOLD their session is gone
+          rather than silently continuing as a signed-out device on the
+          smaller tier while the header still showed their email — see
+          api.ts's `send()` doc comment. This is the visible half of that
+          guarantee: a route back to sign-in, not just the generic message
+          Results.tsx already renders for every error kind including this
+          one. */}
+      {state.phase === "error" && state.error?.kind === "session_expired" && (
+        <section className="card">
+          <a className="btn primary" href={signInPageUrl()} target="_blank" rel="noreferrer">
+            Sign in again
+          </a>
+        </section>
+      )}
 
       {/* A plain anchor, not chrome.tabs.create: opening a tab this way needs
           no `tabs` permission. The page is Clerk-gated, so a signed-out user

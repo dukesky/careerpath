@@ -130,6 +130,10 @@ let clerkState: { signedIn: boolean; email: string | null } = {
 };
 let installClerkTokenSourceCalls = 0;
 let signOutCallCount = 0;
+// Lets one test (the sign-out-fails case) make the mocked signOut() reject,
+// to pin SignOutDialog's catch and the reordering that keeps a rejection
+// from ever leaving the session ended while the UI still shows signed in.
+let signOutShouldThrow = false;
 const SIGNIN_URL = "https://example.com/src/signin/index.html";
 
 vi.mock("@/lib/clerk", () => ({
@@ -140,6 +144,7 @@ vi.mock("@/lib/clerk", () => ({
   currentUserEmail: async () => clerkState.email,
   signOut: async () => {
     signOutCallCount += 1;
+    if (signOutShouldThrow) throw new Error("network blip");
   },
   signInPageUrl: () => SIGNIN_URL,
 }));
@@ -151,6 +156,7 @@ beforeEach(() => {
   clerkState = { signedIn: false, email: null };
   installClerkTokenSourceCalls = 0;
   signOutCallCount = 0;
+  signOutShouldThrow = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -913,5 +919,152 @@ describe("App - account bar, sign-out, and session handling", () => {
         (a) => a.textContent?.trim() === "Sign in again",
       ),
     ).toBeUndefined();
+  });
+
+  // Review Critical: AccountBar's Sign out had no `busy` guard, and
+  // generate()'s own guard only keys on which POSTING is active — not on
+  // whether the user is still signed in. So a sign-out (box checked) mid-run
+  // used to clear cp_resume/cp_results and reset the display, only for the
+  // still-in-flight run to repaint the previous session's result over the
+  // cleared panel and, on resolution, putCachedRun() the previous user's
+  // tailored resume BACK into chrome.storage.local. This pins the fix: Sign
+  // out must be inert while busy, the same way "Clear N cached results"
+  // already is (see its own `disabled={busy}` a few lines up in App.tsx).
+  it("disables Sign out while a run is in flight, so a mid-run sign-out cannot clear and re-persist the previous session's results", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    let releaseRun: (() => void) | null = null;
+    runTailorImpl = () =>
+      new Promise((resolve) => {
+        releaseRun = resolve;
+      });
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+    expect(findButton(container, "Working…")).toBeTruthy(); // run genuinely in flight
+
+    const signOutBtn = findButton(container, "Sign out");
+    expect(signOutBtn.disabled).toBe(true);
+
+    // A disabled button doesn't fire onClick in the DOM, so this click is
+    // itself part of the assertion: if the guard were missing, this would
+    // open the dialog.
+    await act(async () => {
+      signOutBtn.click();
+    });
+    expect(container.querySelector(".dialog")).toBeNull();
+
+    await act(async () => {
+      releaseRun?.();
+    });
+    await flush();
+
+    // The run settled — Sign out is live again.
+    expect(findButton(container, "Sign out").disabled).toBe(false);
+  });
+
+  it("does not offer the exhausted-trial sign-in CTA to a caller who is already signed in", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "error",
+        error: { kind: "quota", message: "You've used all your free runs." },
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    // The generic message still renders...
+    expect(container.textContent).toContain("You've used all your free runs.");
+    // ...but there is nothing further to sign into: 5/day is already the
+    // raised allowance this same account is on.
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Sign in for more runs",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("re-checks Clerk on visibilitychange, so a sign-in completed in the separate tab is picked up without reopening the panel", async () => {
+    await renderApp();
+    // Starts signed out — nothing has told the panel otherwise yet.
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+
+    // The user finished signing in in the separate tab Clerk's session now
+    // reflects that; the panel itself has had no push notification of it.
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(findButton(container, "Sign out")).toBeTruthy();
+  });
+
+  // Review Important: signOut() could throw (clerk.ts documents getClerk()
+  // as able to reject transiently), and the original try/finally had no
+  // catch — a rejection meant onConfirmed() never ran, silently leaving the
+  // dialog's "Signing out…" button revert to "Sign out" with no explanation.
+  // This pins the fix in its cleanest form: box UNCHECKED, so nothing but
+  // signOut() itself is at stake, and the failure must leave everything
+  // exactly as it was (dialog open, session intact, nothing local touched)
+  // rather than landing in an ambiguous state.
+  it("surfaces a signOut() failure, keeps the dialog open for a retry, and does not desync the account bar from the still-live session", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    act(() => {
+      checkbox.click(); // uncheck — isolates this test to signOut() alone
+    });
+
+    signOutShouldThrow = true;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(1);
+    // The dialog is still here, with an explanation, not silently reverted.
+    expect(container.querySelector(".dialog")).toBeTruthy();
+    expect(container.querySelector(".dialog")?.textContent).toContain(
+      "Couldn't sign out. Try again.",
+    );
+    // Nothing about the session changed — the bar must not have desynced
+    // into showing "Sign in" for a session that is, in fact, still live.
+    expect(container.textContent).toContain("ada@example.com");
+    expect(
+      Array.from(container.querySelectorAll("a")).find((a) => a.textContent?.trim() === "Sign in"),
+    ).toBeUndefined();
+    expect(await getResume()).not.toBeNull();
+
+    // Retry, this time letting signOut() succeed.
+    signOutShouldThrow = false;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(2);
+    expect(container.querySelector(".dialog")).toBeNull();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
   });
 });

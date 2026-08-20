@@ -16,6 +16,7 @@ export function AccountBar({
   signedIn,
   email,
   remaining,
+  busy,
   onSignedOut,
 }: {
   signedIn: boolean;
@@ -23,6 +24,17 @@ export function AccountBar({
   email: string | null;
   /** RunState.remaining, passed straight through — see run.ts. */
   remaining: number | null;
+  /**
+   * App.tsx's `busy` — whether generate() currently owns the display. Same
+   * reasoning, same discipline as the "Clear N cached results" control a few
+   * lines down the panel in App.tsx: signing out (with the box checked) also
+   * clears the resume and the cache, so it is a SECOND route to exactly what
+   * that control's own `disabled={busy}` guards against — a mid-run clear
+   * that gets silently repainted and re-persisted the moment the run
+   * resolves, because generate()'s own guard only keys on which POSTING is
+   * active, not on whether the user is still signed in.
+   */
+  busy: boolean;
   /** Fired once sign-out has actually completed, and whether local data was also removed. */
   onSignedOut: (removedLocalData: boolean) => void;
 }) {
@@ -63,7 +75,9 @@ export function AccountBar({
             </p>
           )}
         </div>
-        <button onClick={() => setDialogOpen(true)}>Sign out</button>
+        <button onClick={() => setDialogOpen(true)} disabled={busy}>
+          Sign out
+        </button>
       </div>
       {dialogOpen && (
         <SignOutDialog

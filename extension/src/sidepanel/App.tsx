@@ -86,10 +86,26 @@ export default function App() {
   // isSignedIn()/currentUserEmail() are one-shot reads (see lib/clerk.ts),
   // so this is the one place that re-queries them; everything else — the
   // mount effect below and the visibility effect after it — just calls this.
+  //
+  // Both go through getClerk(), which clerk.ts documents as able to reject
+  // transiently (a `load()` that briefly can't reach Clerk's Frontend API).
+  // A rejection here is benign for display — AccountBar just keeps showing
+  // whatever it last knew — but silent otherwise, so record it the same
+  // structured way session.ts does for the equivalent Clerk-source failure,
+  // rather than letting it surface as an unhandled rejection.
   const refreshAccount = useCallback(async () => {
-    const signed = await isSignedIn();
-    setSignedIn(signed);
-    setEmail(signed ? await currentUserEmail() : null);
+    try {
+      const signed = await isSignedIn();
+      setSignedIn(signed);
+      setEmail(signed ? await currentUserEmail() : null);
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          evt: "refresh_account_failed",
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
   }, []);
 
   // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
@@ -377,6 +393,7 @@ export default function App() {
         signedIn={signedIn}
         email={email}
         remaining={state.remaining}
+        busy={busy}
         onSignedOut={handleSignedOut}
       />
 
@@ -391,9 +408,6 @@ export default function App() {
       <button className="primary" onClick={() => void generate(supplementDraft)} disabled={!canRun}>
         {busy ? "Working…" : state.tailored ? "Tailor again" : "Tailor my resume"}
       </button>
-      {state.remaining !== null && (
-        <p className="muted tiny center">{state.remaining} free runs left</p>
-      )}
       {!stored && <p className="muted tiny center">Add your resume to get started.</p>}
       {failure && <p className="muted tiny center">{failure.message}</p>}
       {failure?.kind === "permission" && !hasBroadAccess && (
@@ -443,6 +457,7 @@ export default function App() {
           one. */}
       {state.phase === "error" && state.error?.kind === "session_expired" && (
         <section className="card">
+          <p className="muted tiny">Sign in to pick up where you left off.</p>
           <a className="btn primary" href={signInPageUrl()} target="_blank" rel="noreferrer">
             Sign in again
           </a>

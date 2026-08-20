@@ -23,20 +23,41 @@ export function SignOutDialog({
 }) {
   const [removeLocal, setRemoveLocal] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function confirm() {
     setBusy(true);
+    setError(null);
     try {
-      await signOut();
-      // Only the session ends when this is unchecked — the resume and any
-      // cached results are left exactly as they were. Nothing here reads
-      // back what was cleared; the caller (App.tsx) resets the panel's own
-      // displayed state, and only when this was true.
+      // Local data first, signOut() LAST. This ordering is deliberate: it is
+      // what makes it impossible for the session to end while this dialog
+      // (and the AccountBar behind it) still shows the user signed in — the
+      // same "header still shows their email for a session that's gone" lie
+      // the session_expired fork exists to prevent elsewhere in this panel.
+      // If clearing throws, signOut() below is never reached and nothing
+      // has changed: the user is still genuinely signed in, and the UI
+      // (having never called onConfirmed) still accurately says so. Putting
+      // signOut() first would invert that: a clearResume()/clearCachedRuns()
+      // failure AFTER a successful signOut() would end the session while
+      // onConfirmed — and so handleSignedOut — never runs, leaving the bar
+      // stuck showing a signed-in user whose session already ended.
       if (removeLocal) {
         await clearResume();
         await clearCachedRuns();
       }
+      await signOut();
       onConfirmed(removeLocal);
+    } catch (err) {
+      // Surfaced and the dialog stays open (no onCancel/onConfirmed call) so
+      // the user can retry rather than being silently left in an ambiguous
+      // state — same posture as session.ts's own catch for a Clerk failure.
+      console.warn(
+        JSON.stringify({
+          evt: "sign_out_failed",
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      setError("Couldn't sign out. Try again.");
     } finally {
       setBusy(false);
     }
@@ -61,6 +82,7 @@ export function SignOutDialog({
           />
           Also remove my resume and saved results from this browser.
         </label>
+        {error && <p className="error">{error}</p>}
         <div className="dialog-actions">
           <button onClick={onCancel} disabled={busy}>
             Cancel

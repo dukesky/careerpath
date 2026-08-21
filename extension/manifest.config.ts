@@ -59,11 +59,18 @@ export default defineManifest({
   // Public key only — extension/key.pem is gitignored.
   key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Vc+YGvX/ss6iiR+VEOn8RfC3uKWCtIiQweZcyavaUPjX02cbOUH2JvUR7127aeih6Br08+nfARjmm+CmezOBZPq02VFgDkPpVeCtvJWWBZ8BLZ2MZTMapwcoR09QRCwkb2mdRSf5G0LmYQS8M+ArS2OHH+I5l9TFRvoCnxTHCGbTqPSFdBr9pnilbMeGl9WYwV7Gm78HVocgPEtdXvRTNsq2GCE3TpPu7vlDKCWEDakOSuK/kVFb9GYLHLjFp6juqcxbQKDHduW7KMOo5teoAuokGikcZiPT9zbfvD9SO1LLuX8PtH2e58J/Ltmt8XUG6FEzajrFGcJMyIHwVVkGwIDAQAB",
   minimum_chrome_version: "114",
-  // "cookies" is Clerk's: its SDK reads/writes session cookies on its own
-  // Frontend API domain to keep the extension signed in. This widens the
-  // install prompt, same as the Clerk host_permissions entry above — an
-  // accepted, deliberate cost of adding sign-in.
-  permissions: ["storage", "sidePanel", "activeTab", "scripting", "cookies"],
+  // Deliberately NO "cookies" here, despite Clerk. Its SDK only touches
+  // chrome.cookies for the Sync Host feature (signing in on the website and
+  // carrying that into the extension), which this build does not use and
+  // cannot: Sync Host does not work for side panels — see the CHANGELOG's
+  // Known limits. Verified in the installed package rather than assumed:
+  // @clerk/chrome-extension's validateManifest requires permissions.cookies
+  // only under `if (features.sync)`, and `sync` is `Boolean(syncHost)` —
+  // src/lib/clerk.ts passes no syncHost, so the check never runs and the
+  // cookies code path is never reached. Adding it anyway would widen the
+  // Web Store install prompt and hand the extension chrome.cookies access
+  // across every host it has permission for, for nothing.
+  permissions: ["storage", "sidePanel", "activeTab", "scripting"],
   host_permissions: [...API_HOSTS, ...JOB_SITES],
   optional_host_permissions: OPTIONAL_HOSTS,
   content_security_policy: {

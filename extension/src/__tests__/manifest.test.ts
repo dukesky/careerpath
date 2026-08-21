@@ -50,9 +50,30 @@ describe("manifest", () => {
     ]);
   });
 
-  // Clerk's SDK reads cookies on its own frontend API domain.
-  it("requests the cookies permission Clerk needs", () => {
-    expect(manifest.permissions).toContain("cookies");
+  // Inverted from the assertion this replaced ("requests the cookies
+  // permission Clerk needs"), which was wrong: @clerk/chrome-extension's
+  // validateManifest requires permissions.cookies only when `features.sync`
+  // is set, and `sync` is `Boolean(syncHost)` — lib/clerk.ts passes no
+  // syncHost, so nothing in this build reads or writes a cookie through
+  // chrome.cookies. Keeping it would widen the Web Store install prompt and
+  // grant chrome.cookies access across every host this extension has
+  // permission for, buying nothing. If Sync Host is ever adopted, this
+  // assertion is the one that has to be revisited deliberately rather than
+  // the permission quietly reappearing.
+  it("does not request the cookies permission, which only Clerk's unused Sync Host needs", () => {
+    expect(manifest.permissions).not.toContain("cookies");
+  });
+
+  // Pinned exactly, not just "contains" — a permission added here is a
+  // wider install prompt for every existing user, so it should have to be
+  // written down twice.
+  it("requests exactly the four permissions the extension actually uses", () => {
+    expect(manifest.permissions).toEqual([
+      "storage",
+      "sidePanel",
+      "activeTab",
+      "scripting",
+    ]);
   });
 
   // Without this the extension cannot reach Clerk at all and sign-in does not

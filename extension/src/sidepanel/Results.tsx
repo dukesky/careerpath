@@ -32,6 +32,7 @@ export function Results({
   jdSummary,
   jdUrl,
   signedIn,
+  saving,
   onSavingChange,
   generatedAt,
   baselineScore,
@@ -48,6 +49,13 @@ export function Results({
   jdUrl: string | undefined;
   /** Gates the Save control: it must be ABSENT, not present-and-failing, for a signed-out user. */
   signedIn: boolean;
+  /**
+   * App.tsx's `saving`, the VALUE (`onSavingChange` below is the setter).
+   * It widens the Save gate rather than narrowing it — see the `signedIn ||
+   * saving` condition below for why a save in flight has to outlive
+   * `signedIn` going false.
+   */
+  saving: boolean;
   /** Threaded straight through to SaveButton — see its doc comment for why App.tsx needs this. */
   onSavingChange: (saving: boolean) => void;
   generatedAt: string | null;
@@ -92,7 +100,18 @@ export function Results({
           {tailored && (
             <>
               <DownloadPdf resume={tailored.resume} company={company} />
-              {signedIn && (
+              {(signedIn || saving) && (
+                // `|| saving` keeps an in-flight save's own SaveButton
+                // mounted through `signedIn` flipping to false underneath
+                // it — which App.tsx's visibilitychange re-check can do at
+                // any moment, on discovering the session ended in another
+                // tab. Without it, that flip unmounts the component the
+                // pending apiPost is about to update, and the user watches
+                // the button they were waiting on simply vanish with no
+                // word on whether their save landed. Once the request
+                // settles, `saving` goes false and a genuinely signed-out
+                // state unmounts it on the next render, as it should.
+                //
                 // Keyed on `generatedAt` so a fresh run (a new displayed
                 // result) remounts this with a clean idle status — without
                 // it, regenerating after a successful save would leave

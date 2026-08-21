@@ -11,6 +11,19 @@ import type { ParsedResume } from "@shared/contract";
 
 const RESUME_KEY = "cp_resume";
 const TOKEN_KEY = "cp_device_token";
+/**
+ * "Has this browser ever completed a Clerk sign-in?" — a hint, not an
+ * identity. It carries no token and proves nothing to the server; the only
+ * thing that reads it is lib/clerk.ts's token source, to decide what to do
+ * when Clerk itself is UNREACHABLE. Signed in before: refuse the request, so
+ * a signed-in user is never silently downgraded to the device tier. Never
+ * signed in: fall through to the device identity, which is exactly what an
+ * anonymous user did before sign-in existed. Without this distinction, every
+ * anonymous user's requests would be blocked whenever Clerk had an incident
+ * or a proxy blocked its domain — gating anonymous use on Clerk being
+ * reachable, which the design forbids.
+ */
+const HAS_SIGNED_IN_KEY = "cp_has_signed_in";
 
 export interface StoredResume {
   resume: ParsedResume;
@@ -60,4 +73,46 @@ export async function setToken(token: string): Promise<void> {
 
 export async function clearToken(): Promise<void> {
   await chrome.storage.local.remove([TOKEN_KEY]);
+}
+
+/**
+ * Defaults to `false` on ANY failure, deliberately. The consequence of a
+ * wrong `false` is that an unreachable Clerk lets a request through on the
+ * device identity; the consequence of a wrong `true` is that a user who has
+ * never signed in cannot use the extension at all while Clerk is down. Only
+ * one of those two is a regression against the anonymous behaviour that
+ * predates sign-in, so an unreadable flag reads as "never signed in".
+ */
+export async function getHasSignedIn(): Promise<boolean> {
+  try {
+    const got = await chrome.storage.local.get([HAS_SIGNED_IN_KEY]);
+    return got[HAS_SIGNED_IN_KEY] === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Swallows its own failure rather than throwing. This is called from the
+ * middle of the sign-in path (lib/clerk.ts's `isSignedIn` and its token
+ * source), and a storage write failing there must not break the sign-in that
+ * has otherwise just succeeded — the flag is an optimisation for a Clerk
+ * outage, not a precondition for being signed in. Logged, not silent, so the
+ * degraded state is at least visible in the panel's console.
+ */
+export async function setHasSignedIn(): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [HAS_SIGNED_IN_KEY]: true });
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        evt: "set_has_signed_in_failed",
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+}
+
+export async function clearHasSignedIn(): Promise<void> {
+  await chrome.storage.local.remove([HAS_SIGNED_IN_KEY]);
 }

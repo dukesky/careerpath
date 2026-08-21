@@ -1,6 +1,23 @@
-import { createClerkClient } from "@clerk/chrome-extension/client";
+/**
+ * A TYPE-only import, with the value pulled in by a dynamic `import()` inside
+ * `createAndLoad` below. `import type` is erased at compile time, so it adds
+ * no edge to the module graph — which is the whole point: three components in
+ * the panel (App, AccountBar, SaveButton) import this module statically, and
+ * a static value import here put Clerk's ~844 kB SDK chunk into the side
+ * panel's entry HTML as a modulepreload, paid for by every user on every
+ * panel open including one who never signs in. The plan's stated architecture
+ * was "keep Clerk's bundle off the panel's open path"; the vanilla-client
+ * choice was necessary for that but not sufficient, because a static import
+ * of the vanilla client is still a static import.
+ *
+ * Chosen over `Awaited<ReturnType<typeof import(...)>["createClerkClient"]>`
+ * because it keeps `ClerkClient` reading exactly as it did before, and keeps
+ * the overload note below meaningful.
+ */
+import type { createClerkClient } from "@clerk/chrome-extension/client";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
 import { setClerkTokenSource } from "./session";
+import { getHasSignedIn, setHasSignedIn } from "./storage";
 
 /**
  * `createClerkClient` is overloaded: pass `background: true` and it returns
@@ -53,6 +70,11 @@ function signInUrl(): string {
 let clerkPromise: Promise<ClerkClient> | undefined;
 
 async function createAndLoad(): Promise<ClerkClient> {
+  // The one place Clerk's SDK is actually pulled in — see the type-only
+  // import at the top of this file. Everything that reaches Clerk goes
+  // through `load()` -> here, so nothing before this point costs the panel
+  // the SDK's download and parse.
+  const { createClerkClient } = await import("@clerk/chrome-extension/client");
   const client = createClerkClient({ publishableKey: CLERK_PUBLISHABLE_KEY });
   const url = signInUrl();
   await client.load({
@@ -108,11 +130,45 @@ export function getClerk(): Promise<ClerkClient> {
  *    state session.ts turns into `session_unavailable`, not a silent
  *    downgrade to the device identity. Collapsing the two was the exact bug
  *    that made session.ts's `ClerkAuthState` type exist in the first place.
+ * 3. Answers WITHOUT Clerk when Clerk cannot be reached and this browser has
+ *    never signed in — see the catch below for why that asymmetry is the
+ *    point rather than a shortcut.
  */
 export function installClerkTokenSource(): void {
   setClerkTokenSource(async () => {
-    const client = await getClerk();
+    let client: ClerkClient;
+    try {
+      client = await getClerk();
+    } catch (err) {
+      // Clerk is unreachable — an incident, a paused dev instance, a
+      // corporate proxy blocking *.clerk.accounts.dev. What to do about it
+      // depends entirely on whether there is a session at stake.
+      //
+      // Never signed in on this browser: there is nothing to protect.
+      // Falling through to the device identity IS the behaviour anonymous
+      // users had before sign-in existed, and it is the only correct answer
+      // — rethrowing here would make session.ts report
+      // `session_unavailable`, api.ts refuse the request with no fetch, and
+      // the entire pre-existing anonymous user base lose the extension for
+      // the duration of a Clerk outage they have no relationship with. The
+      // plan's binding constraint is that anonymous use keeps working
+      // exactly as before and sign-in is an upgrade, never a gate.
+      //
+      // Signed in before: rethrow. We cannot tell whether this user's
+      // session is still valid, and guessing "signed out" would spend their
+      // device trial against the 3-per-30-days bucket while the panel still
+      // showed their email and daily allowance — the exact silent downgrade
+      // this whole design exists to prevent. Refusing the request is the
+      // honest outcome, and the one the user is told about.
+      if (await getHasSignedIn()) throw err;
+      return { signedIn: false };
+    }
     if (!client.isSignedIn) return { signedIn: false };
+    // Recorded here as well as in `isSignedIn` because this is the path that
+    // runs on every request; a user who signs in and immediately runs must
+    // have the flag set before the next Clerk failure, not only after the
+    // panel next re-checks its account state.
+    await setHasSignedIn();
     const token = client.session ? await client.session.getToken() : null;
     return { signedIn: true, token };
   });
@@ -125,6 +181,12 @@ export async function currentUserEmail(): Promise<string | null> {
 
 export async function isSignedIn(): Promise<boolean> {
   const client = await getClerk();
+  // The panel calls this on mount and on every visibilitychange, so it is
+  // the earliest and most frequent point at which "this browser has a Clerk
+  // session" becomes known — record it, so that a LATER Clerk outage is
+  // treated as protecting a real session rather than as an anonymous user's
+  // first ever request. See lib/storage.ts's HAS_SIGNED_IN_KEY.
+  if (client.isSignedIn) await setHasSignedIn();
   return client.isSignedIn;
 }
 

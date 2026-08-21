@@ -97,7 +97,17 @@ export function SaveButton({
 
   return (
     <>
-      <button onClick={() => void save()} disabled={status === "saving"}>
+      {/* Disabled once SAVED as well as while saving. A "Saved ✓" button
+          that is still clickable creates a second saved version server-side
+          for a result the user has already saved — /api/saved appends, it
+          does not upsert — and the button's own label gives no hint that
+          clicking again would do anything at all. A genuinely new result
+          gets a genuinely new button: Results.tsx keys this component on
+          `generatedAt`, so a fresh run remounts it at idle. */}
+      <button
+        onClick={() => void save()}
+        disabled={status === "saving" || status === "saved"}
+      >
         {status === "saving" ? "Saving…" : status === "saved" ? "Saved ✓" : "Save to career-path"}
       </button>
       {status === "error" && message && <p className="error">{message}</p>}

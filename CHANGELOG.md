@@ -29,17 +29,25 @@ The web app has no version number; the extension carries its own in
   spending your device trial.** An expired or unreachable Clerk session
   surfaces as a signed-out state with a prompt to sign in again — it never
   falls through to minting a device token and retrying as one.
+- **Never signed in? Nothing changes for you.** If Clerk is unreachable —
+  an outage, a blocked domain — a browser that has never signed in carries
+  on exactly as it did before sign-in existed. Only a browser with a Clerk
+  session to protect refuses to run in that case, and it says so rather
+  than quietly spending the device trial instead.
 
 ### Changed
 
 - **The extension's toolbar icon** is career-path's own mark, not the
   default puzzle piece. It landed earlier in this same run of commits, ahead
   of the sign-in work above.
-- **Installing or updating the extension now asks for more.** Sign-in needs
-  the `cookies` permission (Clerk's session lives in one) and a host
-  permission for Clerk's Frontend API, which the panel now contacts
-  directly. Both widen what the Chrome Web Store's install prompt shows —
-  accepted as the cost of adding sign-in at all.
+- **Installing or updating the extension now asks for one more host.**
+  Sign-in needs a host permission for Clerk's Frontend API, which the
+  extension contacts directly, and that widens what the Chrome Web Store's
+  install prompt shows — accepted as the cost of adding sign-in at all. It
+  is the only thing sign-in added to the prompt: no new API permission was
+  needed. In particular the extension does **not** request `cookies` —
+  Clerk's SDK only uses it for the Sync Host feature listed under Known
+  limits below, which this build does not use.
 
 ### Known limits
 

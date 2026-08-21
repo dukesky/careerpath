@@ -17,6 +17,7 @@ export function AccountBar({
   email,
   remaining,
   busy,
+  saving,
   onLocalDataCleared,
   onSignedOut,
 }: {
@@ -36,6 +37,22 @@ export function AccountBar({
    * active, not on whether the user is still signed in.
    */
   busy: boolean;
+  /**
+   * App.tsx's `saving` — whether a Save (SaveButton, inside Results) has a
+   * POST to /api/saved in flight. A SEPARATE prop from `busy` rather than
+   * folded into it, because the two state different facts and `busy`'s
+   * meaning above ("generate() currently owns the display") is load-bearing
+   * elsewhere; only the Sign-out button's own `disabled` combines them.
+   *
+   * Sign-out is the FOURTH door into the save-in-flight lost-feedback race
+   * that SaveButton's `onSavingChange` exists to close, and the worst of
+   * them. Signing out mid-save unmounts SaveButton through BOTH of
+   * Results.tsx's gates — `tailored &&` (reset by onLocalDataCleared) and
+   * `signedIn ||` (reset by onSignedOut) — while the POST stays on the wire
+   * carrying a still-valid token. It can therefore still land in the account
+   * the user just asked to leave, with nothing on screen ever saying so.
+   */
+  saving: boolean;
   /**
    * Fired the instant SignOutDialog has actually cleared local storage
    * (box checked only), independently of whether the subsequent signOut()
@@ -91,7 +108,7 @@ export function AccountBar({
             </p>
           )}
         </div>
-        <button onClick={() => setDialogOpen(true)} disabled={busy}>
+        <button onClick={() => setDialogOpen(true)} disabled={busy || saving}>
           Sign out
         </button>
       </div>

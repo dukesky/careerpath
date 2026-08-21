@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { signOut } from "@/lib/clerk";
-import { clearResume } from "@/lib/storage";
+import { clearHasSignedIn, clearResume } from "@/lib/storage";
 import { clearCachedRuns } from "@/lib/cache";
 
 /**
@@ -65,6 +65,32 @@ export function SignOutDialog({
         onLocalDataCleared();
       }
       await signOut();
+      // UNCONDITIONAL, not gated on `removeLocal`. The flag is not user data
+      // — it is only the hint lib/clerk.ts consults when Clerk is
+      // unreachable ("is there a session here worth protecting?"), and once
+      // signOut() has resolved the answer is no regardless of what the
+      // checkbox said. Leaving it set would make a later Clerk outage refuse
+      // this browser's requests outright, in defence of a session that no
+      // longer exists — turning sign-out into a way to lose anonymous use.
+      // It resets unconditionally for the same reason `signedIn`/`email` do
+      // in App.tsx's handleSignedOut.
+      //
+      // Guarded on its OWN, rather than riding the outer try: signOut() has
+      // already resolved by this point, so letting a storage failure fall
+      // into the catch below would tell the user "Couldn't sign out" and
+      // withhold onSignedOut() for a session that is genuinely gone —
+      // exactly the report-what-actually-happened discipline the split
+      // between onLocalDataCleared and onSignedOut exists to enforce.
+      try {
+        await clearHasSignedIn();
+      } catch (err) {
+        console.warn(
+          JSON.stringify({
+            evt: "clear_has_signed_in_failed",
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
       onSignedOut();
     } catch (err) {
       // Surfaced and the dialog stays open (no onCancel/onConfirmed call) so

@@ -251,7 +251,13 @@ export default function App() {
   const canRun = Boolean(jd && stored) && !busy && !saving;
 
   async function generate(supplement: string) {
-    if (!jd || !stored || busy) return;
+    // `saving` as well as `busy`, and checked HERE rather than only on the
+    // buttons: `canRun` already disables both regenerate triggers during a
+    // save, but that is the callers' guard, not this function's. Defence in
+    // depth for a race whose symptom is silent (a save's outcome lost to an
+    // unmounted SaveButton — see SaveButton.tsx's doc comment) is worth one
+    // line.
+    if (!jd || !stored || busy || saving) return;
     // Pin which posting this run is for. If the user switches tabs while a
     // run is in flight, activeJdUrlRef.current moves on; a patch that lands
     // after that point is for a posting the user is no longer looking at,
@@ -354,8 +360,10 @@ export default function App() {
 
   // Clearing wipes what is on screen too: a displayed result is, by this
   // point, also a cached one, so leaving it up would make the control look
-  // like it did nothing. Disabled while a run is in flight (see the JSX) so
-  // it cannot yank a run's output out from under it mid-flight.
+  // like it did nothing. Disabled while a run OR a save is in flight (see
+  // the JSX) so it cannot yank a run's output out from under it mid-flight,
+  // and so it cannot null `tailored` mid-save — which unmounts SaveButton
+  // through Results.tsx's `tailored &&` gate and loses the save's outcome.
   async function clearCache() {
     await clearCachedRuns();
     setCachedCount(0);
@@ -399,6 +407,19 @@ export default function App() {
   function handleSignedOut() {
     setSignedIn(false);
     setEmail(null);
+    // The remaining count, and ONLY it. `remaining` is per-identity: the
+    // number on screen was counted against the account that just ended, at
+    // 5 per day. AccountBar's signed-out branch renders the same value under
+    // 30-day-tier wording ("3 runs left"), so leaving it would state the
+    // previous account's daily figure as this device's 30-day trial — a
+    // number that is simply wrong, and unfalsifiable until the next run.
+    // With the box UNCHECKED, handleLocalDataCleared never runs, so nothing
+    // else resets this.
+    //
+    // A partial update, deliberately: resetting the rest of `state` here
+    // would wipe the displayed result, which is exactly what leaving the box
+    // unchecked asked us not to do.
+    setState((s) => ({ ...s, remaining: null }));
   }
 
   return (
@@ -413,6 +434,7 @@ export default function App() {
         email={email}
         remaining={state.remaining}
         busy={busy}
+        saving={saving}
         onLocalDataCleared={handleLocalDataCleared}
         onSignedOut={handleSignedOut}
       />
@@ -420,7 +442,11 @@ export default function App() {
       <ResumeBlock stored={stored} onChange={setStored} />
 
       {cachedCount > 0 && (
-        <button className="textbtn" onClick={() => void clearCache()} disabled={busy}>
+        <button
+          className="textbtn"
+          onClick={() => void clearCache()}
+          disabled={busy || saving}
+        >
           Clear {cachedCount} cached result{cachedCount === 1 ? "" : "s"}
         </button>
       )}
@@ -443,6 +469,7 @@ export default function App() {
         jdSummary={jd?.text ?? ""}
         jdUrl={jd?.url}
         signedIn={signedIn}
+        saving={saving}
         onSavingChange={setSaving}
         generatedAt={generatedAt}
         baselineScore={baselineForPosting}

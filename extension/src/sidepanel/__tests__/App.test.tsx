@@ -5,7 +5,13 @@ import type { GapAnalysis, ParsedResume, TailorResult } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
 import type { ApiResult } from "@/lib/api";
-import { getResume, setResume, type StoredResume } from "@/lib/storage";
+import {
+  getHasSignedIn,
+  getResume,
+  setHasSignedIn,
+  setResume,
+  type StoredResume,
+} from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import App from "../App";
@@ -788,6 +794,10 @@ describe("App - account bar, sign-out, and session handling", () => {
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
     await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+    // Signing in set this (lib/clerk.ts does it; @/lib/clerk is mocked here,
+    // so seed it directly). Signing out must clear it — see the assertion at
+    // the end of this test and its twin in the box-UNCHECKED case below.
+    await setHasSignedIn();
     await renderApp();
 
     // The cached run restores on mount — confirms there is a displayed
@@ -831,6 +841,10 @@ describe("App - account bar, sign-out, and session handling", () => {
         b.textContent?.startsWith("Clear"),
       ),
     ).toBeUndefined();
+    // ...including the has-signed-in hint, which lib/clerk.ts consults when
+    // Clerk is unreachable. See the box-UNCHECKED twin below for why this is
+    // cleared regardless of the checkbox.
+    expect(await getHasSignedIn()).toBe(false);
   });
 
   it("sign-out with the box UNCHECKED ends only the session — resume, cache, and the displayed run all survive", async () => {
@@ -838,6 +852,7 @@ describe("App - account bar, sign-out, and session handling", () => {
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
     await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+    await setHasSignedIn();
     await renderApp();
 
     expect(container.querySelector(".score")).toBeTruthy();
@@ -868,6 +883,63 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(container.querySelector(".score")).toBeTruthy();
     expect(container.textContent).toContain("Ada Lovelace");
     expect(findButton(container, "Clear 1 cached result")).toBeTruthy();
+    // The ONE thing that is cleared regardless of the checkbox. It is not
+    // user data — it is only the hint lib/clerk.ts consults when Clerk is
+    // unreachable ("is there a session here worth protecting?"), and once
+    // signOut() has resolved the answer is no. Left set, a later Clerk
+    // outage would refuse this browser's requests outright in defence of a
+    // session that no longer exists, turning sign-out into a way to lose
+    // anonymous use.
+    expect(await getHasSignedIn()).toBe(false);
+  });
+
+  // FINAL-REVIEW (M1). `remaining` is per-identity: with the box UNCHECKED,
+  // handleLocalDataCleared never runs, so nothing else resets `state` — and
+  // AccountBar's signed-OUT branch renders the same value under 30-day-tier
+  // wording. The previous account's 5-per-day figure would therefore be
+  // presented as this device's 3-per-30-days trial: a number that is simply
+  // wrong, and unfalsifiable until the next run replaces it.
+  it("clears the remaining-runs count on sign-out, so the previous account's daily figure is not shown as the device trial", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 3,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    // The account's own daily allowance, on screen under signed-in wording.
+    expect(container.textContent).toContain("3 runs left today");
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    act(() => {
+      checkbox.click(); // UNCHECKED — the case where nothing else resets state
+    });
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+    // No count at all — not "3 runs left" under the 30-day-tier wording.
+    expect(container.textContent).not.toContain("runs left");
+    // ...while the run itself is untouched, which is the whole point of
+    // leaving the box unchecked.
+    expect(container.querySelector(".score")).toBeTruthy();
   });
 
   it("offers sign-in when a SIGNED-OUT caller's trial is exhausted, distinct from a generic auth error", async () => {
@@ -1443,5 +1515,166 @@ describe("App - saving a tailored resume from the panel", () => {
     // Settled — both triggers are live again.
     expect(findButton(container, "Tailor again").disabled).toBe(false);
     expect(findButton(container, "Add experience and regenerate").disabled).toBe(false);
+  });
+
+  // Stalls a save and hands back the resolver, so each test below can hold
+  // the POST open for exactly as long as it needs. Every one of them turns
+  // on the same thing: what else in the panel can unmount SaveButton while
+  // its own request is still on the wire.
+  async function startStalledSave(
+    container: HTMLElement,
+    act_: typeof act,
+  ): Promise<(result: ApiResult<unknown>) => void> {
+    let release: ((result: ApiResult<unknown>) => void) | null = null;
+    apiPostImpl = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    await act_(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    if (!release) throw new Error("the save did not start");
+    return release;
+  }
+
+  // FINAL-REVIEW: the FOURTH door into the lost-feedback race, and the worst
+  // of them. Sign-out unmounts SaveButton through BOTH of Results.tsx's
+  // gates at once — `tailored &&` (reset by onLocalDataCleared) and
+  // `signedIn ||` (reset by onSignedOut). Unlike the regenerate case, the
+  // POST is still on the wire carrying a still-VALID token, so it can land
+  // in the account the user just asked to leave, with nothing on screen ever
+  // saying so. `busy` alone did not cover this: no run is in flight during a
+  // save.
+  it("disables Sign out while a save is in flight, so a mid-save sign-out cannot land a save in the account being left", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    expect(findButton(container, "Sign out").disabled).toBe(false);
+
+    const releaseSave = await startStalledSave(container, act);
+    await flush();
+    expect(findButton(container, "Saving…")).toBeTruthy(); // genuinely in flight
+
+    const signOutBtn = findButton(container, "Sign out");
+    expect(signOutBtn.disabled).toBe(true);
+    // A disabled button fires no onClick, so the click is itself part of the
+    // assertion: without the guard this would open the dialog.
+    await act(async () => {
+      signOutBtn.click();
+    });
+    expect(container.querySelector(".dialog")).toBeNull();
+
+    await act(async () => {
+      releaseSave({ ok: true, data: { saved: {} } });
+    });
+    await flush();
+
+    expect(findButton(container, "Saved ✓")).toBeTruthy();
+    expect(findButton(container, "Sign out").disabled).toBe(false);
+  });
+
+  // The third door, same shape: "Clear N cached results" nulls `tailored`,
+  // which unmounts SaveButton through Results.tsx's `tailored &&` gate. It
+  // had `disabled={busy}` only, and a save is not a run.
+  it("disables Clear cached results while a save is in flight, so it cannot unmount the Save control mid-request", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    // The completed run wrote a cache entry, so the control exists at all.
+    expect(findButton(container, "Clear 1 cached result").disabled).toBe(false);
+
+    const releaseSave = await startStalledSave(container, act);
+    await flush();
+    expect(findButton(container, "Saving…")).toBeTruthy();
+
+    const clearBtn = findButton(container, "Clear 1 cached result");
+    expect(clearBtn.disabled).toBe(true);
+    await act(async () => {
+      clearBtn.click();
+    });
+    // Still there — the click did nothing, so the result (and with it the
+    // Save control) survived.
+    expect(findButton(container, "Saving…")).toBeTruthy();
+
+    await act(async () => {
+      releaseSave({ ok: true, data: { saved: {} } });
+    });
+    await flush();
+    expect(findButton(container, "Saved ✓")).toBeTruthy();
+  });
+
+  // The one door that CANNOT be closed by disabling a control: App re-checks
+  // Clerk on every visibilitychange, so `signedIn` can flip to false at any
+  // moment — the session having ended in another tab — with a save already
+  // on the wire. Results.tsx's Save gate is therefore `signedIn || saving`,
+  // not `signedIn`: the in-flight instance has to outlive the flip and
+  // receive its own response, rather than being unmounted out from under a
+  // pending request.
+  it("keeps an in-flight Save mounted when the session is discovered to have ended mid-request", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    const releaseSave = await startStalledSave(container, act);
+    await flush();
+    expect(findButton(container, "Saving…")).toBeTruthy();
+
+    // The session ended somewhere else; the panel finds out the only way it
+    // can, on regaining visibility.
+    clerkState = { signedIn: false, email: null };
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+
+    // The flip really did land — the account bar is signed out now...
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+    expect(hasButton(container, "Sign out")).toBe(false);
+    // ...and yet the save the user is waiting on is still here, still its
+    // own instance, still awaiting its own response. Without `|| saving`
+    // this button is gone at this exact point and the pending apiPost
+    // resolves into a component that no longer exists.
+    expect(findButton(container, "Saving…")).toBeTruthy();
+
+    await act(async () => {
+      releaseSave({ ok: true, data: { saved: {} } });
+    });
+    await flush();
+
+    // Once the request settles, `saving` goes false and the genuinely
+    // signed-out state unmounts the control on the next render — which is
+    // correct, and is also the limit of what this gate can do: the outcome
+    // is delivered to a live component rather than a dead one, but a user
+    // whose session ended mid-save still does not get to READ it. Closing
+    // that last gap would mean lifting SaveButton's status into App so the
+    // panel could keep reporting it after the control is gone. Pinned as-is
+    // so the behaviour is a decision rather than a surprise.
+    expect(hasButton(container, "Saving…")).toBe(false);
+    expect(hasButton(container, "Saved ✓")).toBe(false);
+  });
+
+  // FINAL-REVIEW (M5): "Saved ✓" was still a live button. /api/saved appends
+  // rather than upserting, so a second click created a duplicate saved
+  // version of a result the user had already saved — and the label gave no
+  // hint that clicking again would do anything at all.
+  it("stops accepting clicks once the save has succeeded, so a second click cannot create a duplicate saved version", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    await act(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    await flush();
+
+    const saved = findButton(container, "Saved ✓");
+    expect(saved.disabled).toBe(true);
+    expect(apiPostCalls).toHaveLength(1);
+
+    // Disabled buttons fire no onClick, so this click is the assertion: with
+    // the guard missing it would POST a second time.
+    await act(async () => {
+      saved.click();
+    });
+    await flush();
+    expect(apiPostCalls).toHaveLength(1);
   });
 });

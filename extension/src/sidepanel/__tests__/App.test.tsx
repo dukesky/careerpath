@@ -1067,4 +1067,117 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(container.querySelector(".dialog")).toBeNull();
     expect(findAnchor(container, "Sign in")).toBeTruthy();
   });
+
+  // Fix round 2, Finding 1 (IMPORTANT — introduced by fix round 1's own
+  // diff): the previous fix bundled "local data cleared" and "session
+  // ended" behind a single onConfirmed() call fired only after BOTH
+  // clearResume()/clearCachedRuns() AND signOut() had resolved. That meant a
+  // signOut()-specific failure — clearing succeeds, signOut() then rejects —
+  // left onConfirmed() never called at all: chrome.storage.local was
+  // genuinely emptied, but the panel kept showing the previous session's
+  // resume, cache count, and run result as if nothing had happened, while an
+  // error message claimed sign-out simply failed. That's data loss hidden
+  // behind stale UI. This test pins the box-CHECKED case specifically (the
+  // one the old bundling broke) and asserts the two signals are now
+  // reported independently: local state resets the instant clearing
+  // succeeds, regardless of what signOut() does next.
+  it("with the box checked, a signOut() failure still reports the local clear immediately — the display resets even though the dialog stays open and the session is still live", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(72, "", "run-a-cached"));
+    await renderApp();
+
+    // A displayed result and a resume are on screen before sign-out touches
+    // anything, same starting point as the box-checked success trace.
+    expect(container.querySelector(".score")).toBeTruthy();
+    expect(container.textContent).toContain("Ada Lovelace");
+    expect(findButton(container, "Clear 1 cached result")).toBeTruthy();
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true); // left checked — the scenario under test
+
+    signOutShouldThrow = true;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(1);
+    // The dialog stays open with an explanation...
+    expect(container.querySelector(".dialog")).toBeTruthy();
+    expect(container.querySelector(".dialog")?.textContent).toContain(
+      "Couldn't sign out. Try again.",
+    );
+    // ...the session genuinely didn't end, so the bar must still say so...
+    expect(container.textContent).toContain("ada@example.com");
+    expect(
+      Array.from(container.querySelectorAll("a")).find((a) => a.textContent?.trim() === "Sign in"),
+    ).toBeUndefined();
+    // ...but local data really was cleared (clearResume()/clearCachedRuns()
+    // ran and succeeded before signOut() was even attempted), so storage...
+    expect(await getResume()).toBeNull();
+    expect(await countCachedRuns()).toBe(0);
+    // ...AND the panel's own display must match — it must NOT keep showing
+    // a resume/result/cache count that storage no longer has.
+    expect(container.querySelector(".score")).toBeNull();
+    expect(container.textContent).not.toContain("Ada Lovelace");
+    expect(
+      Array.from(container.querySelectorAll("button")).find((b) =>
+        b.textContent?.startsWith("Clear"),
+      ),
+    ).toBeUndefined();
+
+    // Retry, letting signOut() succeed this time — confirms the recovery
+    // path still works and doesn't re-clear anything that matters (the
+    // second clearResume()/clearCachedRuns() pass is idempotent).
+    signOutShouldThrow = false;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(signOutCallCount).toBe(2);
+    expect(container.querySelector(".dialog")).toBeNull();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+  });
+
+  // Fix round 2, Finding 2 (Minor — introduced by fix round 1's own diff):
+  // fix round 1 deleted App.tsx's old "{state.remaining} free runs left"
+  // paragraph entirely (it contradicted AccountBar's own signed-in line),
+  // but that deletion removed the ONLY remaining-runs indicator signed-OUT
+  // users had — AccountBar's signed-out branch never rendered `remaining`
+  // at all. This pins the replacement: a known `remaining` shows in the
+  // signed-out branch too, worded without "today" since the signed-out
+  // device tier is 3 runs per 30 days, not a daily allowance.
+  it("shows the remaining-runs count in the signed-out AccountBar once a run has reported one, without implying it's a daily allowance", async () => {
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    // No run yet — nothing truthful to show, same as the signed-in case.
+    expect(container.textContent).not.toContain("left");
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 2,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("2 runs left");
+    // Not the signed-in branch's wording — the signed-out tier is a 30-day
+    // window, not a daily one.
+    expect(container.textContent).not.toContain("left today");
+  });
 });

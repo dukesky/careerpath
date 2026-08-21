@@ -358,28 +358,38 @@ export default function App() {
     setBaselineForPosting(null);
   }
 
-  // SignOutDialog has already awaited signOut() (and, if requested, the
-  // clearResume()/clearCachedRuns() pair) by the time this is called — see
-  // AccountBar/SignOutDialog. This only updates React state.
-  //
-  // The account identity resets UNCONDITIONALLY: ending the session is what
-  // "sign out" means, box or no box. The resume/results reset is gated on
-  // `removedLocalData`, mirroring exactly what SignOutDialog cleared in
-  // storage — leaving them untouched on screen when nothing was actually
-  // cleared underneath would make the panel lie about what is still there.
-  function handleSignedOut(removedLocalData: boolean) {
+  // SignOutDialog reports local-data clearing and session end as two
+  // SEPARATE signals now, not one bundled behind the other — see
+  // SignOutDialog's own doc comments for why. clearResume()/clearCachedRuns()
+  // succeeding and signOut() itself failing are independent outcomes: if we
+  // only reset this display after BOTH had resolved, a signOut()-specific
+  // failure (storage genuinely emptied, Clerk session genuinely still live)
+  // would leave the panel showing the previous session's resume/cache/run
+  // state as if nothing happened, when storage underneath had already lost
+  // it. Splitting the handler in two lets each side of App's state track the
+  // side of reality that actually changed, exactly when it changed.
+
+  // Mirrors exactly what SignOutDialog cleared in storage (only called when
+  // the box was checked and clearResume()/clearCachedRuns() both succeeded)
+  // — leaving these untouched on screen would make the panel lie about what
+  // is still there once storage is empty.
+  function handleLocalDataCleared() {
+    setStored(null);
+    setCachedCount(0);
+    setState(INITIAL_RUN_STATE);
+    setGeneratedAt(null);
+    setAppliedSupplement("");
+    setSupplementDraft("");
+    setRunIdForPosting("");
+    setBaselineForPosting(null);
+  }
+
+  // Only called once signOut() itself has resolved successfully — ending the
+  // session is what "sign out" means, independent of whether the box was
+  // checked or local clearing succeeded.
+  function handleSignedOut() {
     setSignedIn(false);
     setEmail(null);
-    if (removedLocalData) {
-      setStored(null);
-      setCachedCount(0);
-      setState(INITIAL_RUN_STATE);
-      setGeneratedAt(null);
-      setAppliedSupplement("");
-      setSupplementDraft("");
-      setRunIdForPosting("");
-      setBaselineForPosting(null);
-    }
   }
 
   return (
@@ -394,6 +404,7 @@ export default function App() {
         email={email}
         remaining={state.remaining}
         busy={busy}
+        onLocalDataCleared={handleLocalDataCleared}
         onSignedOut={handleSignedOut}
       />
 

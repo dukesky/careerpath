@@ -17,6 +17,7 @@ export function AccountBar({
   email,
   remaining,
   busy,
+  onLocalDataCleared,
   onSignedOut,
 }: {
   signedIn: boolean;
@@ -35,8 +36,15 @@ export function AccountBar({
    * active, not on whether the user is still signed in.
    */
   busy: boolean;
-  /** Fired once sign-out has actually completed, and whether local data was also removed. */
-  onSignedOut: (removedLocalData: boolean) => void;
+  /**
+   * Fired the instant SignOutDialog has actually cleared local storage
+   * (box checked only), independently of whether the subsequent signOut()
+   * succeeds — see SignOutDialog's own doc comment on why these two signals
+   * are separate. Threaded straight through with no wrapping needed.
+   */
+  onLocalDataCleared: () => void;
+  /** Fired once sign-out has actually completed (signOut() resolved). */
+  onSignedOut: () => void;
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -49,6 +57,14 @@ export function AccountBar({
             <p className="muted tiny">
               Sign in to raise your limit from 3 runs every 30 days to 5 runs a day.
             </p>
+            {remaining !== null && (
+              // No "today" here — the signed-out device tier is 3 runs per
+              // 30 days, not a daily allowance, so borrowing the signed-in
+              // branch's "left today" wording would misstate the period.
+              <p className="muted tiny">
+                {remaining} run{remaining === 1 ? "" : "s"} left
+              </p>
+            )}
           </div>
           {/* A plain anchor, not chrome.tabs.create: opening a tab this way
               needs no `tabs` permission — same reasoning as the saved-resumes
@@ -82,9 +98,10 @@ export function AccountBar({
       {dialogOpen && (
         <SignOutDialog
           onCancel={() => setDialogOpen(false)}
-          onConfirmed={(removedLocalData) => {
+          onLocalDataCleared={onLocalDataCleared}
+          onSignedOut={() => {
             setDialogOpen(false);
-            onSignedOut(removedLocalData);
+            onSignedOut();
           }}
         />
       )}

@@ -15,11 +15,28 @@ import { clearCachedRuns } from "@/lib/cache";
  */
 export function SignOutDialog({
   onCancel,
-  onConfirmed,
+  onLocalDataCleared,
+  onSignedOut,
 }: {
   onCancel: () => void;
-  /** Fired after signOut() (and any requested local clear) has resolved. */
-  onConfirmed: (removedLocalData: boolean) => void;
+  /**
+   * Fired the INSTANT clearResume()/clearCachedRuns() have both succeeded
+   * (only when the box is checked), BEFORE signOut() is even attempted.
+   * This has to be reported independently of onSignedOut below: local
+   * clearing and ending the Clerk session are two separate operations that
+   * can fail independently, and chrome.storage.local really is empty the
+   * moment this fires regardless of what signOut() does next. Bundling this
+   * behind a later "both succeeded" signal (as an earlier version of this
+   * dialog did) meant a signOut()-specific failure — clearing succeeds,
+   * signOut() then throws — left the panel still showing the previous
+   * session's resume/cache/run state as if nothing happened, while storage
+   * underneath had genuinely already lost it. That's a data-loss-hidden-by-
+   * stale-UI bug, not a cosmetic one: the panel would show data that no
+   * longer exists.
+   */
+  onLocalDataCleared: () => void;
+  /** Fired once signOut() itself has resolved successfully. */
+  onSignedOut: () => void;
 }) {
   const [removeLocal, setRemoveLocal] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -29,24 +46,26 @@ export function SignOutDialog({
     setBusy(true);
     setError(null);
     try {
-      // Local data first, signOut() LAST. This ordering is deliberate: it is
-      // what makes it impossible for the session to end while this dialog
-      // (and the AccountBar behind it) still shows the user signed in — the
-      // same "header still shows their email for a session that's gone" lie
-      // the session_expired fork exists to prevent elsewhere in this panel.
-      // If clearing throws, signOut() below is never reached and nothing
-      // has changed: the user is still genuinely signed in, and the UI
-      // (having never called onConfirmed) still accurately says so. Putting
-      // signOut() first would invert that: a clearResume()/clearCachedRuns()
-      // failure AFTER a successful signOut() would end the session while
-      // onConfirmed — and so handleSignedOut — never runs, leaving the bar
-      // stuck showing a signed-in user whose session already ended.
+      // Local data first, signOut() LAST, and each reported to the caller
+      // the moment it actually happens rather than bundled behind the other.
+      // If clearing itself throws, signOut() below is never reached and
+      // nothing has changed: the user is still genuinely signed in, and the
+      // UI (having received neither callback) still accurately says so.
+      // Once clearing succeeds, onLocalDataCleared() fires right away —
+      // independently of whatever signOut() does next — because storage is
+      // truly empty at that point regardless of the session's fate. If
+      // signOut() then throws, the catch below surfaces the error and
+      // leaves the dialog open, but the panel has already correctly
+      // forgotten the cleared resume/cache/run state; it does not sit there
+      // showing data that storage no longer has. See onLocalDataCleared's
+      // own doc comment for the failure mode this prevents.
       if (removeLocal) {
         await clearResume();
         await clearCachedRuns();
+        onLocalDataCleared();
       }
       await signOut();
-      onConfirmed(removeLocal);
+      onSignedOut();
     } catch (err) {
       // Surfaced and the dialog stays open (no onCancel/onConfirmed call) so
       // the user can retry rather than being silently left in an ambiguous

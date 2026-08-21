@@ -64,6 +64,15 @@ export default function App() {
   // here: AccountBar reads it straight off `state.remaining`.
   const [signedIn, setSignedIn] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
+  // Whether a Save (SaveButton, inside Results) currently has a POST to
+  // /api/saved in flight. Folded into `canRun` below so a regenerate cannot
+  // start while a save is pending — see SaveButton.tsx's doc comment for the
+  // lost-feedback race this closes: without it, a regenerate completing
+  // mid-save changes `generatedAt`, which remounts SaveButton (it is keyed
+  // on that value in Results.tsx) out from under the still-in-flight
+  // request, and the request's eventual result lands on an unmounted
+  // component as a silent no-op.
+  const [saving, setSaving] = useState(false);
 
   // Recomputed only when the stored resume object changes, because it walks
   // the whole resume. It is also an effect dependency below, which is what
@@ -239,7 +248,7 @@ export default function App() {
     // restored over it.
   }, [jd?.url, fingerprint]);
 
-  const canRun = Boolean(jd && stored) && !busy;
+  const canRun = Boolean(jd && stored) && !busy && !saving;
 
   async function generate(supplement: string) {
     if (!jd || !stored || busy) return;
@@ -434,6 +443,7 @@ export default function App() {
         jdSummary={jd?.text ?? ""}
         jdUrl={jd?.url}
         signedIn={signedIn}
+        onSavingChange={setSaving}
         generatedAt={generatedAt}
         baselineScore={baselineForPosting}
         appliedSupplement={appliedSupplement}

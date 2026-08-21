@@ -32,6 +32,7 @@ export function Results({
   jdSummary,
   jdUrl,
   signedIn,
+  onSavingChange,
   generatedAt,
   baselineScore,
   appliedSupplement,
@@ -47,6 +48,8 @@ export function Results({
   jdUrl: string | undefined;
   /** Gates the Save control: it must be ABSENT, not present-and-failing, for a signed-out user. */
   signedIn: boolean;
+  /** Threaded straight through to SaveButton — see its doc comment for why App.tsx needs this. */
+  onSavingChange: (saving: boolean) => void;
   generatedAt: string | null;
   /** This posting's frozen baseline, or null before it has been measured. */
   baselineScore: number | null;
@@ -102,6 +105,7 @@ export function Results({
                   roleTitle={roleTitle}
                   jdSummary={jdSummary}
                   jdUrl={jdUrl}
+                  onSavingChange={onSavingChange}
                 />
               )}
               {generatedAt && (

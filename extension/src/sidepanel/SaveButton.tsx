@@ -25,6 +25,23 @@ type SaveStatus = "idle" | "saving" | "saved" | "error" | "session_expired";
  *
  * Rendered ONLY when signed in (Results.tsx's job, not this component's) —
  * a signed-out user must never see a Save control that would just 401.
+ *
+ * `onSavingChange` exists to close a lost-feedback race, not to report
+ * progress for its own sake: `Results.tsx` keys this component on
+ * `generatedAt` so a NEW completed run gets a clean idle Save status (see
+ * that key's own comment). But a regenerate can start while a save from the
+ * PREVIOUS result is still in flight — the two are otherwise uncoordinated.
+ * If that happened, the new run's `generatedAt` would change the key,
+ * React would unmount this instance, and the in-flight `apiPost` would
+ * later resolve into `setStatus(...)` on a component that no longer exists
+ * — a silent no-op. The user would see the Save button they were watching
+ * simply vanish, replaced by a fresh one for the new result, with no
+ * indication of whether their save succeeded. `App.tsx` uses this callback
+ * to disable both regenerate triggers for the duration of a save, which
+ * removes the race's precondition entirely (regenerate cannot start while
+ * this component might still be unmounted out from under a pending
+ * request) rather than trying to make the clobbered result recoverable
+ * after the fact.
  */
 export function SaveButton({
   resume,
@@ -32,6 +49,7 @@ export function SaveButton({
   roleTitle,
   jdSummary,
   jdUrl,
+  onSavingChange,
 }: {
   resume: ParsedResume;
   company: string;
@@ -39,6 +57,8 @@ export function SaveButton({
   jdSummary: string;
   /** Only sent when it is a real http(s) URL — the route rejects anything else anyway. */
   jdUrl?: string;
+  /** See this component's doc comment — fired true right before the request, false right after it settles. */
+  onSavingChange: (saving: boolean) => void;
 }) {
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [message, setMessage] = useState<string | null>(null);
@@ -46,6 +66,11 @@ export function SaveButton({
   async function save() {
     setStatus("saving");
     setMessage(null);
+    onSavingChange(true);
+    // apiPost never rejects (see api.ts's `send` — every failure mode is
+    // folded into `ApiResult`'s `ok: false` branch), so a single call site
+    // right after the await, before branching on `result.ok`, is enough to
+    // cover both outcomes.
     const result = await apiPost<{ saved: unknown }>("/api/saved", {
       company,
       roleTitle,
@@ -53,6 +78,7 @@ export function SaveButton({
       jdSummary,
       ...(jdUrl ? { jdUrl } : {}),
     });
+    onSavingChange(false);
     if (!result.ok) {
       // Same treatment as App.tsx's own session_expired card (see its doc
       // comment near `state.error?.kind === "session_expired"`) — duplicated

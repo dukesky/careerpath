@@ -1388,4 +1388,60 @@ describe("App - saving a tailored resume from the panel", () => {
     expect(cta.getAttribute("href")).toBe(SIGNIN_URL);
     expect(cta.getAttribute("target")).toBe("_blank");
   });
+
+  // Fix round 1 (Important finding): SaveButton is keyed on `generatedAt` in
+  // Results.tsx, so a regenerate that completes while a save is still in
+  // flight would remount it — unmounting the component the pending
+  // apiPost's `.then` was about to update, so its eventual result (saved or
+  // failed) lands as a silent no-op and the user never finds out what
+  // happened to their save. The fix disables both regenerate triggers for
+  // the duration of a save (App.tsx's `canRun` folds in the new `saving`
+  // state) rather than trying to make the clobbered result recoverable.
+  // This test pins the guard, not the original race — the race is now
+  // structurally unreachable, since regenerate cannot even start while a
+  // save is pending.
+  it("disables both regenerate triggers while a save is in flight, and re-enables them once it settles", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    // Give the supplement's own regenerate trigger something to be enabled
+    // ABOUT — its own guard also requires non-empty text, so this isolates
+    // the assertion to the `canRun`/`saving` guard under test rather than
+    // failing on the pre-existing empty-text guard instead.
+    const textarea = () => container.querySelector("textarea.paste") as HTMLTextAreaElement;
+    act(() => {
+      typeInto(textarea(), "Some experience I forgot to mention");
+    });
+
+    // Both triggers are live before any save starts.
+    expect(findButton(container, "Tailor again").disabled).toBe(false);
+    expect(findButton(container, "Add experience and regenerate").disabled).toBe(false);
+
+    let releaseSave: ((result: ApiResult<unknown>) => void) | null = null;
+    apiPostImpl = () =>
+      new Promise((resolve) => {
+        releaseSave = resolve;
+      });
+
+    await act(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    await flush();
+
+    // The save is genuinely in flight — its own button says so.
+    expect(findButton(container, "Saving…")).toBeTruthy();
+    // Both regenerate triggers are now blocked, closing the race.
+    expect(findButton(container, "Tailor again").disabled).toBe(true);
+    expect(findButton(container, "Add experience and regenerate").disabled).toBe(true);
+
+    await act(async () => {
+      releaseSave?.({ ok: true, data: { saved: {} } });
+    });
+    await flush();
+
+    expect(findButton(container, "Saved ✓")).toBeTruthy();
+    // Settled — both triggers are live again.
+    expect(findButton(container, "Tailor again").disabled).toBe(false);
+    expect(findButton(container, "Add experience and regenerate").disabled).toBe(false);
+  });
 });

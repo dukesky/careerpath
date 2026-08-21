@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { GapAnalysis, ParsedResume, TailorResult } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
+import type { ApiResult } from "@/lib/api";
 import { getResume, setResume, type StoredResume } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
@@ -149,6 +150,29 @@ vi.mock("@/lib/clerk", () => ({
   signInPageUrl: () => SIGNIN_URL,
 }));
 
+// ---------------------------------------------------------------------------
+// Mock `@/lib/api`'s `apiPost` — Task 6's Save control (SaveButton.tsx) calls
+// it directly rather than through a `run.ts`-style wrapper, so this is the
+// same "replace the network-call boundary" pattern the `@/lib/run` mock
+// above uses for generate(). `apiPostForm` and everything else stay real via
+// importOriginal, since nothing under test calls them.
+// ---------------------------------------------------------------------------
+type ApiPostFn = (path: string, body: unknown) => Promise<ApiResult<unknown>>;
+
+let apiPostImpl: ApiPostFn = async () => ({ ok: true, data: {} });
+let apiPostCalls: Array<{ path: string; body: unknown }> = [];
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    apiPost: <T,>(path: string, body: unknown) => {
+      apiPostCalls.push({ path, body });
+      return apiPostImpl(path, body) as Promise<ApiResult<T>>;
+    },
+  };
+});
+
 // Applies to EVERY test in this file, both describe blocks below — clerk
 // state must not leak from one test into the next regardless of which
 // describe registered it.
@@ -157,6 +181,8 @@ beforeEach(() => {
   installClerkTokenSourceCalls = 0;
   signOutCallCount = 0;
   signOutShouldThrow = false;
+  apiPostImpl = async () => ({ ok: true, data: {} });
+  apiPostCalls = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -1179,5 +1205,187 @@ describe("App - account bar, sign-out, and session handling", () => {
     // Not the signed-in branch's wording — the signed-out tier is a 30-day
     // window, not a daily one.
     expect(container.textContent).not.toContain("left today");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6: the Save control (SaveButton.tsx), reached through App/Results —
+// same reasoning as the account-bar describe block above for why this is a
+// separate describe with its own container/root rather than folding into an
+// existing block.
+// ---------------------------------------------------------------------------
+describe("App - saving a tailored resume from the panel", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  // Produces a completed, tailored result on screen — the precondition for
+  // Save to exist at all (it lives inside the `tailored &&` block beside
+  // DownloadPdf).
+  async function completeATailoredRun() {
+    await setResume(STORED_RESUME);
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 3,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+  }
+
+  it("does not render Save when signed out, even with a completed tailored result", async () => {
+    clerkState = { signedIn: false, email: null };
+    await completeATailoredRun();
+
+    // The result really did render — Download PDF proves it — so the
+    // absence of Save below is the signed-out gate, not a missing result.
+    expect(findButton(container, "Download PDF resume")).toBeTruthy();
+    expect(hasButton(container, "Save to career-path")).toBe(false);
+  });
+
+  it("renders Save when signed in with a completed tailored result, and posts the exact body shape to /api/saved", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    const saveButton = findButton(container, "Save to career-path");
+    expect(saveButton).toBeTruthy();
+    expect(saveButton.disabled).toBe(false);
+
+    await act(async () => {
+      saveButton.click();
+    });
+    await flush();
+
+    expect(apiPostCalls).toHaveLength(1);
+    expect(apiPostCalls[0].path).toBe("/api/saved");
+    // Field names matched exactly against src/app/api/saved/route.ts's POST
+    // handler: company, roleTitle, resume, jdSummary, jdUrl.
+    expect(apiPostCalls[0].body).toEqual({
+      company: JD_A.company,
+      roleTitle: JD_A.title,
+      resume: RESUME,
+      jdSummary: JD_A.text,
+      jdUrl: JD_A.url,
+    });
+  });
+
+  it("moves from saving to saved once the request resolves", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    let releaseSave: ((result: ApiResult<unknown>) => void) | null = null;
+    apiPostImpl = () =>
+      new Promise((resolve) => {
+        releaseSave = resolve;
+      });
+
+    await act(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    await flush();
+
+    const savingButton = findButton(container, "Saving…");
+    expect(savingButton.disabled).toBe(true);
+
+    await act(async () => {
+      releaseSave?.({ ok: true, data: { saved: {} } });
+    });
+    await flush();
+
+    expect(findButton(container, "Saved ✓")).toBeTruthy();
+    expect(hasButton(container, "Saving…")).toBe(false);
+  });
+
+  it("shows why a save failed and stays retryable, not stuck", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    apiPostImpl = async () => ({
+      ok: false,
+      kind: "server",
+      message: "Something went wrong. Please try again.",
+    });
+
+    await act(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Something went wrong. Please try again.");
+    // Retryable, not stuck: the button is back to its idle label and enabled.
+    const retryButton = findButton(container, "Save to career-path");
+    expect(retryButton.disabled).toBe(false);
+
+    // Retry, this time succeeding.
+    apiPostImpl = async () => ({ ok: true, data: { saved: {} } });
+    await act(async () => {
+      retryButton.click();
+    });
+    await flush();
+
+    expect(findButton(container, "Saved ✓")).toBeTruthy();
+    expect(container.textContent).not.toContain("Something went wrong. Please try again.");
+  });
+
+  it("routes a session_expired save result to the sign-in-again CTA", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await completeATailoredRun();
+
+    apiPostImpl = async () => ({
+      ok: false,
+      kind: "session_expired",
+      message: "Your session expired. Sign in again to continue.",
+    });
+
+    await act(async () => {
+      findButton(container, "Save to career-path").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Sign in to pick up where you left off.");
+    const cta = findAnchor(container, "Sign in again");
+    expect(cta.getAttribute("href")).toBe(SIGNIN_URL);
+    expect(cta.getAttribute("target")).toBe("_blank");
   });
 });

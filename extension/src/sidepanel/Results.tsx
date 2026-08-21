@@ -2,6 +2,7 @@ import type { RunState } from "@/lib/run";
 import type { ReqStatus } from "@shared/contract";
 import { relativeTime } from "@/lib/relativeTime";
 import { DownloadPdf } from "./DownloadPdf";
+import { SaveButton } from "./SaveButton";
 import { SupplementBox, type SupplementProps } from "./SupplementBox";
 import { supplementPlaceholder } from "./gapHint";
 import { roundToFive } from "./score";
@@ -27,6 +28,10 @@ const PHASE_COPY: Record<string, string> = {
 export function Results({
   state,
   company,
+  roleTitle,
+  jdSummary,
+  jdUrl,
+  signedIn,
   generatedAt,
   baselineScore,
   appliedSupplement,
@@ -34,6 +39,14 @@ export function Results({
 }: {
   state: RunState;
   company: string;
+  /** The posting's title, for Save's `roleTitle` field. */
+  roleTitle: string;
+  /** The extracted JD's raw text, for Save's `jdSummary` field — see SaveButton's doc comment for why this stands in for the structured summary the extension never computes. */
+  jdSummary: string;
+  /** The posting's URL, for Save's `jdUrl` field. Undefined when there is no active posting. */
+  jdUrl: string | undefined;
+  /** Gates the Save control: it must be ABSENT, not present-and-failing, for a signed-out user. */
+  signedIn: boolean;
   generatedAt: string | null;
   /** This posting's frozen baseline, or null before it has been measured. */
   baselineScore: number | null;
@@ -76,6 +89,21 @@ export function Results({
           {tailored && (
             <>
               <DownloadPdf resume={tailored.resume} company={company} />
+              {signedIn && (
+                // Keyed on `generatedAt` so a fresh run (a new displayed
+                // result) remounts this with a clean idle status — without
+                // it, regenerating after a successful save would leave
+                // "Saved ✓" showing for a version that was never actually
+                // saved.
+                <SaveButton
+                  key={generatedAt ?? undefined}
+                  resume={tailored.resume}
+                  company={company}
+                  roleTitle={roleTitle}
+                  jdSummary={jdSummary}
+                  jdUrl={jdUrl}
+                />
+              )}
               {generatedAt && (
                 <p className="muted tiny center">generated {relativeTime(generatedAt)}</p>
               )}

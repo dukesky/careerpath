@@ -430,6 +430,10 @@ export default function App() {
       <Results
         state={state}
         company={jd?.company ?? ""}
+        roleTitle={jd?.title ?? ""}
+        jdSummary={jd?.text ?? ""}
+        jdUrl={jd?.url}
+        signedIn={signedIn}
         generatedAt={generatedAt}
         baselineScore={baselineForPosting}
         appliedSupplement={appliedSupplement}

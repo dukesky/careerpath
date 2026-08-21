@@ -20,7 +20,7 @@ export default function PrivacyPage() {
       <h1 className="mt-6 font-display text-3xl font-bold tracking-tight text-[#0E1220]">
         Privacy
       </h1>
-      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-16</p>
+      <p className="mt-2 text-sm text-slate-500">Last updated: 2026-08-20</p>
 
       <p className="mt-6 text-sm leading-relaxed text-slate-600">
         career-path is built so your resume stays yours. This page lists exactly
@@ -53,7 +53,10 @@ export default function PrivacyPage() {
           Usage counters — quota and rate-limit counts keyed by your account,
           an anonymous ID your browser stores for the web app, your IP
           address, or, for a signed-out extension, a device ID our server
-          issues and signs into a token kept on your device. We store a
+          issues and signs into a token kept on your device. In the
+          extension, that is the difference between 5 runs a day, counted
+          against your account, if you are signed in, and 3 runs every 30
+          days, counted against that device ID, if you are not. We store a
           running count against each of these; we do not keep a directory of
           devices.
         </li>
@@ -89,6 +92,14 @@ export default function PrivacyPage() {
         how many are cached, and removes all of them.
       </p>
       <p className="mt-3 text-sm leading-relaxed text-slate-600">
+        If you sign in, signing out asks whether to also remove your resume
+        and cached results from this device — the box is checked by default.
+        Leave it checked and both are cleared from{" "}
+        <code>chrome.storage.local</code> along with your session. Uncheck it
+        and only your session ends; the resume and cached results stay on
+        this device.
+      </p>
+      <p className="mt-3 text-sm leading-relaxed text-slate-600">
         The extension reads the job posting on the page you are viewing, and
         only when you open the panel there. It does not read any other page,
         and it does not collect your browsing history. A background service
@@ -103,6 +114,14 @@ export default function PrivacyPage() {
         Language models are accessed through OpenRouter. Sign-in is handled by
         Clerk. Usage counters, saved versions, and aggregate stats live in
         Upstash Redis. The site is hosted on Vercel.
+      </p>
+      <p className="mt-3 text-sm leading-relaxed text-slate-600">
+        For the browser extension, that Clerk relationship is direct: the
+        side panel and its sign-in page contact Clerk&rsquo;s servers over
+        the network themselves, to authenticate you and keep your session
+        current. That is different from OpenRouter, Upstash, and Vercel
+        above, which our servers talk to on your behalf — the extension
+        does not contact those directly.
       </p>
     </main>
   );

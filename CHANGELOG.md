@@ -7,6 +7,55 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-08-20 — Signing in gives the extension somewhere to go
+
+### Added
+
+- **Sign in from the extension.** A dedicated extension page — not the side
+  panel — walks you through email-code or Google sign-in through Clerk, the
+  same account system the web app uses. Signed in, your runs count against
+  your account instead of a device ID, and the allowance itself changes: 5
+  runs a day, instead of the signed-out device tier's 3 runs every 30 days.
+- **An account bar in the panel** shows your email and how many runs you have
+  left today, with a Sign out control beside it.
+- **Sign out asks what to do with this device.** A checkbox, checked by
+  default, reads "Also remove my resume and saved results from this
+  browser." Checked, sign-out clears your resume and cached results from
+  `chrome.storage.local` along with the session. Unchecked, only the session
+  ends — the resume and cached results stay.
+- **Save**, next to Download PDF, for signed-in users: saves the tailored
+  resume to your account, viewable later at `/app/saved`.
+- **A session that expires mid-use now tells you, instead of quietly
+  spending your device trial.** An expired or unreachable Clerk session
+  surfaces as a signed-out state with a prompt to sign in again — it never
+  falls through to minting a device token and retrying as one.
+
+### Changed
+
+- **The extension's toolbar icon** is career-path's own mark, not the
+  default puzzle piece. It landed earlier in this same run of commits, ahead
+  of the sign-in work above.
+- **Installing or updating the extension now asks for more.** Sign-in needs
+  the `cookies` permission (Clerk's session lives in one) and a host
+  permission for Clerk's Frontend API, which the panel now contacts
+  directly. Both widen what the Chrome Web Store's install prompt shows —
+  accepted as the cost of adding sign-in at all.
+
+### Known limits
+
+- Browsing saved resumes in the panel is still a link out to `/app/saved` —
+  there's no in-panel list yet.
+- Clerk's Sync Host doesn't work for side panels, so signing in on the
+  career-path website does not carry over into the extension. Sign-in has to
+  happen inside the extension itself.
+- The dev and "production" extension builds currently point at the same
+  Clerk dev instance. The production Clerk host has to be settled before the
+  first Chrome Web Store submission — adding a host permission after that
+  point disables the extension for every existing user until they
+  re-approve it.
+
+---
+
 ## 2026-08-17 — The match score stops moving
 
 ### Fixed

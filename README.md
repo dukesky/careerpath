@@ -50,6 +50,8 @@ in-session and **never stored unless you sign in and explicitly save a version**
   before you export.
 - **🔗 Ingests JDs from anywhere.** Paste text, a screenshot, or a link — with direct
   fetchers for LinkedIn, Greenhouse, Lever, Ashby & Workday.
+- **🧩 Or skip the copy-paste entirely.** A [Chrome extension](#chrome-extension) reads
+  the job posting on the tab you're already on and tailors right there, in a side panel.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 
@@ -256,6 +258,21 @@ npm workspace) that lets you tailor your resume against the job posting in
 your active tab without leaving it. It talks to the same API as the web app —
 no prompts or model choices live in the extension itself.
 
+- **Reads the page you're on, not your browsing history.** Granted at install
+  for five job sites — **LinkedIn, Greenhouse, Lever, Ashby & Workday** — and
+  for anywhere else via an optional, one-click, per-site grant.
+- **Same pipeline as the web app**, in a side panel: gap analysis, a truthful
+  tailored rewrite, a before → after match score, and a one-page PDF export.
+- **Sign in for more runs.** Signed out, everyone shares a **3-runs-per-30-days**
+  device allowance. Signing in with [Clerk](https://clerk.com) (email code or
+  Google) raises that to **5 runs a day**, counted against your account instead
+  of the device. The panel shows your email and remaining runs, with a
+  **Sign out** control that can optionally clear your resume and cached results
+  from the browser too.
+- **Optional saving.** Signed in, a **Save** button next to Download PDF saves
+  the current tailored resume to your account — the same *My resumes* list the
+  web app's `/app/saved` page shows.
+
 ```bash
 # 1. Install its dependencies (separate from the root install)
 npm --prefix extension install
@@ -284,10 +301,12 @@ listed in the manifest's `host_permissions` bypasses CORS regardless of
 Store, it will be assigned its own ID there — append that one to the list too
 rather than replacing the dev ID.
 
-B1 ships with no sign-in: every extension user is a signed-out device caller,
-sharing the same **3 runs per rolling 30-day window** allowance described
-above (`quota:device:<deviceId>`, identified by a server-signed token rather
-than anything the client can reset by clearing storage).
+Sign-in uses Clerk's own client directly inside the extension — a dedicated
+sign-in page, not the web app's session (Clerk's Sync Host doesn't work on
+side panels, so signing in on the website does not carry over into the
+extension). See [`CHANGELOG.md`](CHANGELOG.md) for what's shipped so far, and
+[`/privacy`](https://careerpath-hazel.vercel.app/privacy) for exactly what the
+extension stores locally versus sends to the server.
 
 ## Privacy
 

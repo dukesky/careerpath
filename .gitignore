@@ -50,3 +50,6 @@ next-env.d.ts
 /extension/node_modules/
 /extension/dist/
 /extension/key.pem
+
+# Chrome Web Store upload packages (npm run package)
+/extension/*.zip

@@ -198,8 +198,64 @@ export async function requestBroadHostAccess(): Promise<boolean> {
 如果这个页面跑在 `career-allpath.com` 上、用的却还是 `pk_test_` 开头的 development key，
 Clerk 的 dev instance 对非本地来源是有限制的，初始化失败就会永远停在 loading。
 
-**需要用户确认（一步就能定位）：** 出问题的页面是 `localhost:3000` 还是 `career-allpath.com`？
-打开浏览器 DevTools 的 Console，看有没有 Clerk 相关的报错，把报错贴出来。
+**Console 报错已拿到，根因彻底确定了：**
+
+```
+clerk.career-allpath.com/v1/client?... → 403
+The request origin subdomain is not in the allowed subdomains list.
+Please add it to your subdomain allowlist in the Dashboard.
+```
+
+**先说一个好消息：production Clerk 其实早就配好了。** 我查了 DNS，两条记录都是活的、指向正确：
+
+```
+clerk.career-allpath.com    → frontend-api.clerk.services  ✓
+accounts.career-allpath.com → accounts.clerk.services      ✓
+```
+
+Vercel 托管的 DNS 确实像 Clerk 文档说的那样自动配好了。之前 Dashboard 上一直显示
+"Pending / 0/2 Verified"，指的是那个占位域名 `national.pegasus-41.lcl.dev`，跟真正在用的这套无关——
+我们前面在那个页面上耗的时间，其实是在盯一个已经不相干的东西。
+
+**真正的问题是 www 和 apex 对不上：**
+
+- Vercel 上 `career-allpath.com`（apex）**308 跳转到** `www.career-allpath.com`，www 才是实际服务的域名
+- 所以浏览器发给 Clerk 的 Origin 是 `www.career-allpath.com`
+- 而 Clerk 的 primary domain 是 apex `career-allpath.com`
+- → www 被当成"不在允许列表里的子域名"，403
+
+**修法（二选一）：**
+
+1. **Clerk Dashboard → Configure → Domains → "Allowed subdomains" 标签页，把 `www` 加进去。**
+   一步搞定，不动任何基础设施。**推荐先用这个把线上救回来。**
+2. **在 Vercel 里把 apex 设为 primary**（取消 apex→www 的跳转）。这样 Origin 就是 apex，天然匹配
+   Clerk 的 primary domain，而且顺带解决下面那条 API_BASE 的问题。改动更大，影响已有链接和 SEO。
+
+---
+
+## 7. （连带发现）插件的 API_BASE 指向 apex，每次请求都吃一次 308 跳转
+
+排查第 6 条时顺手发现的，之前没人报，但是个真实的隐患。
+
+`extension/src/lib/config.ts` 里 `API_BASE` 指向 apex，而且注释里当初就写明了触发条件：
+
+> This is the APEX domain, not www. Keep it that way **unless Vercel is configured with www as
+> primary**: an apex->www redirect on a POST is a redirect the API client would have to follow…
+
+**而现在 Vercel 恰恰就是 www 为 primary。** 实测确认：
+
+```
+$ curl -s -o /dev/null -w "%{http_code} -> %{redirect_url}" https://career-allpath.com/api/quota
+308 -> https://www.career-allpath.com/api/quota
+```
+
+好在是 **308**（Permanent Redirect），会保留 method 和 body，所以 POST 不会像注释担心的 301/302
+那样丢掉请求体——功能上大概率是能跑通的。但代价是**插件每一次 API 调用都白白多一次往返**，
+而且跨域跳转时 CORS 的行为比直连更容易出意外。
+
+**修法：** 要么把 `API_BASE` 改成 `https://www.career-allpath.com`，要么按第 6 条的方案 2 把 apex
+设为 primary。**这两条应该一起决定**——它们本质上是同一个问题（www 和 apex 到底谁是正主）的两个
+表现，分开修容易改出自相矛盾的配置。
 
 **顺带一提，这个 shim 本身是个隐患。** 即使这次的根因是别的，"auth 加载中 → 两个分支都渲染 null"
 这个行为也意味着：**页面在 Clerk 加载完之前，header 上会短暂地什么都没有**。正常网络下是一闪而过，

@@ -291,15 +291,15 @@ Then load it unpacked:
 1. Open `chrome://extensions`, enable **Developer mode** (top right).
 2. Click **Load unpacked** and select `extension/dist`.
 
-The manifest pins a `key`, so the extension ID stays stable across rebuilds —
-currently `nipgolameclkfjekaggkmanahaddcbaj`. Add it to the server's
-`ALLOWED_EXTENSION_IDS` environment variable (comma-separated) so the API's
-CORS layer recognizes it. That check is **defense-in-depth, not the thing
-making requests work**: in MV3, a fetch from an extension page to a host
-listed in the manifest's `host_permissions` bypasses CORS regardless of
-`ALLOWED_EXTENSION_IDS`. When this extension is published to the Chrome Web
-Store, it will be assigned its own ID there — append that one to the list too
-rather than replacing the dev ID.
+The manifest pins a `key` — the public key the Chrome Web Store generated at
+first upload — so a locally loaded unpacked build and the store-installed
+extension share one ID: `epofgiefihhmbjhojdeffkdkhocjfpaf`. Add it to the
+server's `ALLOWED_EXTENSION_IDS` environment variable (comma-separated) so
+the API's CORS layer recognizes it. That check is **defense-in-depth, not the
+thing making requests work**: in MV3, a fetch from an extension page to a
+host listed in the manifest's `host_permissions` bypasses CORS regardless of
+`ALLOWED_EXTENSION_IDS`. (`npm run package` strips the `key` field from
+store uploads, which the store requires on a first upload and ignores after.)
 
 Sign-in uses Clerk's own client directly inside the extension — a dedicated
 sign-in page, not the web app's session (Clerk's Sync Host doesn't work on

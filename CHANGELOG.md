@@ -7,6 +7,26 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-08-22 — The extension signs in against production Clerk
+
+### Changed
+
+- The production extension build now uses the production Clerk instance
+  (`clerk.career-allpath.com`, a `pk_live_` key) instead of the shared dev
+  instance; the dev build keeps pointing at the dev instance. Both Clerk
+  hosts are in `host_permissions` so the production host is declared before
+  the first Chrome Web Store submission — adding one afterwards would
+  disable the extension for every existing user until they re-approve it.
+- A test decodes each build mode's publishable key and checks it names the
+  same Frontend API host as `CLERK_FRONTEND_API`, so the two can't drift.
+
+### Known limits
+
+- Users who signed in to the extension against the dev instance are signed
+  out by this build: the production instance has its own user database.
+
+---
+
 ## 2026-08-20 — Signing in gives the extension somewhere to go
 
 ### Added
@@ -56,11 +76,6 @@ The web app has no version number; the extension carries its own in
 - Clerk's Sync Host doesn't work for side panels, so signing in on the
   career-path website does not carry over into the extension. Sign-in has to
   happen inside the extension itself.
-- The dev and "production" extension builds currently point at the same
-  Clerk dev instance. The production Clerk host has to be settled before the
-  first Chrome Web Store submission — adding a host permission after that
-  point disables the extension for every existing user until they
-  re-approve it.
 
 ---
 

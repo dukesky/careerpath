@@ -6,18 +6,18 @@
 // environment (jsdom's TextEncoder polyfill violates an invariant esbuild
 // relies on). Running this one file under the plain "node" environment
 // avoids that entirely — it never needs `document`/`chrome` anyway.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import manifestExport from "../../manifest.config";
 import { BROAD_ORIGINS } from "@/lib/permissions";
-import { CLERK_FRONTEND_API } from "@/lib/config";
 
-// `defineManifest` is typed to return `ManifestV3 | Promise<ManifestV3> |
-// ManifestV3Fn` so it can support all three authoring styles, but this
-// project always calls it with a plain object literal — verified by reading
-// @crxjs/vite-plugin's source (`defineManifest = (manifest) => manifest`),
-// an identity function. Narrow the import's type here to the shape this repo
-// actually produces, rather than fighting the union on every assertion.
-const manifest = manifestExport as {
+// manifest.config.ts exports the function form of `defineManifest` so that
+// host_permissions can differ by build mode — verified by reading
+// @crxjs/vite-plugin's source (`defineManifest = (manifest) => manifest`, an
+// identity function), so calling the export with a Vite ConfigEnv yields the
+// plain object the plugin would see for that mode. Narrow the type to the
+// shape this repo actually produces rather than fighting the union on every
+// assertion.
+type Manifest = {
   content_scripts?: unknown;
   permissions?: string[];
   host_permissions?: string[];
@@ -27,6 +27,41 @@ const manifest = manifestExport as {
   action?: { default_title?: string; default_icon?: Record<string, string> };
 };
 
+function manifestFor(mode: "production" | "development"): Manifest {
+  const build = manifestExport as (env: {
+    mode: string;
+    command: "build";
+  }) => Manifest;
+  return build({ mode, command: "build" });
+}
+
+// The shipped manifest. Everything not explicitly about mode is asserted
+// against this one, because it is the one that reaches the Web Store.
+const manifest = manifestFor("production");
+
+const JOB_SITES = [
+  "*://*.linkedin.com/*",
+  "*://*.greenhouse.io/*",
+  "*://*.lever.co/*",
+  "*://*.ashbyhq.com/*",
+  "*://*.myworkdayjobs.com/*",
+];
+
+// src/lib/config.ts branches on import.meta.env.MODE, which vitest fixes at
+// "test". To read the value a given build would see, stub MODE and import
+// the module fresh.
+async function clerkFrontendApiFor(mode: string): Promise<string> {
+  vi.stubEnv("MODE", mode);
+  vi.resetModules();
+  const { CLERK_FRONTEND_API } = await import("@/lib/config");
+  return CLERK_FRONTEND_API;
+}
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
+
 describe("manifest", () => {
   // A content_scripts entry would show "Read and change all your data on all
   // websites" at install — the Web Store friction this design exists to avoid.
@@ -35,19 +70,35 @@ describe("manifest", () => {
     expect("content_scripts" in manifest).toBe(false);
   });
 
-  it("requests the API origins, the Clerk host, plus exactly the five supported job sites", () => {
+  // Pinned exactly. This list is the Web Store install prompt and, once
+  // published, can only shrink without disabling the extension for every
+  // existing user — so adding to it should have to be written down twice.
+  it("production requests only the live API origins, the production Clerk host, and the five job sites", () => {
     expect(manifest.host_permissions).toEqual([
+      "https://career-allpath.com/*",
+      "https://www.career-allpath.com/*",
+      "https://clerk.career-allpath.com/*",
+      ...JOB_SITES,
+    ]);
+  });
+
+  // localhost and the Clerk dev instance are development-only. A production
+  // package that carried them would prompt the reviewer to ask why a shipped
+  // extension needs localhost, and would be a wider install prompt for
+  // nothing.
+  it("development adds localhost and the Clerk dev instance, and nothing ships them", () => {
+    expect(manifestFor("development").host_permissions).toEqual([
       "http://localhost:3000/*",
       "https://career-allpath.com/*",
       "https://www.career-allpath.com/*",
-      "https://careerpath-hazel.vercel.app/*",
+      "https://clerk.career-allpath.com/*",
       "https://fair-lemur-34.clerk.accounts.dev/*",
-      "*://*.linkedin.com/*",
-      "*://*.greenhouse.io/*",
-      "*://*.lever.co/*",
-      "*://*.ashbyhq.com/*",
-      "*://*.myworkdayjobs.com/*",
+      ...JOB_SITES,
     ]);
+    expect(manifest.host_permissions).not.toContain("http://localhost:3000/*");
+    expect(
+      manifest.host_permissions?.some((h) => h.includes("clerk.accounts.dev")),
+    ).toBe(false);
   });
 
   // Inverted from the assertion this replaced ("requests the cookies
@@ -95,9 +146,11 @@ describe("manifest", () => {
   // updating manifest.config.ts's literal (or vice versa), this is the test
   // that catches it; every other assertion here would stay green because
   // they only look at one side.
-  it("does not let the manifest's Clerk host drift from CLERK_FRONTEND_API", () => {
-    const clerkOrigin = new URL(CLERK_FRONTEND_API).origin;
-    expect(manifest.host_permissions).toContain(`${clerkOrigin}/*`);
+  it("does not let the manifest's Clerk host drift from CLERK_FRONTEND_API, in either mode", async () => {
+    for (const mode of ["production", "development"] as const) {
+      const clerkOrigin = new URL(await clerkFrontendApiFor(mode)).origin;
+      expect(manifestFor(mode).host_permissions).toContain(`${clerkOrigin}/*`);
+    }
   });
 
   // Optional host permissions are NOT shown in the install prompt. Declaring

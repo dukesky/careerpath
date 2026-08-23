@@ -1,28 +1,42 @@
 import { defineManifest } from "@crxjs/vite-plugin";
 
-// API origins the panel and worker fetch. Listing them as host_permissions
-// lets extension pages make these requests directly; the server's CORS
-// allowlist is the second layer, not the only one.
-// The Vercel origin stays alongside the custom domain deliberately. Adding a
-// host permission AFTER publishing disables the extension for every existing
-// user until they re-approve it; removing one costs nothing. So while DNS and
-// the Vercel domain binding settle, carry both and drop the vercel.app entry
-// later, rather than shipping a single origin that might not resolve yet.
+// API origins the panel and worker fetch, per build mode. Listing them as
+// host_permissions lets extension pages make these requests directly; the
+// server's CORS allowlist is the second layer, not the only one.
+//
+// Production carries ONLY what the shipped extension talks to. Every entry
+// here is a line in the Web Store install prompt and a question from the
+// reviewer, and — the asymmetry this whole file keeps repeating — adding a
+// host permission AFTER publishing disables the extension for every
+// existing user until they re-approve it, while removing one costs nothing.
+// So the production list is decided before the first submission and only
+// ever shrinks. The former careerpath-hazel.vercel.app entry is gone: the
+// custom domain is bound and serving, so nothing fetches from it anymore.
+//
 // Both apex and www are listed because a match pattern is exact about the
 // host, and Vercel serves one as a redirect to the other.
-const API_HOSTS = [
-  "http://localhost:3000/*",
+//
+// The Clerk Frontend API host is declared literally, NOT imported, because
+// this file is loaded directly by Vite's Node bootstrap (via vite.config.ts)
+// before import.meta.env is available to it — see src/lib/config.ts's
+// CLERK_FRONTEND_API for the same values with the runtime-facing comment.
+// It MUST match CLERK_FRONTEND_API's origin for the same mode exactly, or
+// Clerk requests fail at runtime while every test that doesn't check this
+// one stays green; src/__tests__/manifest.test.ts pins the two files
+// together, per mode, so a change to either with the other left behind
+// fails the suite.
+const PRODUCTION_API_HOSTS = [
   "https://career-allpath.com/*",
   "https://www.career-allpath.com/*",
-  "https://careerpath-hazel.vercel.app/*",
-  // Clerk's Frontend API host. Declared literally, NOT imported, because this
-  // file is loaded directly by Vite's Node bootstrap (via vite.config.ts)
-  // before import.meta.env is available to it — see src/lib/config.ts's
-  // CLERK_FRONTEND_API for the same value with the runtime-facing comment.
-  // MUST match CLERK_FRONTEND_API's origin exactly, or Clerk requests fail
-  // at runtime while every test that doesn't check this one stays green;
-  // src/__tests__/manifest.test.ts pins the two together so a change to
-  // either file with the other left behind fails the suite.
+  "https://clerk.career-allpath.com/*",
+];
+
+// Development adds the local Next.js server and the Clerk development
+// instance. These never ship: `vite build` (mode "production") excludes
+// them; only `npm run build:dev` (mode "development") includes them.
+const DEVELOPMENT_API_HOSTS = [
+  "http://localhost:3000/*",
+  ...PRODUCTION_API_HOSTS,
   "https://fair-lemur-34.clerk.accounts.dev/*",
 ];
 
@@ -48,7 +62,7 @@ const JOB_SITES = [
 // chrome.permissions.request rejects origins that are not declared.
 const OPTIONAL_HOSTS = ["http://*/*", "https://*/*"];
 
-export default defineManifest({
+export default defineManifest((env) => ({
   manifest_version: 3,
   name: "career-path — tailor your resume",
   version: "0.1.0",
@@ -71,7 +85,12 @@ export default defineManifest({
   // Web Store install prompt and hand the extension chrome.cookies access
   // across every host it has permission for, for nothing.
   permissions: ["storage", "sidePanel", "activeTab", "scripting"],
-  host_permissions: [...API_HOSTS, ...JOB_SITES],
+  host_permissions: [
+    ...(env.mode === "production"
+      ? PRODUCTION_API_HOSTS
+      : DEVELOPMENT_API_HOSTS),
+    ...JOB_SITES,
+  ],
   optional_host_permissions: OPTIONAL_HOSTS,
   content_security_policy: {
     // The PDF layout engine (@react-pdf/layout -> yoga-layout) is compiled to
@@ -114,4 +133,4 @@ export default defineManifest({
       "32": "icons/icon-32.png",
     },
   },
-});
+}));

@@ -19,16 +19,16 @@ export const API_BASE: string =
  * Clerk's frontend API and grants nothing on its own. It is compiled in, like
  * API_BASE, because an extension has no server-side config to read.
  *
- * TEMPORARY: there is no production Clerk instance yet, so both build modes
- * currently resolve to the same development instance. This branches on mode
- * anyway (like API_BASE) so that provisioning production later is a
- * one-branch edit, not a restructuring. See CLERK_FRONTEND_API below for why
- * this has to be fixed before the extension is first submitted to the Web
- * Store — it is not just a placeholder-of-convenience.
+ * The production key is the one the deployed app serves (the same
+ * NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY Vercel injects); it base64-decodes to
+ * the production Frontend API host, which is how the test in
+ * src/lib/__tests__/config.test.ts pins it to CLERK_FRONTEND_API below. The
+ * development key points at the Clerk development instance used by
+ * `npm run dev` on the website.
  */
 export const CLERK_PUBLISHABLE_KEY: string =
   import.meta.env.MODE === "production"
-    ? "pk_test_ZmFpci1sZW11ci0zNC5jbGVyay5hY2NvdW50cy5kZXYk"
+    ? "pk_live_Y2xlcmsuY2FyZWVyLWFsbHBhdGguY29tJA"
     : "pk_test_ZmFpci1sZW11ci0zNC5jbGVyay5hY2NvdW50cy5kZXYk";
 
 /**
@@ -37,17 +37,15 @@ export const CLERK_PUBLISHABLE_KEY: string =
  * manifest.config.ts, which must not drift from this value — see the test
  * that pins them together).
  *
- * TEMPORARY, same as CLERK_PUBLISHABLE_KEY above: both build modes point at
- * the development instance (fair-lemur-34.clerk.accounts.dev) because
- * production has no Clerk instance of its own yet. This is a real deadline,
- * not a nice-to-have: a production instance lives on a different Frontend
- * API domain, which means a different host_permissions entry, and adding a
- * host permission AFTER the extension is published to the Chrome Web Store
- * disables it for every existing user until they re-approve it. The
- * production branch below MUST point at a real production Clerk instance
- * BEFORE the first Web Store submission — not fixed after the fact.
+ * Production is the Clerk production instance on the product's own domain
+ * (a CNAME to Clerk, set up through the Vercel Marketplace integration);
+ * development is the Clerk-hosted development instance. Both hosts are in
+ * the manifest's host_permissions — adding a host permission AFTER the
+ * extension is published to the Chrome Web Store disables it for every
+ * existing user until they re-approve it, so the production host must be
+ * there before the first Web Store submission, not added after.
  */
 export const CLERK_FRONTEND_API: string =
   import.meta.env.MODE === "production"
-    ? "https://fair-lemur-34.clerk.accounts.dev"
+    ? "https://clerk.career-allpath.com"
     : "https://fair-lemur-34.clerk.accounts.dev";

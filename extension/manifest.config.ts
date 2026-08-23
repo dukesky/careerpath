@@ -68,10 +68,17 @@ export default defineManifest((env) => ({
   version: "0.1.0",
   description:
     "Tailor your resume to the job posting you're looking at — honestly, without inventing experience.",
-  // Pins the extension ID across reloads. The server's CORS allowlist keys on
-  // that ID, so an ID that drifts looks like CORS spontaneously breaking.
-  // Public key only — extension/key.pem is gitignored.
-  key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Vc+YGvX/ss6iiR+VEOn8RfC3uKWCtIiQweZcyavaUPjX02cbOUH2JvUR7127aeih6Br08+nfARjmm+CmezOBZPq02VFgDkPpVeCtvJWWBZ8BLZ2MZTMapwcoR09QRCwkb2mdRSf5G0LmYQS8M+ArS2OHH+I5l9TFRvoCnxTHCGbTqPSFdBr9pnilbMeGl9WYwV7Gm78HVocgPEtdXvRTNsq2GCE3TpPu7vlDKCWEDakOSuK/kVFb9GYLHLjFp6juqcxbQKDHduW7KMOo5teoAuokGikcZiPT9zbfvD9SO1LLuX8PtH2e58J/Ltmt8XUG6FEzajrFGcJMyIHwVVkGwIDAQAB",
+  // Pins the extension ID (epofgiefihhmbjhojdeffkdkhocjfpaf) across local
+  // unpacked loads, matching the Chrome Web Store listing: this is the public
+  // key the store generated at first upload (Developer Dashboard -> Package
+  // -> View public key), so an unpacked dist/ and the store-installed copy
+  // share one ID. The server's CORS allowlist (ALLOWED_EXTENSION_IDS) and
+  // Clerk's allowed_origins key on that ID, so an ID that drifts looks like
+  // CORS spontaneously breaking. Public key only — the matching private key
+  // lives with the Web Store, not in this repo. scripts/package.mjs strips
+  // this field from store uploads, which is required on a first upload and
+  // harmless after.
+  key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+XioLle+9hJXo9o2emK9lksiWh9EYCyiBe+FKvVRPCr3Ub4EXdP84ndCTQlzYvvdWFahg7y/M5OT3rIHNOQb5dNzA/XMRBoc9tPTRDcrDpDL7KvdMnRqRdEF+wvCJZn1lgRmDBCqopXxDSpbjaqOw1lb5ldB9GvZUzK9+oaDz/YkL9T3oLG8+/PnL7QnyNbppU/SnONjOo5uiDZbTBsPbwjI4z03ulyncDUwOFlPLokPMBp8CzDSLAoU8ZxIjwDde2LLVL38gBGt1RGntf2eJgFw6WgCsQrJXs1AoCu3oUlDdn0CCdoGT4Cqwhn6t2BIzQd4H3C9DgJVq8s2mY6YQIDAQAB",
   minimum_chrome_version: "114",
   // Deliberately NO "cookies" here, despite Clerk. Its SDK only touches
   // chrome.cookies for the Sync Host feature (signing in on the website and

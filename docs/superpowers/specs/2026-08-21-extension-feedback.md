@@ -170,14 +170,74 @@ export async function requestBroadHostAccess(): Promise<boolean> {
 
 ---
 
+## 6. 网页版看不到登录入口和用户信息
+
+**用户观察：** 在网站上看不到 profile、登录信息。
+
+**从截图看，问题比"看不到 profile"更彻底：整个 header 里既没有「Sign in」按钮，也没有
+「My resumes」链接**，右边到「← Home」就结束了。
+
+**代码是对的，两个都写了**（`src/app/app/page.tsx:433-449`）：
+
+```tsx
+<SignedOut><SignInButton mode="modal">…Sign in…</SignInButton></SignedOut>
+<SignedIn><Link href="/app/saved">My resumes</Link>…</SignedIn>
+```
+
+**根因锁定在 Clerk v7 的 `<Show>` 上。** `src/components/clerk-auth.tsx` 是个兼容 shim，把旧的
+`<SignedIn>`/`<SignedOut>` 架在 v7 新的 `<Show when="signed-in|signed-out">` 上。而 `@clerk/react`
+里 `ShowProps` 的官方注释白纸黑字写着：
+
+> Returns `null` **while auth is loading**.
+
+也就是说——**Clerk 只要没加载完，两个分支同时渲染成 `null`**，header 上就什么都不剩。这跟截图完全吻合：
+不是"登录了但没显示头像"，也不是"没登录所以显示登录按钮"，而是**两个状态都没进去**。
+
+`<ClerkProvider>` 在 `src/app/layout.tsx:58` 是有的，所以不是漏包。剩下最可能的解释是
+**Clerk 在这个页面上压根没初始化成功**——而这恰好和我们眼下正卡着的 production instance 迁移有关：
+如果这个页面跑在 `career-allpath.com` 上、用的却还是 `pk_test_` 开头的 development key，
+Clerk 的 dev instance 对非本地来源是有限制的，初始化失败就会永远停在 loading。
+
+**需要用户确认（一步就能定位）：** 出问题的页面是 `localhost:3000` 还是 `career-allpath.com`？
+打开浏览器 DevTools 的 Console，看有没有 Clerk 相关的报错，把报错贴出来。
+
+**顺带一提，这个 shim 本身是个隐患。** 即使这次的根因是别的，"auth 加载中 → 两个分支都渲染 null"
+这个行为也意味着：**页面在 Clerk 加载完之前，header 上会短暂地什么都没有**。正常网络下是一闪而过，
+网络慢的时候就是明显的闪烁。给 `<Show>` 传 `fallback` 可以解决，值得一起改。
+
+---
+
+## 已确认 / 已排除
+
+- **第 1 条 → 确认是 UI 观感问题，不是 bug。** 用户确认测试用的包是刚 build 的，也就是包含了
+  最终 review 的 C1 修复。所以不存在"Clerk 连不上导致所有请求被拒"的情况，代码里也确实没有
+  登录门禁。要改的是 `AccountBar` 的文案和信息层级——不能让"Not signed in"成为用户打开面板
+  看到的第一句话。
+- **第 3 条 → 缩小到 LinkedIn。** 用户确认失败发生在 LinkedIn。
+  **最可能的具体原因（待验证）：** LinkedIn 登录后的职位浏览是 SPA，URL 常常是
+  `/jobs/search/?currentJobId=1234` 或 `/jobs/collections/…` 这种形式——整个职位**列表**和当前选中
+  职位的详情在同一个 DOM 里。这种页面上：
+  - JSON-LD 里的 `JobPosting` 可能不存在，或者描述的不是当前选中的那个职位；
+  - Readability 抽正文时很容易抓到左侧的职位列表、或者页面外框，而不是右侧的职位描述。
+
+  这两条都能解释"标题拿到了、requirement 没拿到"——标题在页面上到处都是，描述才是难的那个。
+  **仍需用户提供：** 一个具体失败的 LinkedIn 链接（URL 长什么样很关键，
+  `/jobs/view/…` 和 `/jobs/search/?currentJobId=…` 是两种完全不同的页面）。
+
+---
+
 ## 下一步
 
-- **1** 等确认测试用的 build 时间点（决定是改文案还是重新 build 就好）
-- **2** 方案已清楚，可以直接做
-- **3** 等用户提供真实读取失败的职位链接
-- **4** 根因已确认，方案倾向"先试 `activeTab` 读当前域名，读不到再退回广域"，但需要在真浏览器里
-  验证 `activeTab` 的实际覆盖率
-- **5** 方案已清楚，可以直接做
+| # | 问题 | 状态 |
+|---|------|------|
+| 1 | 像是必须登录 | 已定性为文案/布局问题，方案待定 |
+| 2 | 登录后停在 "close this tab" | 方案已清楚，可直接做 |
+| 3 | LinkedIn 读不全 JD | 已缩小到 LinkedIn SPA 页面，等具体链接 |
+| 4 | 权限弹窗要"所有网站" | 根因已确认，方案倾向 `activeTab` 兜底，需真机验证覆盖率 |
+| 5 | 底部缺网页版入口 | 方案已清楚，可直接做 |
+| 6 | 网页版没有登录入口 | 根因锁定在 `<Show>` 的 loading 行为，等 Console 报错确认 |
 
-建议等 1 和 3 确认完再一起走 spec → plan → 实现。2、4、5 都会动到面板布局或 manifest，
-分开做容易互相打架。
+第 6 条和第 3 条还需要用户提供信息。其余四条可以开始走 spec → plan。
+
+**注意 2、4、5 都会动面板布局或 manifest，第 1 条也动 `AccountBar`——这四条应该在同一轮里做完，
+分开改容易互相打架。第 6 条是网页版，和插件那四条互不相干，可以单独并行。**

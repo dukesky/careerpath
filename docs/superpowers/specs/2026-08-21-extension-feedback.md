@@ -257,6 +257,30 @@ $ curl -s -o /dev/null -w "%{http_code} -> %{redirect_url}" https://career-allpa
 设为 primary。**这两条应该一起决定**——它们本质上是同一个问题（www 和 apex 到底谁是正主）的两个
 表现，分开修容易改出自相矛盾的配置。
 
+### 决议（2026-08-21）：**apex 是正主**
+
+用户拍板 apex 为准。两条后续：
+
+**已完成：Clerk 的 403 修好了。** 用户把 `www` 加进 allowed subdomains 之后实测确认，两个来源
+现在都通：
+
+```
+Origin: https://www.career-allpath.com  → 200
+Origin: https://career-allpath.com      → 200
+```
+
+**待用户操作：Vercel 那边还是 www 为 primary**（`apex → 308 → www` 依然存在，实测确认）。
+要让 apex 成为正主，需要在 Vercel Domains 页面把跳转方向反过来：apex 直接服务 Production、
+www 跳转到 apex。
+
+**代码这边不需要改任何东西**，这点值得说清楚：
+
+- `API_BASE` 本来就指向 apex（`config.ts:14`），apex 一旦成为正主，那次 308 自己就消失了
+- `manifest.config.ts` 的 `API_HOSTS` 里 apex 和 www **两个都在**，所以跳转期间和跳转之后都不会断
+
+**建议 `www` 继续留在 Clerk 的 allowed subdomains 里**——反正无害，而且能覆盖 DNS/跳转切换期间
+那段两边都可能被访问到的窗口。
+
 **顺带一提，这个 shim 本身是个隐患。** 即使这次的根因是别的，"auth 加载中 → 两个分支都渲染 null"
 这个行为也意味着：**页面在 Clerk 加载完之前，header 上会短暂地什么都没有**。正常网络下是一闪而过，
 网络慢的时候就是明显的闪烁。给 `<Show>` 传 `fallback` 可以解决，值得一起改。

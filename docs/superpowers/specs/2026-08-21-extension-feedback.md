@@ -103,45 +103,81 @@ if (!candidate || candidate.text.length < MIN_JD_CHARS) return { ok: false, reas
 
 ---
 
-## 4. 安装时的权限提示吓人
+## 4. 权限提示吓人：「Read and change all your data on all websites」
 
-**用户观察：** 最初安装时的弹窗提示插件可能使用网页的所有 data，不利于用户信任。
+**截图已确认，而且我之前的判断是错的——这不是安装提示。**
 
-**这条我需要看到实际弹窗才能给准话。** 当前 manifest 的权限构成是：
+弹窗原文是 *"career-path — tailor your resume" **has requested additional permissions**"*，
+「additional permissions」这个措辞说明它是**运行时**的可选权限请求，不是装机时的提示。也就是说：
 
-- `host_permissions`（**会**出现在安装提示里）：4 个 API 域名（含 `http://localhost:3000/*`）
-  + 1 个 Clerk 域名 + 5 个招聘网站 = **10 个域名**
-- `optional_host_permissions`（按设计**不该**出现在安装提示里）：`http://*/*`、`https://*/*`
-- `permissions`：`storage`、`sidePanel`、`activeTab`、`scripting`
+- 好消息：装机提示大概率是干净的，当初那套"把广域权限放进 `optional_host_permissions`、
+  不污染安装提示"的设计**是成立的**。
+- 坏消息：真正的问题在「Read this site」这个按钮上，而且这个问题比安装提示更严重——因为它出现在
+  用户**正要用**的时候，是转化路径上的一道墙。
 
-**两种可能，处理方式完全不同：**
+**根因很明确**（`extension/src/lib/permissions.ts:63-69`）：
 
-- **(a) Chrome 把 10 个域名折叠成了一句概括**（类似 "Read and change your data on linkedin.com,
-  greenhouse.io, and 8 other sites"）。这种情况完全可以优化——见下面的三个方向。
-- **(b) 真的显示成了"所有网站"。** 那说明"optional_host_permissions 不出现在安装提示里"这个
-  当初的设计前提是错的。整个页面访问方案就是围绕这个前提设计的，前提错了得重新考虑。
+```ts
+export const BROAD_ORIGINS = ["http://*/*", "https://*/*"];
 
-**无论是哪种，有一个问题已经确定要改：`http://localhost:3000/*` 不该出现在上架版本里。**
-`manifest.config.ts` 里的 `API_HOSTS` 是写死的、不区分 build mode，所以正式提交到 Web Store 的
-包也会带着 localhost。这既平白多一条权限，也显得不专业。
+export async function requestBroadHostAccess(): Promise<boolean> {
+  return await chrome.permissions.request({ origins: BROAD_ORIGINS });
+}
+```
 
-**可优化的方向（按代价从小到大）：**
+用户在一个不在五个招聘网站名单里的页面点「Read this site」，我们**一次性向 Chrome 索要全部网站的
+权限**，Chrome 就如实渲染成「Read and change all your data on all websites」。这是 Chrome 能显示的
+最吓人的一句话，而用户的真实意图仅仅是"读一下我现在看的这个职位页"。
 
-1. 上架 build 去掉 `localhost`，可能也去掉 `careerpath-hazel.vercel.app`（等自定义域名稳定后）。
-   ——纯收益，没有代价。
-2. 把 5 个招聘网站从 `host_permissions` 挪到 `optional_host_permissions`。安装提示会干净很多，
-   代价是用户在每个网站第一次使用时要多点一次"允许"。**这是当初刻意做的相反选择**（B1 选择装机
-   即授权，为的是打开面板就能用、零点击），要改属于推翻一个原设计决策，需要明确拍板。
-3. 在 Web Store 商品页详细解释每条权限的用途。Chrome 的权限说明字段就是给这个用的，而且这个
-   插件的整套设计本来就是奔着"权限尽量少"去的，解释起来是有底气的。
+**正确做法：只请求当前这一个域名**，比如 `https://careers.example.com/*`。Chrome 会显示成
+「Read and change your data on careers.example.com」——同一个功能，观感天差地别。
 
-**需要用户提供：** 那个权限弹窗的截图，一句话就能定性到底是 (a) 还是 (b)。
+**但这里有个真实的技术障碍，代码注释里已经预见到了：** 想请求"当前域名"就得先知道当前域名，
+而 `tab.url` 恰恰被我们正要申请的那个权限挡着，读不到（没有 `tabs` 权限时，
+`chrome.tabs.query` 返回的对象里 `url` 是空的）。这是个鸡生蛋问题。
+
+**三条出路，倾向第 1 条：**
+
+1. **利用 `activeTab`。** manifest 里已经声明了 `activeTab`，而且后台脚本设的是
+   `openPanelOnActionClick: true`——用户点工具栏图标打开面板时，Chrome 会对**那个 tab** 授予
+   `activeTab`，此时 `tab.url` 应该是可读的。做法：先尝试读 `tab.url`，读到了就只申请那一个域名，
+   读不到才退回现在的广域申请。**严格优于现状**，最坏情况也就是跟今天一样。
+   注意 B1 当初的结论是 `activeTab` 覆盖不了"打开面板后又切了 tab"的情况，所以这条路能覆盖多少
+   比例的真实场景，必须在真浏览器里量一下，不能拍脑袋。
+2. **加 `tabs` 权限。** 这样 `tab.url` 永远可读。代价是安装提示会多出「Read your browsing history」
+   ——把一个运行时的吓人弹窗，换成一个装机时的吓人条目，不划算，**不推荐**。
+3. **在按钮旁边先解释再请求。** 不解决弹窗本身，但能让用户有心理准备。可以和第 1 条叠加。
+
+**另外一个已经确定要改的：`http://localhost:3000/*` 不该出现在上架版本里。**
+`manifest.config.ts` 里的 `API_HOSTS` 是写死的、不区分 build mode，正式提交 Web Store 的包
+也会带着 localhost。纯属白送一条权限。
+
+---
+
+## 5. 面板底部需要一个跳到网页版的链接
+
+**用户需求：** 页面最下面应该有一个跳转到网页端的链接。
+
+**现状：** 底部**已经有**一个链接（`App.tsx:522-529`），但指向的是 `/app/saved`，文案是
+「Your saved resumes ↗」——只覆盖"看我存过的简历"这一个场景。而且按代码注释的说法，未登录用户
+点进去会落到登录页，对一个只想看看网页版长什么样的人来说是个死胡同。
+
+**建议：** 再加一个（或改成）指向 `${API_BASE}/app` 的链接，文案类似「Open career-path ↗」。
+理由是网页版能做而面板做不到的事不少——手动粘贴 JD、上传职位截图、行内编辑、看 diff——面板里
+卡住的用户应该有一条明确的出路。
+
+具体是"两个链接并排"还是"一个链接按登录状态切换"，等一起做 spec 时再定。
 
 ---
 
 ## 下一步
 
-1 和 3 需要用户回答问题才能定方案；2 的方案基本清楚了，可以直接做；4 等截图。
+- **1** 等确认测试用的 build 时间点（决定是改文案还是重新 build 就好）
+- **2** 方案已清楚，可以直接做
+- **3** 等用户提供真实读取失败的职位链接
+- **4** 根因已确认，方案倾向"先试 `activeTab` 读当前域名，读不到再退回广域"，但需要在真浏览器里
+  验证 `activeTab` 的实际覆盖率
+- **5** 方案已清楚，可以直接做
 
-建议等这四条都确认完再一起走 spec → plan → 实现，而不是逐条零散修——2 和 4 都会动到
-`manifest.config.ts`/登录流程，分开做容易互相打架。
+建议等 1 和 3 确认完再一起走 spec → plan → 实现。2、4、5 都会动到面板布局或 manifest，
+分开做容易互相打架。

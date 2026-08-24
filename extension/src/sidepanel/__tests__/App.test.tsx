@@ -2205,4 +2205,37 @@ describe("App - beta code", () => {
     expect(await getBetaCode()).toBeNull();
     expect(container.textContent).not.toContain("Beta · unlimited");
   });
+
+  // Fix round 1: fetchQuota() returns null for ANY request failure — a
+  // network blip, a 5xx, an unreachable quota store — not only "the code is
+  // wrong". Folding that into the same branch as a genuine rejection wipes a
+  // perfectly good code over a transient hiccup and tells the user it was
+  // bad when it was never actually checked.
+  it("keeps a code the server could not be reached to verify, and says so distinctly from a rejection", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+
+    // From here the verification request itself fails — not a rejection.
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "LETMEIN");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Couldn't check that code. Try again.");
+    // The code must survive — it was never actually told "no".
+    expect(await getBetaCode()).toBe("LETMEIN");
+    expect(container.textContent).not.toContain("That code didn't work.");
+    expect(container.textContent).not.toContain("Beta · unlimited");
+  });
 });

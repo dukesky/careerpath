@@ -14,6 +14,13 @@ import { clearBetaCode, setBetaCode } from "@/lib/storage";
  * quota comes back unlimited the server accepted it; if it does not, the code
  * is wrong and is removed again immediately, because a rejected code left in
  * storage would ride along on every later request while buying nothing.
+ *
+ * `fetchQuota()` returns `null` for ANY request failure — network blip, a
+ * 5xx, an unreachable quota store — not only "not unlimited" (see quota.ts).
+ * That is a DIFFERENT outcome from a definite rejection: we simply failed to
+ * ask, so the code must NOT be cleared on `null`. Clearing it there would
+ * destroy a perfectly good code over a transient hiccup and tell the user it
+ * was wrong when it was never actually checked.
  */
 export function BetaCodeBox({
   unlimited,
@@ -41,11 +48,21 @@ export function BetaCodeBox({
       // anything, and a rare user-initiated action is the wrong place to
       // trade clarity for one saved request.
       const quota = await fetchQuota();
-      if (quota?.unlimited) {
+      if (quota === null) {
+        // Could not ASK, which is not the same as being told no. fetchQuota
+        // returns null for any request failure — a network blip, a 5xx, an
+        // unreachable quota store. Clearing the code here would destroy a
+        // perfectly good one and blame the user for it, so the code stays
+        // and the message says what actually happened.
+        setError("Couldn't check that code. Try again.");
+      } else if (quota.unlimited) {
         setOpen(false);
         setCode("");
         onChanged();
       } else {
+        // A definite answer: the server does not recognise this code. It
+        // must not survive in storage — it would ride along on every later
+        // request while buying nothing.
         await clearBetaCode();
         setError("That code didn't work.");
       }

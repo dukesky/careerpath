@@ -3,17 +3,28 @@
  * localhost and a production build at the deployed app. Both origins are in
  * the manifest's host_permissions.
  *
- * This is www, not the apex, because www is the host Vercel serves directly:
- * the apex 308-redirects to it (verified 2026-08-23 — `curl -si -X POST
- * https://career-allpath.com/api/device-token` answers 308). A 308 does
- * preserve method and body, so apex would still work, but every call would
- * pay a redirect hop for nothing. If the Vercel domain config ever flips
- * which host is primary, flip this with it — whichever host answers 2xx
- * directly is the one that belongs here.
+ * This is the APEX, which is the canonical host for this project by decision.
+ *
+ * READ THIS BEFORE CHANGING IT. The rule is: whichever host Vercel serves
+ * DIRECTLY belongs here. A 308 preserves method and body, so pointing at the
+ * redirecting host still works — it just pays an extra round trip on every
+ * single API call, silently.
+ *
+ * As of 2026-08-23 Vercel still served www directly and 308-redirected the
+ * apex to it, so at the moment this was written the apex was the redirecting
+ * host and every call paid that hop. That is a deliberate, temporary cost:
+ * the apex is the intended primary, and the Vercel domain config is meant to
+ * be flipped to match. Verify with `curl -si -X POST
+ * https://career-allpath.com/api/device-token` — a 2xx/4xx means the flip
+ * happened and this is now the direct host; a 308 means it has not, and the
+ * hop is still being paid.
+ *
+ * Both hosts are in the manifest's host_permissions, so neither value breaks
+ * the extension.
  */
 export const API_BASE: string =
   import.meta.env.MODE === "production"
-    ? "https://www.career-allpath.com"
+    ? "https://career-allpath.com"
     : "http://localhost:3000";
 
 /**

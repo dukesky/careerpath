@@ -33,10 +33,16 @@ in-session and **never stored unless you sign in and explicitly save a version**
 
 ---
 
-> 💻 **Prefer the command line?** There's also a free, open-source **CLI skill** —
-> [**resume-tailor**](https://github.com/dukesky/resume-tailor) — that runs the same
-> honest tailoring method right inside Claude Code, Codex, or any
-> [Agent Skills](https://agentskills.io) tool. No upload, no API keys.
+## Three ways to use it
+
+Same method — an honest rewrite from your real experience, plus a gap analysis —
+in whichever place you already are.
+
+| | What it is | Best when |
+| --- | --- | --- |
+| 🌐 **Web app** | [career-allpath.com](https://career-allpath.com) — paste a link, text, or screenshots and work through the result in a full editor. | You want the diff view, inline editing, and saved versions. |
+| 🧩 **Chrome extension** | A [side panel](#chrome-extension) that reads the posting on the tab you're already looking at. | You're browsing LinkedIn, Greenhouse, Lever, Ashby or Workday and don't want to copy-paste. |
+| 💻 **CLI skill** | [**resume-tailor**](https://github.com/dukesky/resume-tailor) — a free, open-source [Agent Skill](https://agentskills.io) that runs inside Claude Code, Codex, or any skills-capable tool. | You live in a terminal and want no upload and no API keys. |
 
 ## Why it's different
 
@@ -50,8 +56,9 @@ in-session and **never stored unless you sign in and explicitly save a version**
   before you export.
 - **🔗 Ingests JDs from anywhere.** Paste text, a screenshot, or a link — with direct
   fetchers for LinkedIn, Greenhouse, Lever, Ashby & Workday.
-- **🧩 Or skip the copy-paste entirely.** A [Chrome extension](#chrome-extension) reads
-  the job posting on the tab you're already on and tailors right there, in a side panel.
+- **🧩 Meets you where you are.** A [Chrome extension](#chrome-extension) tailors against
+  the tab you're already on, and a [CLI skill](https://github.com/dukesky/resume-tailor)
+  runs the same method from your terminal.
 
 Built with **Next.js 15 (App Router)**, **TypeScript**, and **Tailwind CSS**.
 
@@ -257,6 +264,10 @@ vercel env pull .env.local
 npm workspace) that lets you tailor your resume against the job posting in
 your active tab without leaving it. It talks to the same API as the web app —
 no prompts or model choices live in the extension itself.
+
+> Not a browser person? [**resume-tailor**](https://github.com/dukesky/resume-tailor)
+> runs the same method as an [Agent Skill](https://agentskills.io) in Claude Code,
+> Codex, and other skills-capable tools — no upload, no API keys.
 
 - **Reads the page you're on, not your browsing history.** Granted at install
   for five job sites — **LinkedIn, Greenhouse, Lever, Ashby & Workday** — and

@@ -22,6 +22,7 @@ import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
 import { AccountBar } from "./AccountBar";
+import { BetaCodeBox } from "./BetaCodeBox";
 
 export default function App() {
   const [stored, setStored] = useState<StoredResume | null>(null);
@@ -597,6 +598,8 @@ export default function App() {
           </a>
         </section>
       )}
+
+      <BetaCodeBox unlimited={displayUnlimited} onChanged={() => void refreshQuota()} />
 
       {/* Plain anchors, not chrome.tabs.create: opening a tab this way needs
           no `tabs` permission. */}

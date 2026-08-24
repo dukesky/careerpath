@@ -1,6 +1,7 @@
 import { API_BASE } from "./config";
 import { ensureToken } from "./token";
 import { currentAuthToken } from "./session";
+import { getBetaCode } from "./storage";
 
 export type ApiErrorKind =
   | "quota"
@@ -92,6 +93,12 @@ async function send<T>(
     ...((init.headers as Record<string, string>) ?? {}),
   };
   if (auth) headers.Authorization = `Bearer ${auth.token}`;
+
+  // Independent of identity: the server's hasBetaAccess() reads only this
+  // header and does not change who the caller IS, just what they are allowed
+  // to spend. A signed-in beta tester stays a signed-in caller.
+  const betaCode = await getBetaCode();
+  if (betaCode) headers["x-access-code"] = betaCode;
 
   let res: Response;
   try {

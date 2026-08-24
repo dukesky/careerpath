@@ -11,6 +11,7 @@ import type { ParsedResume } from "@shared/contract";
 
 const RESUME_KEY = "cp_resume";
 const TOKEN_KEY = "cp_device_token";
+const BETA_CODE_KEY = "cp_beta_code";
 /**
  * "Has this browser ever completed a Clerk sign-in?" — a hint, not an
  * identity. It carries no token and proves nothing to the server; the only
@@ -121,4 +122,28 @@ export async function setHasSignedIn(): Promise<void> {
 
 export async function clearHasSignedIn(): Promise<void> {
   await chrome.storage.local.remove([HAS_SIGNED_IN_KEY]);
+}
+
+/**
+ * The beta access code, sent as `x-access-code` on every request (see
+ * lib/api.ts). Stored per-browser here because the panel cannot read the web
+ * app's storage — a code entered on the website is invisible to the
+ * extension, so the user has to enter it in both places.
+ */
+export async function getBetaCode(): Promise<string | null> {
+  try {
+    const got = await chrome.storage.local.get([BETA_CODE_KEY]);
+    const raw = got[BETA_CODE_KEY];
+    return typeof raw === "string" && raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setBetaCode(code: string): Promise<void> {
+  await chrome.storage.local.set({ [BETA_CODE_KEY]: code });
+}
+
+export async function clearBetaCode(): Promise<void> {
+  await chrome.storage.local.remove([BETA_CODE_KEY]);
 }

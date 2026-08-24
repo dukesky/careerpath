@@ -6,6 +6,7 @@ import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
 import type { ApiResult } from "@/lib/api";
 import {
+  getBetaCode,
   getHasSignedIn,
   getResume,
   setHasSignedIn,
@@ -346,6 +347,22 @@ function findAnchor(container: HTMLElement, text: string): HTMLAnchorElement {
 function typeInto(el: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLTextAreaElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// Same reasoning as `typeInto` above, for a plain <input> (BetaCodeBox's
+// code field): a raw `el.value = ...` assignment goes through React's own
+// tracked setter once the component has mounted, so the tracker's recorded
+// value and the DOM's actual value end up equal by the time the "input"
+// event fires — and React's change-event plugin then treats it as a no-op
+// and never calls onChange. Setting through the native prototype setter
+// bypasses that tracker, the same way `typeInto` does for a textarea.
+function typeIntoInput(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
     "value",
   )!.set!;
   setter.call(el, value);
@@ -2088,5 +2105,104 @@ describe("App - permission explanation and the way out to the web app", () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     await renderApp();
     expect(findAnchor(container, "Your saved resumes ↗")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5: the panel's own beta-code entry (BetaCodeBox.tsx). The web app
+// grants unlimited access on the `x-access-code` header, but the extension's
+// chrome.storage.local is isolated from the page's storage, so a code
+// entered on the website is invisible here — the user has to enter it again
+// in the panel. Own describe block, own container/root, for the same reason
+// the other top-level blocks each have one — no shared mutable DOM state
+// between suites.
+// ---------------------------------------------------------------------------
+describe("App - beta code", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("applies a valid code and shows the unlimited state", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+
+    // From here the server accepts the code.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: null, unlimited: true } });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "LETMEIN");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Beta · unlimited");
+    expect(await getBetaCode()).toBe("LETMEIN");
+  });
+
+  // A rejected code must not stay in storage — every later request would
+  // carry a header the server ignores, and the panel would look like it had
+  // beta access it does not have.
+  it("clears a code the server does not accept, and says so", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "WRONG");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("That code didn't work.");
+    expect(await getBetaCode()).toBeNull();
+    expect(container.textContent).not.toContain("Beta · unlimited");
   });
 });

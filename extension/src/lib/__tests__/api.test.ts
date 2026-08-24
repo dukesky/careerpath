@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { apiPost, apiPostForm, apiGet } from "@/lib/api";
-import { setToken, getToken } from "@/lib/storage";
+import { setToken, getToken, setBetaCode } from "@/lib/storage";
 import { setClerkTokenSource } from "@/lib/session";
 import * as tokenLib from "@/lib/token";
 
@@ -237,5 +237,32 @@ describe("apiPost", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url.endsWith("/api/quota")).toBe(true);
     expect(init.method).toBe("GET");
+  });
+
+  it("sends the beta access code when one is stored", async () => {
+    // Same reason as "apiGet issues a GET to the API base" above: with no
+    // token stored, currentAuthToken() mints a device token FIRST (its own
+    // fetch to /api/device-token), which would land at calls[0] instead of
+    // the real request and sink this assertion on an unrelated init shape.
+    await setToken("t1");
+    await setBetaCode("LETMEIN");
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiGet("/api/quota");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["x-access-code"]).toBe("LETMEIN");
+  });
+
+  it("sends no beta access header when none is stored", async () => {
+    await setToken("t1");
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiGet("/api/quota");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect("x-access-code" in (init.headers as Record<string, string>)).toBe(false);
   });
 });

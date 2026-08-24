@@ -1,5 +1,6 @@
 import "../styles.css";
 import { getClerk } from "@/lib/clerk";
+import { setHasSignedIn } from "@/lib/storage";
 
 // The element is a <div> in index.html; getElementById only knows
 // HTMLElement, and mountSignIn's type requires HTMLDivElement specifically.
@@ -25,8 +26,8 @@ function renderSignedIn(container: HTMLDivElement, email: string | null): void {
   const p = document.createElement("p");
   p.className = "muted tiny center";
   p.textContent = email
-    ? `Signed in as ${email}. You can close this tab and return to the panel.`
-    : "You're signed in. You can close this tab and return to the panel.";
+    ? `Signed in as ${email}. The panel is ready — you can close this tab.`
+    : "You're signed in. The panel is ready — you can close this tab.";
   container.appendChild(p);
 }
 
@@ -42,9 +43,20 @@ function renderSignedIn(container: HTMLDivElement, email: string | null): void {
  * mismatched guess.
  */
 getClerk()
-  .then((clerk) => {
+  .then(async (clerk) => {
     if (clerk.isSignedIn) {
+      // Order matters. The flag is what tells the panel (via
+      // chrome.storage.onChanged) that sign-in finished, so it must be
+      // written BEFORE this tab tries to close itself — a close that lands
+      // first would take the notification with it. setHasSignedIn swallows
+      // its own failures, so this cannot reject.
+      await setHasSignedIn();
+      // Rendered before the close attempt, not after: window.close() may be
+      // refused for a tab the extension did not open with script (this one
+      // is opened by a plain <a target="_blank">), and the user must not be
+      // left staring at a blank page in that case.
       renderSignedIn(container, clerk.user?.primaryEmailAddress?.emailAddress ?? null);
+      window.close();
       return;
     }
     clerk.mountSignIn(container, {});

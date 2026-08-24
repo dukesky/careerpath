@@ -23,7 +23,13 @@ const TOKEN_KEY = "cp_device_token";
  * or a proxy blocked its domain — gating anonymous use on Clerk being
  * reachable, which the design forbids.
  */
-const HAS_SIGNED_IN_KEY = "cp_has_signed_in";
+/**
+ * Exported because App.tsx filters chrome.storage.onChanged on it. This
+ * repository has been bitten three times by a constant that had to agree
+ * across two files with nothing tying them together — importing it is
+ * cheaper than another drift guard.
+ */
+export const HAS_SIGNED_IN_KEY = "cp_has_signed_in";
 
 export interface StoredResume {
   resume: ParsedResume;

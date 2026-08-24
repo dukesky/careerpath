@@ -267,6 +267,9 @@ function cachedRun(score: number, extraInfo: string, runId: string): CachedRun {
 
 function fakeChromeStorage() {
   const data: Record<string, unknown> = {};
+  const listeners: Array<
+    (changes: Record<string, { newValue?: unknown }>, area: string) => void
+  > = [];
   return {
     storage: {
       local: {
@@ -282,6 +285,23 @@ function fakeChromeStorage() {
           for (const k of keys) delete data[k];
         }),
       },
+      onChanged: {
+        addListener: vi.fn(
+          (fn: (changes: Record<string, { newValue?: unknown }>, area: string) => void) => {
+            listeners.push(fn);
+          },
+        ),
+        removeListener: vi.fn(
+          (fn: (changes: Record<string, { newValue?: unknown }>, area: string) => void) => {
+            const i = listeners.indexOf(fn);
+            if (i >= 0) listeners.splice(i, 1);
+          },
+        ),
+      },
+    },
+    // Test-only hook: fires what Chrome would fire.
+    __fireStorageChange(changes: Record<string, { newValue?: unknown }>, area = "local") {
+      for (const fn of [...listeners]) fn(changes, area);
     },
   };
 }
@@ -1879,5 +1899,85 @@ describe("App - quota-first account bar", () => {
 
     expect(container.textContent).not.toContain("3 runs left");
     expect(container.textContent).toContain("5 runs left today");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: chrome.storage.onChanged is the signal that actually arrives when
+// sign-in completes in the separate tab. Own describe block, own
+// container/root, for the same reason the other top-level blocks each have
+// one — no shared mutable DOM state between suites.
+// ---------------------------------------------------------------------------
+describe("App - noticing a sign-in from the other tab", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  // The side panel stays visible while the user is over in the sign-in tab,
+  // so visibilitychange may never fire. chrome.storage.onChanged does not
+  // depend on visibility at all — it is the signal that actually arrives.
+  it("picks up a completed sign-in from a storage change, with no visibility event", async () => {
+    await renderApp();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_has_signed_in: { newValue: true } });
+    });
+    await flush();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(container.textContent).toContain("5 runs left today");
+  });
+
+  it("ignores storage changes to unrelated keys", async () => {
+    await renderApp();
+    clerkState = { signedIn: true, email: "ada@example.com" };
+
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_resume: { newValue: "something" } });
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("ada@example.com");
   });
 });

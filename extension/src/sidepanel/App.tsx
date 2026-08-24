@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getResume, type StoredResume } from "@/lib/storage";
+import { getResume, HAS_SIGNED_IN_KEY, type StoredResume } from "@/lib/storage";
 import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
@@ -171,6 +171,29 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshAccount, refreshQuota]);
+
+  // The signal that actually arrives when sign-in completes in its own tab.
+  //
+  // The visibility effect above is a guess: a side panel stays visible the
+  // whole time the user is over in that tab, so `visibilityState` may never
+  // change and that listener may never fire. chrome.storage.onChanged
+  // broadcasts to every extension context regardless of what is visible, and
+  // the sign-in page writes HAS_SIGNED_IN_KEY as its last act before closing
+  // itself. Both listeners stay: this one covers the sign-in path, and the
+  // visibility one still covers changes made somewhere this never hears
+  // about, such as signing out in Clerk's own account portal.
+  useEffect(() => {
+    const onChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      area: string,
+    ) => {
+      if (area !== "local" || !(HAS_SIGNED_IN_KEY in changes)) return;
+      void refreshAccount();
+      void refreshQuota();
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => chrome.storage.onChanged.removeListener(onChanged);
   }, [refreshAccount, refreshQuota]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount

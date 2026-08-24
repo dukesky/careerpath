@@ -159,11 +159,19 @@ export default function App() {
   // open — this just saves them that reopen in the common case.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") void refreshAccount();
+      if (document.visibilityState === "visible") {
+        void refreshAccount();
+        // Identity may have changed while the user was away in the sign-in
+        // tab, and a different identity means a different quota bucket —
+        // refreshing who they are without refreshing what they are allowed
+        // leaves the previous tier's number on screen under the new tier's
+        // wording.
+        void refreshQuota();
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [refreshAccount]);
+  }, [refreshAccount, refreshQuota]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
   // before this async check resolves.

@@ -1854,4 +1854,30 @@ describe("App - quota-first account bar", () => {
     expect(container.textContent).not.toContain("5 runs left");
     expect(container.textContent).toContain("2 runs left");
   });
+
+  // THE REGRESSION GUARD, other direction. Sign-in happens in a separate tab
+  // (see AccountBar), and the panel's visibilitychange effect is how it
+  // notices the user came back and re-checks identity — but noticing the
+  // identity changed without also refreshing the quota leaves the OLD
+  // (signed-out, 3-per-30-days) figure on screen under the NEW (signed-in,
+  // 5-per-day) wording. Different numbers for the two identities, same as
+  // the sign-out guard above, so this cannot pass on a coincidence.
+  it("does not show the device tier's allowance after signing in", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+    expect(container.textContent).toContain("3 runs left");
+
+    // The user signed in, in the separate tab, and has come back. The
+    // signed-in identity has a different allowance.
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("3 runs left");
+    expect(container.textContent).toContain("5 runs left today");
+  });
 });

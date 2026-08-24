@@ -168,6 +168,16 @@ type ApiPostFn = (path: string, body: unknown) => Promise<ApiResult<unknown>>;
 let apiPostImpl: ApiPostFn = async () => ({ ok: true, data: {} });
 let apiPostCalls: Array<{ path: string; body: unknown }> = [];
 
+// `apiGet` backs Task 2's quota fetch (App.tsx's `refreshQuota`, via
+// `@/lib/quota`'s `fetchQuota`). Same "replace the network-call boundary"
+// pattern as `apiPost` just above, sharing this one mock factory rather than
+// a second `vi.mock("@/lib/api", ...)` call, which vitest does not merge.
+let apiGetImpl: (path: string) => Promise<ApiResult<unknown>> = async () => ({
+  ok: true,
+  data: { remaining: 3 },
+});
+let apiGetPaths: string[] = [];
+
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -175,6 +185,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     apiPost: <T,>(path: string, body: unknown) => {
       apiPostCalls.push({ path, body });
       return apiPostImpl(path, body) as Promise<ApiResult<T>>;
+    },
+    apiGet: <T,>(path: string) => {
+      apiGetPaths.push(path);
+      return apiGetImpl(path) as Promise<ApiResult<T>>;
     },
   };
 });
@@ -189,6 +203,8 @@ beforeEach(() => {
   signOutShouldThrow = false;
   apiPostImpl = async () => ({ ok: true, data: {} });
   apiPostCalls = [];
+  apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+  apiGetPaths = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -753,13 +769,21 @@ describe("App - account bar, sign-out, and session handling", () => {
     const link = findAnchor(container, "Sign in");
     expect(link.getAttribute("href")).toBe(SIGNIN_URL);
     expect(link.getAttribute("target")).toBe("_blank");
-    expect(container.textContent).toContain(
-      "raise your limit from 3 runs every 30 days to 5 runs a day",
-    );
+    // Task 2: the old sentence ("Sign in to raise your limit from 3 runs
+    // every 30 days to 5 runs a day.") led with the OLD tier as if the
+    // caller needed reminding what they were missing. This one just states
+    // what signing in gets them.
+    expect(container.textContent).toContain("Sign in for 5 runs a day.");
     expect(hasButton(container, "Sign out")).toBe(false);
   });
 
-  it("shows the account email and Sign out once signed in, and picks up the remaining count from RunState — not a separate fetch", async () => {
+  // Task 2 replaced "not a separate fetch" (App.tsx's old behavior) with a
+  // quota fetched at open — see the "App - quota-first account bar" describe
+  // block for that fetch's own coverage. This test's remaining job is the
+  // part that is still true post-Task-2: a completed run's own count
+  // overrides whatever the quota fetch showed, rather than the two racing.
+  it("shows the account email and Sign out once signed in; the run's own remaining count overrides the quota fetched at open", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 9 } });
     clerkState = { signedIn: true, email: "ada@example.com" };
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -768,8 +792,8 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(container.textContent).toContain("ada@example.com");
     expect(findButton(container, "Sign out")).toBeTruthy();
     // No run has reported a `remaining` yet (RunState starts at
-    // INITIAL_RUN_STATE), so there is nothing truthful to show.
-    expect(container.textContent).not.toContain("left today");
+    // INITIAL_RUN_STATE), so the quota fetched at open is what's shown.
+    expect(container.textContent).toContain("9 runs left today");
 
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
@@ -785,8 +809,9 @@ describe("App - account bar, sign-out, and session handling", () => {
     await flush();
 
     // This is the number generate() got back from THIS run — AccountBar must
-    // display exactly it, not a value it looked up on its own.
+    // display exactly it, overriding the value fetched at open.
     expect(container.textContent).toContain("3 runs left today");
+    expect(container.textContent).not.toContain("9 runs left today");
   });
 
   it("sign-out with the box checked (the default) ends the session AND clears the resume, the cache, and the displayed run", async () => {
@@ -893,13 +918,17 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(await getHasSignedIn()).toBe(false);
   });
 
-  // FINAL-REVIEW (M1). `remaining` is per-identity: with the box UNCHECKED,
-  // handleLocalDataCleared never runs, so nothing else resets `state` — and
-  // AccountBar's signed-OUT branch renders the same value under 30-day-tier
-  // wording. The previous account's 5-per-day figure would therefore be
-  // presented as this device's 3-per-30-days trial: a number that is simply
-  // wrong, and unfalsifiable until the next run replaces it.
-  it("clears the remaining-runs count on sign-out, so the previous account's daily figure is not shown as the device trial", async () => {
+  // FINAL-REVIEW (M1), updated for Task 2. `remaining` is per-identity: with
+  // the box UNCHECKED, handleLocalDataCleared never runs, so nothing but
+  // `refreshQuota` resets what AccountBar shows. Before Task 2 there was no
+  // quota fetch at all, so the fix was to show no count; Task 2 adds a real
+  // fetch for the NEW (signed-out) identity, so the fix now is that the
+  // number on screen changes to that fetch's own answer — never the previous
+  // account's daily figure re-rendered under 30-day-tier wording, which is
+  // the same bug this test has pinned since fix round 1, just arriving
+  // through the new fallback path this time (see the "quota-first account
+  // bar" describe block's own regression guard for the box-CHECKED path).
+  it("shows the freshly fetched device-trial count on sign-out, not the previous account's daily figure", async () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -921,6 +950,11 @@ describe("App - account bar, sign-out, and session handling", () => {
     // The account's own daily allowance, on screen under signed-in wording.
     expect(container.textContent).toContain("3 runs left today");
 
+    // The signed-out identity's own allowance — deliberately a DIFFERENT
+    // number from the "3" above, so a passing assertion below cannot be a
+    // coincidence of the two identities sharing a count.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 1 } });
+
     await act(async () => {
       findButton(container, "Sign out").click();
     });
@@ -935,8 +969,11 @@ describe("App - account bar, sign-out, and session handling", () => {
     await flush();
 
     expect(findAnchor(container, "Sign in")).toBeTruthy();
-    // No count at all — not "3 runs left" under the 30-day-tier wording.
-    expect(container.textContent).not.toContain("runs left");
+    // Not the previous account's daily figure, re-rendered under 30-day-tier
+    // wording...
+    expect(container.textContent).not.toContain("3 runs left");
+    // ...but the signed-out identity's own freshly fetched allowance.
+    expect(container.textContent).toContain("1 run left");
     // ...while the run itself is untouched, which is the whole point of
     // leaving the box unchecked.
     expect(container.querySelector(".score")).toBeTruthy();
@@ -1252,13 +1289,20 @@ describe("App - account bar, sign-out, and session handling", () => {
   // at all. This pins the replacement: a known `remaining` shows in the
   // signed-out branch too, worded without "today" since the signed-out
   // device tier is 3 runs per 30 days, not a daily allowance.
+  //
+  // Updated for Task 2: before a run, App.tsx now has a quota fetched at
+  // open to show (see the "quota-first account bar" describe block for that
+  // fetch's own coverage) — this test's remaining job is confirming a
+  // completed run's own count still overrides it, worded without "today".
   it("shows the remaining-runs count in the signed-out AccountBar once a run has reported one, without implying it's a daily allowance", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 9 } });
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
     await renderApp();
 
-    // No run yet — nothing truthful to show, same as the signed-in case.
-    expect(container.textContent).not.toContain("left");
+    // The quota fetched at open, worded without "today".
+    expect(container.textContent).toContain("9 runs left");
+    expect(container.textContent).not.toContain("left today");
 
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
@@ -1273,7 +1317,9 @@ describe("App - account bar, sign-out, and session handling", () => {
     });
     await flush();
 
+    // The run's own count overrides the quota fetched at open.
     expect(container.textContent).toContain("2 runs left");
+    expect(container.textContent).not.toContain("9 runs left");
     // Not the signed-in branch's wording — the signed-out tier is a 30-day
     // window, not a daily one.
     expect(container.textContent).not.toContain("left today");
@@ -1676,5 +1722,136 @@ describe("App - saving a tailored resume from the panel", () => {
     });
     await flush();
     expect(apiPostCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2: the account bar leads with the caller's real allowance (GET
+// /api/quota), rather than opening on a sign-in pitch that implies the
+// extension gates its core function on having an account. Own describe
+// block, own container/root, for the same reason the other top-level blocks
+// each have one — no shared mutable DOM state between suites.
+// ---------------------------------------------------------------------------
+describe("App - quota-first account bar", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("shows the caller's real remaining count on open, before any run", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    expect(apiGetPaths).toContain("/api/quota");
+    expect(container.textContent).toContain("3 runs left");
+  });
+
+  // The single line most responsible for the panel reading as a gate.
+  it("never labels the signed-out state 'Not signed in'", async () => {
+    await renderApp();
+
+    expect(container.textContent).not.toContain("Not signed in");
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+  });
+
+  it("invents no number when the quota cannot be determined", async () => {
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    await renderApp();
+
+    expect(container.textContent).not.toContain("runs left");
+    expect(container.textContent).toContain("Sign in for 5 runs a day.");
+  });
+
+  it("shows Beta · unlimited instead of a number when a beta code is in force", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: null, unlimited: true } });
+    await renderApp();
+
+    expect(container.textContent).toContain("Beta · unlimited");
+    expect(container.textContent).not.toContain("runs left");
+  });
+
+  // A completed run's count is fresher than the one fetched at open.
+  it("prefers the count a completed run reported over the one fetched at open", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 1,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("1 run left today");
+    expect(container.textContent).not.toContain("3 runs left");
+  });
+
+  // THE REGRESSION GUARD. Signing out switches quota buckets (5/day ->
+  // 3-per-30-days). Without a refetch the panel falls back to the quota
+  // fetched for the PREVIOUS identity and shows that account's leftovers
+  // under signed-out wording — the exact bug the last review round fixed,
+  // arriving through the new fallback path.
+  it("does not show the previous account's allowance after signing out", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await setResume(STORED_RESUME);
+    await renderApp();
+    expect(container.textContent).toContain("5 runs left today");
+
+    // The signed-out identity has a different allowance.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 2 } });
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("5 runs left");
+    expect(container.textContent).toContain("2 runs left");
   });
 });

@@ -17,6 +17,7 @@ import {
   isSignedIn,
   signInPageUrl,
 } from "@/lib/clerk";
+import { fetchQuota, type QuotaInfo } from "@/lib/quota";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
@@ -60,10 +61,13 @@ export default function App() {
   // — there is no push notification when a sign-in completes in the separate
   // tab it opens in, so this starts signed-out and is re-checked below on
   // mount and whenever the panel's document becomes visible again, which is
-  // the moment a user returns from that tab. `remaining` is NOT duplicated
-  // here: AccountBar reads it straight off `state.remaining`.
+  // the moment a user returns from that tab.
   const [signedIn, setSignedIn] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
+  // The allowance as of the last identity change, from GET /api/quota.
+  // `state.remaining` (what a completed run reported) takes precedence when
+  // present — it is strictly fresher. Null here means UNKNOWN, not zero.
+  const [quota, setQuota] = useState<QuotaInfo | null>(null);
   // Whether a Save (SaveButton, inside Results) currently has a POST to
   // /api/saved in flight. Folded into `canRun` below so a regenerate cannot
   // start while a save is pending — see SaveButton.tsx's doc comment for the
@@ -117,6 +121,22 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Re-reads the allowance. MUST be called on every identity change —
+   * sign-in, sign-out, and a beta code taking effect all move the caller to
+   * a different quota bucket, and a stale number here is not a cosmetic
+   * problem: it is the panel stating an allowance that is not the user's.
+   *
+   * Clears to null BEFORE awaiting, deliberately. The request takes a round
+   * trip, and leaving the old value up during it shows the PREVIOUS
+   * identity's allowance — briefly, but wrongly. Rendering "unknown" for a
+   * moment is the honest option.
+   */
+  const refreshQuota = useCallback(async () => {
+    setQuota(null);
+    setQuota(await fetchQuota());
+  }, []);
+
   // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
   // session.ts as the source api.ts consults for every request (see
   // clerk.ts's own doc comment). It MUST run exactly once, and here, at the
@@ -126,7 +146,8 @@ export default function App() {
   useEffect(() => {
     installClerkTokenSource();
     void refreshAccount();
-  }, [refreshAccount]);
+    void refreshQuota();
+  }, [refreshAccount, refreshQuota]);
 
   // Sign-in happens in a separate tab (see AccountBar) — Clerk's
   // chrome-extension sync host does not work inside a side panel, so there
@@ -420,7 +441,15 @@ export default function App() {
     // would wipe the displayed result, which is exactly what leaving the box
     // unchecked asked us not to do.
     setState((s) => ({ ...s, remaining: null }));
+    // The identity just changed — the signed-out tier has a different
+    // allowance than the account that was signed in a moment ago.
+    void refreshQuota();
   }
+
+  // A completed run's count is fresher than the one fetched when the panel
+  // opened, so it wins when present.
+  const displayRemaining = state.remaining ?? quota?.remaining ?? null;
+  const displayUnlimited = quota?.unlimited === true;
 
   return (
     <main>
@@ -432,7 +461,8 @@ export default function App() {
       <AccountBar
         signedIn={signedIn}
         email={email}
-        remaining={state.remaining}
+        remaining={displayRemaining}
+        unlimited={displayUnlimited}
         busy={busy}
         saving={saving}
         onLocalDataCleared={handleLocalDataCleared}

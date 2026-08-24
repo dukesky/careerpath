@@ -14,7 +14,9 @@ import {
 } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
+import { API_BASE } from "@/lib/config";
 import App from "../App";
+import type { ReadFailure } from "../useActiveJd";
 
 // No @testing-library/react here (see the module doc below for why), so this
 // is not set up implicitly the way its render() would. Without it React logs
@@ -43,7 +45,7 @@ import App from "../App";
 // against THIS file's location, so it must point at ../useActiveJd (the same
 // file App.tsx reaches via ./useActiveJd from one directory up).
 // ---------------------------------------------------------------------------
-let activeJdState: { jd: ExtractedJD | null; failure: null; loading: boolean } = {
+let activeJdState: { jd: ExtractedJD | null; failure: ReadFailure | null; loading: boolean } = {
   jd: null,
   failure: null,
   loading: false,
@@ -1979,5 +1981,112 @@ describe("App - noticing a sign-in from the other tab", () => {
     await flush();
 
     expect(container.textContent).not.toContain("ada@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: explaining the permission prompt before the user clicks into it,
+// and a way out to the web app that does not strand a signed-out user on a
+// Clerk sign-in screen. Own describe block, own container/root, for the same
+// reason the other top-level blocks each have one — no shared mutable DOM
+// state between suites.
+// ---------------------------------------------------------------------------
+describe("App - permission explanation and the way out to the web app", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  // A fresh mount every call, not a same-root re-render: `signedIn` is read
+  // via Clerk only at App's mount effect (and again on visibilitychange,
+  // which nothing here fires), so a same-root `root.render(<App />)` would
+  // reconcile the existing instance and never re-run that effect — leaving
+  // a `clerkState` change made between two `renderApp()` calls invisible.
+  // Tearing down and remounting models "the panel is opened again", which is
+  // the realistic way a changed identity would actually be picked up here.
+  async function renderApp() {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("explains what Chrome will ask for before the user clicks", async () => {
+    activeJdState = {
+      jd: null,
+      failure: { kind: "permission", message: "Can't read this page." },
+      loading: false,
+    };
+    await renderApp();
+
+    expect(container.textContent).toContain("Chrome only offers one option here");
+    expect(container.textContent).toContain("chrome://extensions");
+    expect(findButton(container, "Read this site")).toBeTruthy();
+  });
+
+  it("shows no permission explanation when the read failed for another reason", async () => {
+    activeJdState = {
+      jd: null,
+      failure: { kind: "no-posting", message: "No posting found." },
+      loading: false,
+    };
+    await renderApp();
+
+    expect(container.textContent).not.toContain("Chrome only offers one option here");
+  });
+
+  it("always offers a link to the web app", async () => {
+    await renderApp();
+
+    const link = findAnchor(container, "Open career-path ↗");
+    expect(link.getAttribute("href")).toBe(`${API_BASE}/app`);
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  // Signed out, that page is Clerk-gated: the link would drop the user on a
+  // sign-in screen they did not ask for. A dead end is worse than no link.
+  it("offers the saved-resumes link only when signed in", async () => {
+    await renderApp();
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Your saved resumes ↗",
+      ),
+    ).toBeUndefined();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await renderApp();
+    expect(findAnchor(container, "Your saved resumes ↗")).toBeTruthy();
   });
 });

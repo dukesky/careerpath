@@ -518,9 +518,30 @@ export default function App() {
       {!stored && <p className="muted tiny center">Add your resume to get started.</p>}
       {failure && <p className="muted tiny center">{failure.message}</p>}
       {failure?.kind === "permission" && !hasBroadAccess && (
-        <button onClick={() => void grantAccess()} disabled={granting}>
-          {granting ? "Waiting for Chrome…" : "Read this site"}
-        </button>
+        <section className="card">
+          {/* Two claims, deliberately kept apart. Chrome really does grant
+              access to every site — saying otherwise would be false, and
+              this product's whole pitch is not lying to people. What IS
+              limited is what career-path does with the grant, and every
+              sentence here is already promised on /privacy.
+
+              Narrowing the request itself to the current origin is not
+              available: it needs tab.url, which is gated behind the `tabs`
+              permission this extension deliberately does not request. The
+              code only reaches this branch because executeScript failed,
+              which means activeTab is not in force for this tab either — so
+              there is no path to the URL from here. */}
+          <p className="muted tiny">
+            Chrome only offers one option here — access to every site.
+            career-path uses it to read the job posting on the tab you&rsquo;re
+            looking at, and nothing else: it doesn&rsquo;t read other pages,
+            and it doesn&rsquo;t collect your browsing history. You can take it
+            back any time at chrome://extensions.
+          </p>
+          <button onClick={() => void grantAccess()} disabled={granting}>
+            {granting ? "Waiting for Chrome…" : "Read this site"}
+          </button>
+        </section>
       )}
 
       <Results
@@ -577,18 +598,28 @@ export default function App() {
         </section>
       )}
 
-      {/* A plain anchor, not chrome.tabs.create: opening a tab this way needs
-          no `tabs` permission. The page is Clerk-gated, so a signed-out user
-          lands on the sign-in prompt — the honest outcome, since the panel
-          has no session to hand over. */}
+      {/* Plain anchors, not chrome.tabs.create: opening a tab this way needs
+          no `tabs` permission. */}
       <a
         className="outlink"
-        href={`${API_BASE}/app/saved`}
+        href={`${API_BASE}/app`}
         target="_blank"
         rel="noreferrer"
       >
-        Your saved resumes ↗
+        Open career-path ↗
       </a>
+      {/* Signed out this page is Clerk-gated, so the link would strand the
+          user on a sign-in screen they did not ask for. */}
+      {signedIn && (
+        <a
+          className="outlink"
+          href={`${API_BASE}/app/saved`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Your saved resumes ↗
+        </a>
+      )}
     </main>
   );
 }

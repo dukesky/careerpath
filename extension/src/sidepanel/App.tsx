@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getResume, type StoredResume } from "@/lib/storage";
+import {
+  getResume,
+  HAS_SIGNED_IN_KEY,
+  SIGNIN_SIGNAL_KEY,
+  type StoredResume,
+} from "@/lib/storage";
 import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
@@ -17,10 +22,12 @@ import {
   isSignedIn,
   signInPageUrl,
 } from "@/lib/clerk";
+import { fetchQuota, type QuotaInfo } from "@/lib/quota";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
 import { AccountBar } from "./AccountBar";
+import { BetaCodeBox } from "./BetaCodeBox";
 
 export default function App() {
   const [stored, setStored] = useState<StoredResume | null>(null);
@@ -60,10 +67,13 @@ export default function App() {
   // — there is no push notification when a sign-in completes in the separate
   // tab it opens in, so this starts signed-out and is re-checked below on
   // mount and whenever the panel's document becomes visible again, which is
-  // the moment a user returns from that tab. `remaining` is NOT duplicated
-  // here: AccountBar reads it straight off `state.remaining`.
+  // the moment a user returns from that tab.
   const [signedIn, setSignedIn] = useState(false);
   const [email, setEmail] = useState<string | null>(null);
+  // The allowance as of the last identity change, from GET /api/quota.
+  // `state.remaining` (what a completed run reported) takes precedence when
+  // present — it is strictly fresher. Null here means UNKNOWN, not zero.
+  const [quota, setQuota] = useState<QuotaInfo | null>(null);
   // Whether a Save (SaveButton, inside Results) currently has a POST to
   // /api/saved in flight. Folded into `canRun` below so a regenerate cannot
   // start while a save is pending — see SaveButton.tsx's doc comment for the
@@ -117,6 +127,40 @@ export default function App() {
     }
   }, []);
 
+  /**
+   * Re-reads the allowance. MUST be called on every identity change —
+   * sign-in, sign-out, and a beta code taking effect all move the caller to
+   * a different quota bucket, and a stale number here is not a cosmetic
+   * problem: it is the panel stating an allowance that is not the user's.
+   *
+   * Clears to null BEFORE awaiting, deliberately. The request takes a round
+   * trip, and leaving the old value up during it shows the PREVIOUS
+   * identity's allowance — briefly, but wrongly. Rendering "unknown" for a
+   * moment is the honest option.
+   *
+   * Ordering is guarded by a sequence number because there are now five call
+   * sites — mount, sign-out, visibilitychange, the storage listener, and a
+   * beta code being applied — and several of them overlap in practice: a
+   * sign-out fires this twice, and the storage listener can fire while the
+   * visibility refresh is still in flight. Without the guard the SLOWER of
+   * two overlapping requests wins the display, which puts the older
+   * identity's number on screen after the newer one had already arrived —
+   * the same class of lie the clear-before-await above exists to prevent.
+   */
+  const quotaSeqRef = useRef(0);
+  const refreshQuota = useCallback(async () => {
+    const seq = ++quotaSeqRef.current;
+    setQuota(null);
+    const fetched = await fetchQuota();
+    // A newer refresh started while this one was in flight. Its answer is for
+    // the identity that applies now and this one's is not, so drop this
+    // result entirely — leaving `quota` null ("unknown") until the newer call
+    // lands, which is exactly the honest intermediate state the clear above
+    // establishes.
+    if (seq !== quotaSeqRef.current) return;
+    setQuota(fetched);
+  }, []);
+
   // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
   // session.ts as the source api.ts consults for every request (see
   // clerk.ts's own doc comment). It MUST run exactly once, and here, at the
@@ -126,7 +170,8 @@ export default function App() {
   useEffect(() => {
     installClerkTokenSource();
     void refreshAccount();
-  }, [refreshAccount]);
+    void refreshQuota();
+  }, [refreshAccount, refreshQuota]);
 
   // Sign-in happens in a separate tab (see AccountBar) — Clerk's
   // chrome-extension sync host does not work inside a side panel, so there
@@ -138,11 +183,61 @@ export default function App() {
   // open — this just saves them that reopen in the common case.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === "visible") void refreshAccount();
+      if (document.visibilityState === "visible") {
+        void refreshAccount();
+        // Identity may have changed while the user was away in the sign-in
+        // tab, and a different identity means a different quota bucket —
+        // refreshing who they are without refreshing what they are allowed
+        // leaves the previous tier's number on screen under the new tier's
+        // wording.
+        void refreshQuota();
+      }
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [refreshAccount]);
+  }, [refreshAccount, refreshQuota]);
+
+  // The signal that actually arrives when sign-in completes in its own tab.
+  //
+  // The visibility effect above is a guess: a side panel stays visible the
+  // whole time the user is over in that tab, so `visibilityState` may never
+  // change and that listener may never fire. chrome.storage.onChanged
+  // broadcasts to every extension context regardless of what is visible, and
+  // the sign-in page writes SIGNIN_SIGNAL_KEY as its last act before closing
+  // itself. Both listeners stay: this one covers the sign-in path, and the
+  // visibility one still covers changes made somewhere this never hears
+  // about, such as signing out in Clerk's own account portal.
+  //
+  // EITHER key counts. SIGNIN_SIGNAL_KEY is the one that always changes (it
+  // carries a timestamp — see storage.ts for why a constant would be inert
+  // for returning users), but a first-ever sign-in genuinely does change
+  // HAS_SIGNED_IN_KEY too, and so does an in-panel sign-out clearing it, so
+  // dropping that key from the filter would narrow existing behaviour for no
+  // gain.
+  useEffect(() => {
+    const onChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      area: string,
+    ) => {
+      if (area !== "local") return;
+      if (!(HAS_SIGNED_IN_KEY in changes) && !(SIGNIN_SIGNAL_KEY in changes)) return;
+      void refreshAccount();
+      void refreshQuota();
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => chrome.storage.onChanged.removeListener(onChanged);
+  }, [refreshAccount, refreshQuota]);
+
+  // A completed run reports a fresher count than the one fetched when the
+  // panel opened, and `state` is wiped on every tab switch (see the
+  // JD-change effect) — so without this, switching tabs after a run
+  // resurrects the panel-open figure and states an allowance the user no
+  // longer has. Folding it into `quota` is what makes the fallback in
+  // `displayRemaining` safe rather than stale.
+  useEffect(() => {
+    if (state.remaining === null) return;
+    setQuota((q) => (q ? { ...q, remaining: state.remaining } : q));
+  }, [state.remaining]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
   // before this async check resolves.
@@ -230,8 +325,12 @@ export default function App() {
         phase: "done",
         analysis: hit.analysis,
         tailored: hit.tailored,
-        // Not cached: it is a live server-side count, and showing a stale one
-        // is worse than showing none. The next run refreshes it.
+        // Not cached: it is a live server-side count, and a stale one must
+        // never be presented as the current allowance. Null here means "this
+        // restore knows nothing about the count" — the display falls back to
+        // `quota`, which holds the freshest number the panel has actually
+        // been told, including a completed run's own (see the effect that
+        // folds it in, above).
         remaining: null,
         error: null,
       });
@@ -420,7 +519,15 @@ export default function App() {
     // would wipe the displayed result, which is exactly what leaving the box
     // unchecked asked us not to do.
     setState((s) => ({ ...s, remaining: null }));
+    // The identity just changed — the signed-out tier has a different
+    // allowance than the account that was signed in a moment ago.
+    void refreshQuota();
   }
+
+  // A completed run's count is fresher than the one fetched when the panel
+  // opened, so it wins when present.
+  const displayRemaining = state.remaining ?? quota?.remaining ?? null;
+  const displayUnlimited = quota?.unlimited === true;
 
   return (
     <main>
@@ -432,7 +539,8 @@ export default function App() {
       <AccountBar
         signedIn={signedIn}
         email={email}
-        remaining={state.remaining}
+        remaining={displayRemaining}
+        unlimited={displayUnlimited}
         busy={busy}
         saving={saving}
         onLocalDataCleared={handleLocalDataCleared}
@@ -457,9 +565,30 @@ export default function App() {
       {!stored && <p className="muted tiny center">Add your resume to get started.</p>}
       {failure && <p className="muted tiny center">{failure.message}</p>}
       {failure?.kind === "permission" && !hasBroadAccess && (
-        <button onClick={() => void grantAccess()} disabled={granting}>
-          {granting ? "Waiting for Chrome…" : "Read this site"}
-        </button>
+        <section className="card">
+          {/* Two claims, deliberately kept apart. Chrome really does grant
+              access to every site — saying otherwise would be false, and
+              this product's whole pitch is not lying to people. What IS
+              limited is what career-path does with the grant, and every
+              sentence here is already promised on /privacy.
+
+              Narrowing the request itself to the current origin is not
+              available: it needs tab.url, which is gated behind the `tabs`
+              permission this extension deliberately does not request. The
+              code only reaches this branch because executeScript failed,
+              which means activeTab is not in force for this tab either — so
+              there is no path to the URL from here. */}
+          <p className="muted tiny">
+            We can only ask for one thing here — access to every site.
+            career-path uses it to read the job posting on the tab you&rsquo;re
+            looking at, and nothing else: it doesn&rsquo;t read other pages,
+            and it doesn&rsquo;t collect your browsing history. You can take it
+            back any time at chrome://extensions.
+          </p>
+          <button onClick={() => void grantAccess()} disabled={granting}>
+            {granting ? "Waiting for Chrome…" : "Read this site"}
+          </button>
+        </section>
       )}
 
       <Results
@@ -516,18 +645,30 @@ export default function App() {
         </section>
       )}
 
-      {/* A plain anchor, not chrome.tabs.create: opening a tab this way needs
-          no `tabs` permission. The page is Clerk-gated, so a signed-out user
-          lands on the sign-in prompt — the honest outcome, since the panel
-          has no session to hand over. */}
+      <BetaCodeBox unlimited={displayUnlimited} onChanged={() => void refreshQuota()} />
+
+      {/* Plain anchors, not chrome.tabs.create: opening a tab this way needs
+          no `tabs` permission. */}
       <a
         className="outlink"
-        href={`${API_BASE}/app/saved`}
+        href={`${API_BASE}/app`}
         target="_blank"
         rel="noreferrer"
       >
-        Your saved resumes ↗
+        Open career-path ↗
       </a>
+      {/* Signed out this page is Clerk-gated, so the link would strand the
+          user on a sign-in screen they did not ask for. */}
+      {signedIn && (
+        <a
+          className="outlink"
+          href={`${API_BASE}/app/saved`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Your saved resumes ↗
+        </a>
+      )}
     </main>
   );
 }

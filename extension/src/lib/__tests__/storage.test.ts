@@ -1,5 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { getResume, setResume, clearResume, getToken, setToken, clearToken } from "@/lib/storage";
+import {
+  getResume,
+  setResume,
+  clearResume,
+  getToken,
+  setToken,
+  clearToken,
+  getHasSignedIn,
+  markSignInCompleted,
+  setHasSignedIn,
+  HAS_SIGNED_IN_KEY,
+  SIGNIN_SIGNAL_KEY,
+} from "@/lib/storage";
 import type { ParsedResume } from "@shared/contract";
 
 const EMPTY: ParsedResume = {
@@ -60,6 +72,25 @@ describe("extension storage", () => {
     expect(await getToken()).toBe("tok-123");
     await clearToken();
     expect(await getToken()).toBeNull();
+  });
+
+  // FINAL-REVIEW (C1): the sign-in page's notification to the panel must be
+  // a value that CHANGES, on a key nothing else writes. `cp_has_signed_in` is
+  // already true on any browser that has signed in before, and Chrome fires
+  // no storage.onChanged for a write that leaves a value unchanged — so a
+  // signal sharing that key is inert for exactly the returning users it is
+  // meant to serve.
+  it("stamps the sign-in signal with a timestamp on its own key, separate from the has-signed-in flag", async () => {
+    await setHasSignedIn();
+    const before = Date.now();
+    await markSignInCompleted();
+
+    const got = await chrome.storage.local.get([SIGNIN_SIGNAL_KEY, HAS_SIGNED_IN_KEY]);
+    expect(SIGNIN_SIGNAL_KEY).not.toBe(HAS_SIGNED_IN_KEY);
+    expect(typeof got[SIGNIN_SIGNAL_KEY]).toBe("number");
+    expect(got[SIGNIN_SIGNAL_KEY] as number).toBeGreaterThanOrEqual(before);
+    // The durable hint lib/clerk.ts reads is untouched by the signal.
+    expect(await getHasSignedIn()).toBe(true);
   });
 
   it("survives corrupt stored JSON rather than throwing", async () => {

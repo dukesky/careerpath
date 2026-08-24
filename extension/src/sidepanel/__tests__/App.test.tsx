@@ -6,15 +6,19 @@ import type { ExtractedJD } from "@/content/extract";
 import type { RunOptions, RunState } from "@/lib/run";
 import type { ApiResult } from "@/lib/api";
 import {
+  getBetaCode,
   getHasSignedIn,
   getResume,
+  setBetaCode,
   setHasSignedIn,
   setResume,
   type StoredResume,
 } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
 import { resumeFingerprint } from "@/lib/fingerprint";
+import { API_BASE } from "@/lib/config";
 import App from "../App";
+import type { ReadFailure } from "../useActiveJd";
 
 // No @testing-library/react here (see the module doc below for why), so this
 // is not set up implicitly the way its render() would. Without it React logs
@@ -43,7 +47,7 @@ import App from "../App";
 // against THIS file's location, so it must point at ../useActiveJd (the same
 // file App.tsx reaches via ./useActiveJd from one directory up).
 // ---------------------------------------------------------------------------
-let activeJdState: { jd: ExtractedJD | null; failure: null; loading: boolean } = {
+let activeJdState: { jd: ExtractedJD | null; failure: ReadFailure | null; loading: boolean } = {
   jd: null,
   failure: null,
   loading: false,
@@ -168,6 +172,16 @@ type ApiPostFn = (path: string, body: unknown) => Promise<ApiResult<unknown>>;
 let apiPostImpl: ApiPostFn = async () => ({ ok: true, data: {} });
 let apiPostCalls: Array<{ path: string; body: unknown }> = [];
 
+// `apiGet` backs Task 2's quota fetch (App.tsx's `refreshQuota`, via
+// `@/lib/quota`'s `fetchQuota`). Same "replace the network-call boundary"
+// pattern as `apiPost` just above, sharing this one mock factory rather than
+// a second `vi.mock("@/lib/api", ...)` call, which vitest does not merge.
+let apiGetImpl: (path: string) => Promise<ApiResult<unknown>> = async () => ({
+  ok: true,
+  data: { remaining: 3 },
+});
+let apiGetPaths: string[] = [];
+
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
@@ -175,6 +189,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
     apiPost: <T,>(path: string, body: unknown) => {
       apiPostCalls.push({ path, body });
       return apiPostImpl(path, body) as Promise<ApiResult<T>>;
+    },
+    apiGet: <T,>(path: string) => {
+      apiGetPaths.push(path);
+      return apiGetImpl(path) as Promise<ApiResult<T>>;
     },
   };
 });
@@ -189,6 +207,8 @@ beforeEach(() => {
   signOutShouldThrow = false;
   apiPostImpl = async () => ({ ok: true, data: {} });
   apiPostCalls = [];
+  apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+  apiGetPaths = [];
 });
 
 // ---------------------------------------------------------------------------
@@ -251,6 +271,9 @@ function cachedRun(score: number, extraInfo: string, runId: string): CachedRun {
 
 function fakeChromeStorage() {
   const data: Record<string, unknown> = {};
+  const listeners: Array<
+    (changes: Record<string, { newValue?: unknown }>, area: string) => void
+  > = [];
   return {
     storage: {
       local: {
@@ -266,6 +289,23 @@ function fakeChromeStorage() {
           for (const k of keys) delete data[k];
         }),
       },
+      onChanged: {
+        addListener: vi.fn(
+          (fn: (changes: Record<string, { newValue?: unknown }>, area: string) => void) => {
+            listeners.push(fn);
+          },
+        ),
+        removeListener: vi.fn(
+          (fn: (changes: Record<string, { newValue?: unknown }>, area: string) => void) => {
+            const i = listeners.indexOf(fn);
+            if (i >= 0) listeners.splice(i, 1);
+          },
+        ),
+      },
+    },
+    // Test-only hook: fires what Chrome would fire.
+    __fireStorageChange(changes: Record<string, { newValue?: unknown }>, area = "local") {
+      for (const fn of [...listeners]) fn(changes, area);
     },
   };
 }
@@ -308,6 +348,22 @@ function findAnchor(container: HTMLElement, text: string): HTMLAnchorElement {
 function typeInto(el: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLTextAreaElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+// Same reasoning as `typeInto` above, for a plain <input> (BetaCodeBox's
+// code field): a raw `el.value = ...` assignment goes through React's own
+// tracked setter once the component has mounted, so the tracker's recorded
+// value and the DOM's actual value end up equal by the time the "input"
+// event fires — and React's change-event plugin then treats it as a no-op
+// and never calls onChange. Setting through the native prototype setter
+// bypasses that tracker, the same way `typeInto` does for a textarea.
+function typeIntoInput(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
     "value",
   )!.set!;
   setter.call(el, value);
@@ -753,13 +809,21 @@ describe("App - account bar, sign-out, and session handling", () => {
     const link = findAnchor(container, "Sign in");
     expect(link.getAttribute("href")).toBe(SIGNIN_URL);
     expect(link.getAttribute("target")).toBe("_blank");
-    expect(container.textContent).toContain(
-      "raise your limit from 3 runs every 30 days to 5 runs a day",
-    );
+    // Task 2: the old sentence ("Sign in to raise your limit from 3 runs
+    // every 30 days to 5 runs a day.") led with the OLD tier as if the
+    // caller needed reminding what they were missing. This one just states
+    // what signing in gets them.
+    expect(container.textContent).toContain("Sign in for 5 runs a day.");
     expect(hasButton(container, "Sign out")).toBe(false);
   });
 
-  it("shows the account email and Sign out once signed in, and picks up the remaining count from RunState — not a separate fetch", async () => {
+  // Task 2 replaced "not a separate fetch" (App.tsx's old behavior) with a
+  // quota fetched at open — see the "App - quota-first account bar" describe
+  // block for that fetch's own coverage. This test's remaining job is the
+  // part that is still true post-Task-2: a completed run's own count
+  // overrides whatever the quota fetch showed, rather than the two racing.
+  it("shows the account email and Sign out once signed in; the run's own remaining count overrides the quota fetched at open", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 9 } });
     clerkState = { signedIn: true, email: "ada@example.com" };
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -768,8 +832,8 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(container.textContent).toContain("ada@example.com");
     expect(findButton(container, "Sign out")).toBeTruthy();
     // No run has reported a `remaining` yet (RunState starts at
-    // INITIAL_RUN_STATE), so there is nothing truthful to show.
-    expect(container.textContent).not.toContain("left today");
+    // INITIAL_RUN_STATE), so the quota fetched at open is what's shown.
+    expect(container.textContent).toContain("9 runs left today");
 
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
@@ -785,8 +849,9 @@ describe("App - account bar, sign-out, and session handling", () => {
     await flush();
 
     // This is the number generate() got back from THIS run — AccountBar must
-    // display exactly it, not a value it looked up on its own.
+    // display exactly it, overriding the value fetched at open.
     expect(container.textContent).toContain("3 runs left today");
+    expect(container.textContent).not.toContain("9 runs left today");
   });
 
   it("sign-out with the box checked (the default) ends the session AND clears the resume, the cache, and the displayed run", async () => {
@@ -893,13 +958,17 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(await getHasSignedIn()).toBe(false);
   });
 
-  // FINAL-REVIEW (M1). `remaining` is per-identity: with the box UNCHECKED,
-  // handleLocalDataCleared never runs, so nothing else resets `state` — and
-  // AccountBar's signed-OUT branch renders the same value under 30-day-tier
-  // wording. The previous account's 5-per-day figure would therefore be
-  // presented as this device's 3-per-30-days trial: a number that is simply
-  // wrong, and unfalsifiable until the next run replaces it.
-  it("clears the remaining-runs count on sign-out, so the previous account's daily figure is not shown as the device trial", async () => {
+  // FINAL-REVIEW (M1), updated for Task 2. `remaining` is per-identity: with
+  // the box UNCHECKED, handleLocalDataCleared never runs, so nothing but
+  // `refreshQuota` resets what AccountBar shows. Before Task 2 there was no
+  // quota fetch at all, so the fix was to show no count; Task 2 adds a real
+  // fetch for the NEW (signed-out) identity, so the fix now is that the
+  // number on screen changes to that fetch's own answer — never the previous
+  // account's daily figure re-rendered under 30-day-tier wording, which is
+  // the same bug this test has pinned since fix round 1, just arriving
+  // through the new fallback path this time (see the "quota-first account
+  // bar" describe block's own regression guard for the box-CHECKED path).
+  it("shows the freshly fetched device-trial count on sign-out, not the previous account's daily figure", async () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -921,6 +990,11 @@ describe("App - account bar, sign-out, and session handling", () => {
     // The account's own daily allowance, on screen under signed-in wording.
     expect(container.textContent).toContain("3 runs left today");
 
+    // The signed-out identity's own allowance — deliberately a DIFFERENT
+    // number from the "3" above, so a passing assertion below cannot be a
+    // coincidence of the two identities sharing a count.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 1 } });
+
     await act(async () => {
       findButton(container, "Sign out").click();
     });
@@ -935,8 +1009,11 @@ describe("App - account bar, sign-out, and session handling", () => {
     await flush();
 
     expect(findAnchor(container, "Sign in")).toBeTruthy();
-    // No count at all — not "3 runs left" under the 30-day-tier wording.
-    expect(container.textContent).not.toContain("runs left");
+    // Not the previous account's daily figure, re-rendered under 30-day-tier
+    // wording...
+    expect(container.textContent).not.toContain("3 runs left");
+    // ...but the signed-out identity's own freshly fetched allowance.
+    expect(container.textContent).toContain("1 run left");
     // ...while the run itself is untouched, which is the whole point of
     // leaving the box unchecked.
     expect(container.querySelector(".score")).toBeTruthy();
@@ -1252,13 +1329,20 @@ describe("App - account bar, sign-out, and session handling", () => {
   // at all. This pins the replacement: a known `remaining` shows in the
   // signed-out branch too, worded without "today" since the signed-out
   // device tier is 3 runs per 30 days, not a daily allowance.
+  //
+  // Updated for Task 2: before a run, App.tsx now has a quota fetched at
+  // open to show (see the "quota-first account bar" describe block for that
+  // fetch's own coverage) — this test's remaining job is confirming a
+  // completed run's own count still overrides it, worded without "today".
   it("shows the remaining-runs count in the signed-out AccountBar once a run has reported one, without implying it's a daily allowance", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 9 } });
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
     await renderApp();
 
-    // No run yet — nothing truthful to show, same as the signed-in case.
-    expect(container.textContent).not.toContain("left");
+    // The quota fetched at open, worded without "today".
+    expect(container.textContent).toContain("9 runs left");
+    expect(container.textContent).not.toContain("left today");
 
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
@@ -1273,7 +1357,9 @@ describe("App - account bar, sign-out, and session handling", () => {
     });
     await flush();
 
+    // The run's own count overrides the quota fetched at open.
     expect(container.textContent).toContain("2 runs left");
+    expect(container.textContent).not.toContain("9 runs left");
     // Not the signed-in branch's wording — the signed-out tier is a 30-day
     // window, not a daily one.
     expect(container.textContent).not.toContain("left today");
@@ -1676,5 +1762,605 @@ describe("App - saving a tailored resume from the panel", () => {
     });
     await flush();
     expect(apiPostCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 2: the account bar leads with the caller's real allowance (GET
+// /api/quota), rather than opening on a sign-in pitch that implies the
+// extension gates its core function on having an account. Own describe
+// block, own container/root, for the same reason the other top-level blocks
+// each have one — no shared mutable DOM state between suites.
+// ---------------------------------------------------------------------------
+describe("App - quota-first account bar", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("shows the caller's real remaining count on open, before any run", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    expect(apiGetPaths).toContain("/api/quota");
+    expect(container.textContent).toContain("3 runs left");
+  });
+
+  // The single line most responsible for the panel reading as a gate.
+  it("never labels the signed-out state 'Not signed in'", async () => {
+    await renderApp();
+
+    expect(container.textContent).not.toContain("Not signed in");
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+  });
+
+  it("invents no number when the quota cannot be determined", async () => {
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    await renderApp();
+
+    expect(container.textContent).not.toContain("runs left");
+    expect(container.textContent).toContain("Sign in for 5 runs a day.");
+  });
+
+  it("shows Beta · unlimited instead of a number when a beta code is in force", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: null, unlimited: true } });
+    await renderApp();
+
+    expect(container.textContent).toContain("Beta · unlimited");
+    expect(container.textContent).not.toContain("runs left");
+    // FINAL-REVIEW (M1): this line used to render unconditionally in the
+    // signed-out branch, including directly under "Beta · unlimited" — where
+    // a daily cap of 5 is a downgrade from the uncapped access the caller
+    // already has, pitched as an upgrade.
+    expect(container.textContent).not.toContain("Sign in for 5 runs a day.");
+  });
+
+  // A completed run's count is fresher than the one fetched at open.
+  it("prefers the count a completed run reported over the one fetched at open", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 1,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("1 run left today");
+    expect(container.textContent).not.toContain("3 runs left");
+  });
+
+  // FINAL-REVIEW (I2). `displayRemaining` falls back to the quota fetched at
+  // open whenever `state.remaining` is null — and the JD-change effect wipes
+  // RunState on EVERY tab switch, while `quota` is refreshed only on an
+  // identity change. So a user who ran once and then looked at any other tab
+  // used to get the panel-open figure back: "5 runs left today" when they
+  // actually had 4, all the way down to a Tailor click returning 402 while
+  // the bar still said 5.
+  it("keeps a completed run's fresher count after a tab switch wipes the run state", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(container.textContent).toContain("5 runs left today");
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 4,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("4 runs left today");
+
+    // A tab switch — the JD-change effect resets RunState, so
+    // `state.remaining` is null again from here on. Nothing re-fetches the
+    // quota: the identity did not change.
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+
+    // The run's count must survive the reset...
+    expect(container.textContent).toContain("4 runs left today");
+    // ...and the panel-open figure must not come back.
+    expect(container.textContent).not.toContain("5 runs left");
+  });
+
+  // THE REGRESSION GUARD. Signing out switches quota buckets (5/day ->
+  // 3-per-30-days). Without a refetch the panel falls back to the quota
+  // fetched for the PREVIOUS identity and shows that account's leftovers
+  // under signed-out wording — the exact bug the last review round fixed,
+  // arriving through the new fallback path.
+  it("does not show the previous account's allowance after signing out", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await setResume(STORED_RESUME);
+    await renderApp();
+    expect(container.textContent).toContain("5 runs left today");
+
+    // The signed-out identity has a different allowance.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 2 } });
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("5 runs left");
+    expect(container.textContent).toContain("2 runs left");
+  });
+
+  // THE REGRESSION GUARD, other direction. Sign-in happens in a separate tab
+  // (see AccountBar), and the panel's visibilitychange effect is how it
+  // notices the user came back and re-checks identity — but noticing the
+  // identity changed without also refreshing the quota leaves the OLD
+  // (signed-out, 3-per-30-days) figure on screen under the NEW (signed-in,
+  // 5-per-day) wording. Different numbers for the two identities, same as
+  // the sign-out guard above, so this cannot pass on a coincidence.
+  it("does not show the device tier's allowance after signing in", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+    expect(container.textContent).toContain("3 runs left");
+
+    // The user signed in, in the separate tab, and has come back. The
+    // signed-in identity has a different allowance.
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("3 runs left");
+    expect(container.textContent).toContain("5 runs left today");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 3: chrome.storage.onChanged is the signal that actually arrives when
+// sign-in completes in the separate tab. Own describe block, own
+// container/root, for the same reason the other top-level blocks each have
+// one — no shared mutable DOM state between suites.
+// ---------------------------------------------------------------------------
+describe("App - noticing a sign-in from the other tab", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  // The side panel stays visible while the user is over in the sign-in tab,
+  // so visibilitychange may never fire. chrome.storage.onChanged does not
+  // depend on visibility at all — it is the signal that actually arrives.
+  it("picks up a completed sign-in from a storage change, with no visibility event", async () => {
+    await renderApp();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_has_signed_in: { newValue: true } });
+    });
+    await flush();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(container.textContent).toContain("5 runs left today");
+  });
+
+  // FINAL-REVIEW (C1). The panel writes `cp_has_signed_in` itself — clerk.ts
+  // sets it on every signed-in request — so on any browser that has signed in
+  // before, the flag is ALREADY true when the sign-in page writes it again.
+  // Chrome fires no storage.onChanged for a write that leaves a value
+  // unchanged, and a side panel stays visible the whole time the user is in
+  // the sign-in tab, so neither signal reaches the panel: the sign-in page's
+  // write was inert for exactly the returning users this auto-return exists
+  // to serve. Reached normally by the panel's own "Sign in again" card after
+  // a session_expired, by signing out on the web app, and by a signOut() that
+  // threw before clearing the flag.
+  //
+  // The literal key, not the imported constant, deliberately: the sign-in
+  // page and the panel have to agree on the same string, and a test that
+  // imports the same constant both sides import cannot tell whether they do.
+  it("picks up a sign-in on a browser where cp_has_signed_in was already true", async () => {
+    // This browser has signed in before — the returning-user state.
+    await setHasSignedIn();
+    await renderApp();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    // What the sign-in page actually fires now: only the timestamped signal
+    // key changes, because `cp_has_signed_in` was true before and is true
+    // after.
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_signin_at: { newValue: 1_756_000_000_000 } });
+    });
+    await flush();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(findButton(container, "Sign out")).toBeTruthy();
+    expect(container.textContent).toContain("5 runs left today");
+  });
+
+  it("ignores storage changes to unrelated keys", async () => {
+    await renderApp();
+    clerkState = { signedIn: true, email: "ada@example.com" };
+
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_resume: { newValue: "something" } });
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("ada@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 4: explaining the permission prompt before the user clicks into it,
+// and a way out to the web app that does not strand a signed-out user on a
+// Clerk sign-in screen. Own describe block, own container/root, for the same
+// reason the other top-level blocks each have one — no shared mutable DOM
+// state between suites.
+// ---------------------------------------------------------------------------
+describe("App - permission explanation and the way out to the web app", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  // A fresh mount every call, not a same-root re-render: `signedIn` is read
+  // via Clerk only at App's mount effect (and again on visibilitychange,
+  // which nothing here fires), so a same-root `root.render(<App />)` would
+  // reconcile the existing instance and never re-run that effect — leaving
+  // a `clerkState` change made between two `renderApp()` calls invisible.
+  // Tearing down and remounting models "the panel is opened again", which is
+  // the realistic way a changed identity would actually be picked up here.
+  async function renderApp() {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("explains what Chrome will ask for before the user clicks", async () => {
+    activeJdState = {
+      jd: null,
+      failure: { kind: "permission", message: "Can't read this page." },
+      loading: false,
+    };
+    await renderApp();
+
+    // FINAL-REVIEW (M7): the sentence used to open "Chrome only offers one
+    // option here", attributing to Chrome a limitation that is actually
+    // this extension's — Chrome does support per-site grants; career-path
+    // cannot ask for one because it has no tab.url (see App.tsx's comment
+    // above this paragraph).
+    expect(container.textContent).toContain("We can only ask for one thing here");
+    expect(container.textContent).not.toContain("Chrome only offers one option here");
+    expect(container.textContent).toContain("chrome://extensions");
+    expect(findButton(container, "Read this site")).toBeTruthy();
+  });
+
+  it("shows no permission explanation when the read failed for another reason", async () => {
+    activeJdState = {
+      jd: null,
+      failure: { kind: "no-posting", message: "No posting found." },
+      loading: false,
+    };
+    await renderApp();
+
+    expect(container.textContent).not.toContain("We can only ask for one thing here");
+  });
+
+  it("always offers a link to the web app", async () => {
+    await renderApp();
+
+    const link = findAnchor(container, "Open career-path ↗");
+    expect(link.getAttribute("href")).toBe(`${API_BASE}/app`);
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
+  // Signed out, that page is Clerk-gated: the link would drop the user on a
+  // sign-in screen they did not ask for. A dead end is worse than no link.
+  it("offers the saved-resumes link only when signed in", async () => {
+    await renderApp();
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Your saved resumes ↗",
+      ),
+    ).toBeUndefined();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await renderApp();
+    expect(findAnchor(container, "Your saved resumes ↗")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 5: the panel's own beta-code entry (BetaCodeBox.tsx). The web app
+// grants unlimited access on the `x-access-code` header, but the extension's
+// chrome.storage.local is isolated from the page's storage, so a code
+// entered on the website is invisible here — the user has to enter it again
+// in the panel. Own describe block, own container/root, for the same reason
+// the other top-level blocks each have one — no shared mutable DOM state
+// between suites.
+// ---------------------------------------------------------------------------
+describe("App - beta code", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("applies a valid code and shows the unlimited state", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+
+    // From here the server accepts the code.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: null, unlimited: true } });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "LETMEIN");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Beta · unlimited");
+    expect(await getBetaCode()).toBe("LETMEIN");
+  });
+
+  // A rejected code must not stay in storage — every later request would
+  // carry a header the server ignores, and the panel would look like it had
+  // beta access it does not have.
+  it("clears a code the server does not accept, and says so", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "WRONG");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("That code didn't work.");
+    expect(await getBetaCode()).toBeNull();
+    expect(container.textContent).not.toContain("Beta · unlimited");
+  });
+
+  // FINAL-REVIEW (M2): App passes `unlimited: false` whenever its `quota` is
+  // null — a failed quota fetch, and the whole window inside every
+  // refreshQuota. The box used to read that as "no code in force" and fall
+  // back to "Have a beta code?", where Remove does not exist at all: a stored
+  // code the server had since rotated would ride along on every request
+  // forever with no UI able to clear it. The component reads storage itself
+  // now, so Remove is offered whenever a code is stored, whatever the quota
+  // does or doesn't say.
+  it("offers Remove for a stored code even when the quota is unknown", async () => {
+    await setBetaCode("STORED-CODE");
+    // The quota request fails, so App's `quota` stays null and `unlimited`
+    // arrives here as false — indistinguishable, from this component, from a
+    // definite "no code in force".
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    await renderApp();
+
+    expect(container.textContent).not.toContain("Have a beta code?");
+    const removeBtn = findButton(container, "Remove");
+
+    await act(async () => {
+      removeBtn.click();
+    });
+    await flush();
+
+    expect(await getBetaCode()).toBeNull();
+    // Nothing is stored now, so the entry point comes back.
+    expect(findButton(container, "Have a beta code?")).toBeTruthy();
+  });
+
+  // Fix round 1: fetchQuota() returns null for ANY request failure — a
+  // network blip, a 5xx, an unreachable quota store — not only "the code is
+  // wrong". Folding that into the same branch as a genuine rejection wipes a
+  // perfectly good code over a transient hiccup and tells the user it was
+  // bad when it was never actually checked.
+  it("keeps a code the server could not be reached to verify, and says so distinctly from a rejection", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Have a beta code?").click();
+    });
+
+    // From here the verification request itself fails — not a rejection.
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    const input = container.querySelector(
+      'input[placeholder="Beta code"]',
+    ) as HTMLInputElement;
+    act(() => {
+      typeIntoInput(input, "LETMEIN");
+    });
+    await act(async () => {
+      findButton(container, "Apply").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Couldn't check that code. Try again.");
+    // The code must survive — it was never actually told "no".
+    expect(await getBetaCode()).toBe("LETMEIN");
+    expect(container.textContent).not.toContain("That code didn't work.");
+    expect(container.textContent).not.toContain("Beta · unlimited");
   });
 });

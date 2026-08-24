@@ -11,6 +11,7 @@ import type { ParsedResume } from "@shared/contract";
 
 const RESUME_KEY = "cp_resume";
 const TOKEN_KEY = "cp_device_token";
+const BETA_CODE_KEY = "cp_beta_code";
 /**
  * "Has this browser ever completed a Clerk sign-in?" — a hint, not an
  * identity. It carries no token and proves nothing to the server; the only
@@ -22,8 +23,29 @@ const TOKEN_KEY = "cp_device_token";
  * anonymous user's requests would be blocked whenever Clerk had an incident
  * or a proxy blocked its domain — gating anonymous use on Clerk being
  * reachable, which the design forbids.
+ *
+ * Exported because App.tsx filters chrome.storage.onChanged on it. This
+ * repository has been bitten three times by a constant that had to agree
+ * across two files with nothing tying them together — importing it is
+ * cheaper than another drift guard.
  */
-const HAS_SIGNED_IN_KEY = "cp_has_signed_in";
+export const HAS_SIGNED_IN_KEY = "cp_has_signed_in";
+
+/**
+ * Written by the sign-in page as its last act, and read by nothing —
+ * App.tsx only watches for the CHANGE. It carries a timestamp rather than
+ * a constant for two independent reasons, both load-bearing:
+ *
+ * 1. `cp_has_signed_in` is already true on any browser that has signed in
+ *    before, and Chrome emits no storage.onChanged for a write that does
+ *    not change the value — so reusing that key as the signal makes it
+ *    silently inert for exactly the returning users it is meant to serve.
+ * 2. Nothing in the panel ever writes this key, so it cannot feed back
+ *    into the listener that watches it. `cp_has_signed_in` IS written by
+ *    the panel (clerk.ts sets it on every signed-in request), which would
+ *    risk a refresh loop if onChanged did fire on equal-value writes.
+ */
+export const SIGNIN_SIGNAL_KEY = "cp_signin_at";
 
 export interface StoredResume {
   resume: ParsedResume;
@@ -115,4 +137,52 @@ export async function setHasSignedIn(): Promise<void> {
 
 export async function clearHasSignedIn(): Promise<void> {
   await chrome.storage.local.remove([HAS_SIGNED_IN_KEY]);
+}
+
+/**
+ * Stamps SIGNIN_SIGNAL_KEY with the current time, so the panel's
+ * storage.onChanged listener sees a genuine change every time a sign-in
+ * completes — see that key's own comment for why a constant would not.
+ *
+ * Swallows its own failure for the same reason `setHasSignedIn` does: this
+ * runs at the very end of the sign-in page's work, and a storage write
+ * failing there must not break a sign-in that has otherwise just succeeded.
+ * The cost of the swallowed failure is one missed auto-refresh, which the
+ * panel's visibility check and the next panel open both still cover.
+ */
+export async function markSignInCompleted(): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [SIGNIN_SIGNAL_KEY]: Date.now() });
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        evt: "mark_signin_completed_failed",
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+}
+
+/**
+ * The beta access code, sent as `x-access-code` on every request (see
+ * lib/api.ts). Stored per-browser here because the panel cannot read the web
+ * app's storage — a code entered on the website is invisible to the
+ * extension, so the user has to enter it in both places.
+ */
+export async function getBetaCode(): Promise<string | null> {
+  try {
+    const got = await chrome.storage.local.get([BETA_CODE_KEY]);
+    const raw = got[BETA_CODE_KEY];
+    return typeof raw === "string" && raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setBetaCode(code: string): Promise<void> {
+  await chrome.storage.local.set({ [BETA_CODE_KEY]: code });
+}
+
+export async function clearBetaCode(): Promise<void> {
+  await chrome.storage.local.remove([BETA_CODE_KEY]);
 }

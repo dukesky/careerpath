@@ -3,19 +3,21 @@ import { signInPageUrl } from "@/lib/clerk";
 import { SignOutDialog } from "./SignOutDialog";
 
 /**
- * Identity and allowance, rendered above the resume card. Two states only —
- * this component does not fetch anything itself beyond "am I signed in and
- * as whom", both one-shot Clerk reads owned by App.tsx (see its mount effect
- * and the comment there on why re-checking is App's job, not this
- * component's). `remaining` is NOT re-fetched here: it already comes out of
- * generate()'s own RunState in App.tsx, and fetching it a second time would
- * both be redundant and risk showing a different number than the one the
- * run itself reported.
+ * Identity and allowance, rendered above the resume card. This component
+ * fetches nothing itself — `signedIn`/`email` are one-shot Clerk reads owned
+ * by App.tsx (see its mount effect and the comment there on why re-checking
+ * is App's job, not this component's), and `remaining`/`unlimited` are
+ * App.tsx's own derived values: a completed run's RunState.remaining when
+ * present, falling back to the GET /api/quota reading it keeps refreshed on
+ * every identity change (see App.tsx's `refreshQuota`). Both nulls are
+ * meaningful and distinct — see QuotaInfo's doc comment in lib/quota.ts —
+ * and this component renders no number at all for either.
  */
 export function AccountBar({
   signedIn,
   email,
   remaining,
+  unlimited,
   busy,
   saving,
   onLocalDataCleared,
@@ -24,8 +26,17 @@ export function AccountBar({
   signedIn: boolean;
   /** Null while signed out, or briefly while signed in before Clerk reports it. */
   email: string | null;
-  /** RunState.remaining, passed straight through — see run.ts. */
+  /**
+   * App.tsx's derived `displayRemaining`: a completed run's RunState.remaining
+   * when present, otherwise the quota fetched at open/identity-change. Null
+   * means UNKNOWN, never zero — see lib/quota.ts's QuotaInfo doc comment.
+   */
   remaining: number | null;
+  /**
+   * From GET /api/quota, not from the run — a beta code lifts the cap
+   * entirely, so there is no number to show and showing one would be a lie.
+   */
+  unlimited: boolean;
   /**
    * App.tsx's `busy` — whether generate() currently owns the display. Same
    * reasoning, same discipline as the "Clear N cached results" control a few
@@ -70,18 +81,27 @@ export function AccountBar({
       <section className="card">
         <div className="row">
           <div>
-            <div className="label">Not signed in</div>
-            <p className="muted tiny">
-              Sign in to raise your limit from 3 runs every 30 days to 5 runs a day.
-            </p>
-            {remaining !== null && (
+            {/* The allowance leads. What the user HAS is the fact that
+                belongs first; what signing in would add is secondary. The
+                old "Not signed in" label led with what they lacked, which
+                is why the panel read as a gate for a feature that has never
+                required an account. */}
+            {unlimited ? (
+              <div className="label">Beta · unlimited</div>
+            ) : remaining !== null ? (
               // No "today" here — the signed-out device tier is 3 runs per
               // 30 days, not a daily allowance, so borrowing the signed-in
               // branch's "left today" wording would misstate the period.
-              <p className="muted tiny">
+              <div className="label">
                 {remaining} run{remaining === 1 ? "" : "s"} left
-              </p>
-            )}
+              </div>
+            ) : null}
+            {/* Not under `Beta · unlimited`. A signed-out beta caller has no
+                cap at all, so pitching them 5 runs a day is pitching a
+                downgrade as an upgrade. Every other signed-out state — a
+                known count, or none — is genuinely improved by signing in,
+                so the line stays there. */}
+            {!unlimited && <p className="muted tiny">Sign in for 5 runs a day.</p>}
           </div>
           {/* A plain anchor, not chrome.tabs.create: opening a tab this way
               needs no `tabs` permission — same reasoning as the saved-resumes
@@ -102,11 +122,13 @@ export function AccountBar({
         <div>
           <div className="label">Signed in</div>
           <p className="muted tiny">{email ?? "Signed in"}</p>
-          {remaining !== null && (
+          {unlimited ? (
+            <p className="muted tiny">Beta · unlimited</p>
+          ) : remaining !== null ? (
             <p className="muted tiny">
               {remaining} run{remaining === 1 ? "" : "s"} left today
             </p>
-          )}
+          ) : null}
         </div>
         <button onClick={() => setDialogOpen(true)} disabled={busy || saving}>
           Sign out

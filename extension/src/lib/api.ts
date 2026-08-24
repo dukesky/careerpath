@@ -1,6 +1,7 @@
 import { API_BASE } from "./config";
 import { ensureToken } from "./token";
 import { currentAuthToken } from "./session";
+import { getBetaCode } from "./storage";
 
 export type ApiErrorKind =
   | "quota"
@@ -93,6 +94,12 @@ async function send<T>(
   };
   if (auth) headers.Authorization = `Bearer ${auth.token}`;
 
+  // Independent of identity: the server's hasBetaAccess() reads only this
+  // header and does not change who the caller IS, just what they are allowed
+  // to spend. A signed-in beta tester stays a signed-in caller.
+  const betaCode = await getBetaCode();
+  if (betaCode) headers["x-access-code"] = betaCode;
+
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
@@ -120,6 +127,15 @@ async function send<T>(
   } catch {
     return { ok: false, kind: "server", message: GENERIC_ERROR };
   }
+}
+
+/**
+ * A GET through the same identity and 401 handling as every other call —
+ * `send()` is where the Clerk-vs-device fork lives, so a GET that bypassed it
+ * would report a different caller's quota than the POSTs it is describing.
+ */
+export function apiGet<T>(path: string): Promise<ApiResult<T>> {
+  return send<T>(path, { method: "GET" });
 }
 
 export function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {

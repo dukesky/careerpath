@@ -122,6 +122,15 @@ async function send<T>(
   }
 }
 
+/**
+ * A GET through the same identity and 401 handling as every other call —
+ * `send()` is where the Clerk-vs-device fork lives, so a GET that bypassed it
+ * would report a different caller's quota than the POSTs it is describing.
+ */
+export function apiGet<T>(path: string): Promise<ApiResult<T>> {
+  return send<T>(path, { method: "GET" });
+}
+
 export function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
   return send<T>(path, {
     method: "POST",

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { apiPost, apiPostForm } from "@/lib/api";
+import { apiPost, apiPostForm, apiGet } from "@/lib/api";
 import { setToken, getToken } from "@/lib/storage";
 import { setClerkTokenSource } from "@/lib/session";
 import * as tokenLib from "@/lib/token";
@@ -223,5 +223,19 @@ describe("apiPost", () => {
       message: "We couldn't confirm your session. Sign in again to continue.",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("apiGet issues a GET to the API base", async () => {
+    await setToken("t1");
+    const fetchMock = vi.fn<typeof fetch>(async () => json({ remaining: 3 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await apiGet<{ remaining: number }>("/api/quota");
+
+    expect(res).toEqual({ ok: true, data: { remaining: 3 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url.endsWith("/api/quota")).toBe(true);
+    expect(init.method).toBe("GET");
   });
 });

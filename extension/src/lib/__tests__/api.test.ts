@@ -24,7 +24,7 @@ function fakeChromeStorage() {
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers });
 
-describe("apiPost", () => {
+describe("api client", () => {
   beforeEach(() => {
     vi.stubGlobal("chrome", fakeChromeStorage());
     // Default every test to a signed-out Clerk session so existing

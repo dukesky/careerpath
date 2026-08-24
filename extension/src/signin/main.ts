@@ -1,6 +1,6 @@
 import "../styles.css";
 import { getClerk } from "@/lib/clerk";
-import { setHasSignedIn } from "@/lib/storage";
+import { markSignInCompleted, setHasSignedIn } from "@/lib/storage";
 
 // The element is a <div> in index.html; getElementById only knows
 // HTMLElement, and mountSignIn's type requires HTMLDivElement specifically.
@@ -45,12 +45,22 @@ function renderSignedIn(container: HTMLDivElement, email: string | null): void {
 getClerk()
   .then(async (clerk) => {
     if (clerk.isSignedIn) {
-      // Order matters. The flag is what tells the panel (via
-      // chrome.storage.onChanged) that sign-in finished, so it must be
+      // Order matters. These two writes are what tell the panel (via
+      // chrome.storage.onChanged) that sign-in finished, so both must be
       // written BEFORE this tab tries to close itself — a close that lands
-      // first would take the notification with it. setHasSignedIn swallows
-      // its own failures, so this cannot reject.
+      // first would take the notification with it. Both swallow their own
+      // failures, so neither can reject.
+      //
+      // Two writes, two different jobs. `setHasSignedIn` records the
+      // durable "this browser has signed in before" hint lib/clerk.ts reads
+      // when Clerk is unreachable — a genuine window this closes.
+      // `markSignInCompleted` is the NOTIFICATION: the flag above is
+      // already `true` on any browser that has signed in before, and Chrome
+      // fires no storage.onChanged for a write that leaves a value
+      // unchanged, so on its own it never reaches the panel for exactly the
+      // returning users this auto-return exists to serve.
       await setHasSignedIn();
+      await markSignInCompleted();
       // Rendered before the close attempt, not after: window.close() may be
       // refused for a tab the extension did not open with script (this one
       // is opened by a plain <a target="_blank">), and the user must not be

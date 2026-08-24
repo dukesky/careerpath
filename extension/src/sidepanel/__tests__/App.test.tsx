@@ -9,6 +9,7 @@ import {
   getBetaCode,
   getHasSignedIn,
   getResume,
+  setBetaCode,
   setHasSignedIn,
   setResume,
   type StoredResume,
@@ -1839,6 +1840,11 @@ describe("App - quota-first account bar", () => {
 
     expect(container.textContent).toContain("Beta · unlimited");
     expect(container.textContent).not.toContain("runs left");
+    // FINAL-REVIEW (M1): this line used to render unconditionally in the
+    // signed-out branch, including directly under "Beta · unlimited" — where
+    // a daily cap of 5 is a downgrade from the uncapped access the caller
+    // already has, pitched as an upgrade.
+    expect(container.textContent).not.toContain("Sign in for 5 runs a day.");
   });
 
   // A completed run's count is fresher than the one fetched at open.
@@ -1864,6 +1870,52 @@ describe("App - quota-first account bar", () => {
 
     expect(container.textContent).toContain("1 run left today");
     expect(container.textContent).not.toContain("3 runs left");
+  });
+
+  // FINAL-REVIEW (I2). `displayRemaining` falls back to the quota fetched at
+  // open whenever `state.remaining` is null — and the JD-change effect wipes
+  // RunState on EVERY tab switch, while `quota` is refreshed only on an
+  // identity change. So a user who ran once and then looked at any other tab
+  // used to get the panel-open figure back: "5 runs left today" when they
+  // actually had 4, all the way down to a Tailor click returning 402 while
+  // the bar still said 5.
+  it("keeps a completed run's fresher count after a tab switch wipes the run state", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(container.textContent).toContain("5 runs left today");
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(70),
+        tailored: tailoredFixture(80),
+        remaining: 4,
+      });
+    };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("4 runs left today");
+
+    // A tab switch — the JD-change effect resets RunState, so
+    // `state.remaining` is null again from here on. Nothing re-fetches the
+    // quota: the identity did not change.
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+
+    // The run's count must survive the reset...
+    expect(container.textContent).toContain("4 runs left today");
+    // ...and the panel-open figure must not come back.
+    expect(container.textContent).not.toContain("5 runs left");
   });
 
   // THE REGRESSION GUARD. Signing out switches quota buckets (5/day ->
@@ -1986,6 +2038,44 @@ describe("App - noticing a sign-in from the other tab", () => {
     expect(container.textContent).toContain("5 runs left today");
   });
 
+  // FINAL-REVIEW (C1). The panel writes `cp_has_signed_in` itself — clerk.ts
+  // sets it on every signed-in request — so on any browser that has signed in
+  // before, the flag is ALREADY true when the sign-in page writes it again.
+  // Chrome fires no storage.onChanged for a write that leaves a value
+  // unchanged, and a side panel stays visible the whole time the user is in
+  // the sign-in tab, so neither signal reaches the panel: the sign-in page's
+  // write was inert for exactly the returning users this auto-return exists
+  // to serve. Reached normally by the panel's own "Sign in again" card after
+  // a session_expired, by signing out on the web app, and by a signOut() that
+  // threw before clearing the flag.
+  //
+  // The literal key, not the imported constant, deliberately: the sign-in
+  // page and the panel have to agree on the same string, and a test that
+  // imports the same constant both sides import cannot tell whether they do.
+  it("picks up a sign-in on a browser where cp_has_signed_in was already true", async () => {
+    // This browser has signed in before — the returning-user state.
+    await setHasSignedIn();
+    await renderApp();
+    expect(findAnchor(container, "Sign in")).toBeTruthy();
+
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+
+    // What the sign-in page actually fires now: only the timestamped signal
+    // key changes, because `cp_has_signed_in` was true before and is true
+    // after.
+    await act(async () => {
+      (globalThis.chrome as unknown as {
+        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
+      }).__fireStorageChange({ cp_signin_at: { newValue: 1_756_000_000_000 } });
+    });
+    await flush();
+
+    expect(container.textContent).toContain("ada@example.com");
+    expect(findButton(container, "Sign out")).toBeTruthy();
+    expect(container.textContent).toContain("5 runs left today");
+  });
+
   it("ignores storage changes to unrelated keys", async () => {
     await renderApp();
     clerkState = { signedIn: true, email: "ada@example.com" };
@@ -2068,7 +2158,13 @@ describe("App - permission explanation and the way out to the web app", () => {
     };
     await renderApp();
 
-    expect(container.textContent).toContain("Chrome only offers one option here");
+    // FINAL-REVIEW (M7): the sentence used to open "Chrome only offers one
+    // option here", attributing to Chrome a limitation that is actually
+    // this extension's — Chrome does support per-site grants; career-path
+    // cannot ask for one because it has no tab.url (see App.tsx's comment
+    // above this paragraph).
+    expect(container.textContent).toContain("We can only ask for one thing here");
+    expect(container.textContent).not.toContain("Chrome only offers one option here");
     expect(container.textContent).toContain("chrome://extensions");
     expect(findButton(container, "Read this site")).toBeTruthy();
   });
@@ -2081,7 +2177,7 @@ describe("App - permission explanation and the way out to the web app", () => {
     };
     await renderApp();
 
-    expect(container.textContent).not.toContain("Chrome only offers one option here");
+    expect(container.textContent).not.toContain("We can only ask for one thing here");
   });
 
   it("always offers a link to the web app", async () => {
@@ -2204,6 +2300,35 @@ describe("App - beta code", () => {
     expect(container.textContent).toContain("That code didn't work.");
     expect(await getBetaCode()).toBeNull();
     expect(container.textContent).not.toContain("Beta · unlimited");
+  });
+
+  // FINAL-REVIEW (M2): App passes `unlimited: false` whenever its `quota` is
+  // null — a failed quota fetch, and the whole window inside every
+  // refreshQuota. The box used to read that as "no code in force" and fall
+  // back to "Have a beta code?", where Remove does not exist at all: a stored
+  // code the server had since rotated would ride along on every request
+  // forever with no UI able to clear it. The component reads storage itself
+  // now, so Remove is offered whenever a code is stored, whatever the quota
+  // does or doesn't say.
+  it("offers Remove for a stored code even when the quota is unknown", async () => {
+    await setBetaCode("STORED-CODE");
+    // The quota request fails, so App's `quota` stays null and `unlimited`
+    // arrives here as false — indistinguishable, from this component, from a
+    // definite "no code in force".
+    apiGetImpl = async () => ({ ok: false, kind: "network", message: "nope" });
+    await renderApp();
+
+    expect(container.textContent).not.toContain("Have a beta code?");
+    const removeBtn = findButton(container, "Remove");
+
+    await act(async () => {
+      removeBtn.click();
+    });
+    await flush();
+
+    expect(await getBetaCode()).toBeNull();
+    // Nothing is stored now, so the entry point comes back.
+    expect(findButton(container, "Have a beta code?")).toBeTruthy();
   });
 
   // Fix round 1: fetchQuota() returns null for ANY request failure — a

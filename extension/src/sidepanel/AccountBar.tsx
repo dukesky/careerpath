@@ -96,7 +96,12 @@ export function AccountBar({
                 {remaining} run{remaining === 1 ? "" : "s"} left
               </div>
             ) : null}
-            <p className="muted tiny">Sign in for 5 runs a day.</p>
+            {/* Not under `Beta · unlimited`. A signed-out beta caller has no
+                cap at all, so pitching them 5 runs a day is pitching a
+                downgrade as an upgrade. Every other signed-out state — a
+                known count, or none — is genuinely improved by signing in,
+                so the line stays there. */}
+            {!unlimited && <p className="muted tiny">Sign in for 5 runs a day.</p>}
           </div>
           {/* A plain anchor, not chrome.tabs.create: opening a tab this way
               needs no `tabs` permission — same reasoning as the saved-resumes

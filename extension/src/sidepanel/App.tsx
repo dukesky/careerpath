@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getResume, HAS_SIGNED_IN_KEY, type StoredResume } from "@/lib/storage";
+import {
+  getResume,
+  HAS_SIGNED_IN_KEY,
+  SIGNIN_SIGNAL_KEY,
+  type StoredResume,
+} from "@/lib/storage";
 import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
@@ -132,10 +137,28 @@ export default function App() {
    * trip, and leaving the old value up during it shows the PREVIOUS
    * identity's allowance — briefly, but wrongly. Rendering "unknown" for a
    * moment is the honest option.
+   *
+   * Ordering is guarded by a sequence number because there are now five call
+   * sites — mount, sign-out, visibilitychange, the storage listener, and a
+   * beta code being applied — and several of them overlap in practice: a
+   * sign-out fires this twice, and the storage listener can fire while the
+   * visibility refresh is still in flight. Without the guard the SLOWER of
+   * two overlapping requests wins the display, which puts the older
+   * identity's number on screen after the newer one had already arrived —
+   * the same class of lie the clear-before-await above exists to prevent.
    */
+  const quotaSeqRef = useRef(0);
   const refreshQuota = useCallback(async () => {
+    const seq = ++quotaSeqRef.current;
     setQuota(null);
-    setQuota(await fetchQuota());
+    const fetched = await fetchQuota();
+    // A newer refresh started while this one was in flight. Its answer is for
+    // the identity that applies now and this one's is not, so drop this
+    // result entirely — leaving `quota` null ("unknown") until the newer call
+    // lands, which is exactly the honest intermediate state the clear above
+    // establishes.
+    if (seq !== quotaSeqRef.current) return;
+    setQuota(fetched);
   }, []);
 
   // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
@@ -180,22 +203,41 @@ export default function App() {
   // whole time the user is over in that tab, so `visibilityState` may never
   // change and that listener may never fire. chrome.storage.onChanged
   // broadcasts to every extension context regardless of what is visible, and
-  // the sign-in page writes HAS_SIGNED_IN_KEY as its last act before closing
+  // the sign-in page writes SIGNIN_SIGNAL_KEY as its last act before closing
   // itself. Both listeners stay: this one covers the sign-in path, and the
   // visibility one still covers changes made somewhere this never hears
   // about, such as signing out in Clerk's own account portal.
+  //
+  // EITHER key counts. SIGNIN_SIGNAL_KEY is the one that always changes (it
+  // carries a timestamp — see storage.ts for why a constant would be inert
+  // for returning users), but a first-ever sign-in genuinely does change
+  // HAS_SIGNED_IN_KEY too, and so does an in-panel sign-out clearing it, so
+  // dropping that key from the filter would narrow existing behaviour for no
+  // gain.
   useEffect(() => {
     const onChanged = (
       changes: Record<string, chrome.storage.StorageChange>,
       area: string,
     ) => {
-      if (area !== "local" || !(HAS_SIGNED_IN_KEY in changes)) return;
+      if (area !== "local") return;
+      if (!(HAS_SIGNED_IN_KEY in changes) && !(SIGNIN_SIGNAL_KEY in changes)) return;
       void refreshAccount();
       void refreshQuota();
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => chrome.storage.onChanged.removeListener(onChanged);
   }, [refreshAccount, refreshQuota]);
+
+  // A completed run reports a fresher count than the one fetched when the
+  // panel opened, and `state` is wiped on every tab switch (see the
+  // JD-change effect) — so without this, switching tabs after a run
+  // resurrects the panel-open figure and states an allowance the user no
+  // longer has. Folding it into `quota` is what makes the fallback in
+  // `displayRemaining` safe rather than stale.
+  useEffect(() => {
+    if (state.remaining === null) return;
+    setQuota((q) => (q ? { ...q, remaining: state.remaining } : q));
+  }, [state.remaining]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
   // before this async check resolves.
@@ -283,8 +325,12 @@ export default function App() {
         phase: "done",
         analysis: hit.analysis,
         tailored: hit.tailored,
-        // Not cached: it is a live server-side count, and showing a stale one
-        // is worse than showing none. The next run refreshes it.
+        // Not cached: it is a live server-side count, and a stale one must
+        // never be presented as the current allowance. Null here means "this
+        // restore knows nothing about the count" — the display falls back to
+        // `quota`, which holds the freshest number the panel has actually
+        // been told, including a completed run's own (see the effect that
+        // folds it in, above).
         remaining: null,
         error: null,
       });
@@ -533,7 +579,7 @@ export default function App() {
               which means activeTab is not in force for this tab either — so
               there is no path to the URL from here. */}
           <p className="muted tiny">
-            Chrome only offers one option here — access to every site.
+            We can only ask for one thing here — access to every site.
             career-path uses it to read the job posting on the tab you&rsquo;re
             looking at, and nothing else: it doesn&rsquo;t read other pages,
             and it doesn&rsquo;t collect your browsing history. You can take it

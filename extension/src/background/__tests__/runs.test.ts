@@ -185,5 +185,10 @@ describe("startRun", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect((await getCachedRun(JD.url, FP))?.baselineScore).toBe(61);
+    // The other half of the reuse rule: the reused id must be WRITTEN BACK
+    // into the cache too, or the next refine after this one has nothing to
+    // find and silently mints a fresh (charged) id. The sibling test above
+    // only covers the read half — this covers the write half.
+    expect((await getCachedRun(JD.url, FP))?.runId).toBe("run-abc");
   });
 });

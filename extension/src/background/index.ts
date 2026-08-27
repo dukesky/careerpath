@@ -27,7 +27,15 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (!message || typeof message !== "object") return false;
   if ((message as { type?: unknown }).type !== "start-run") return false;
-  void startRun(message as StartRunMessage).then(sendResponse);
+  void startRun(message as StartRunMessage)
+    .then(sendResponse)
+    .catch((err) => {
+      console.warn("startRun failed", err);
+      // Answer anyway: a dead message channel gives the panel no way to tell
+      // "refused" from "the worker fell over", and it would wait forever on
+      // a promise that never resolves.
+      sendResponse({ started: false, reason: "at-capacity" });
+    });
   // `true` keeps the message channel open for the async reply. Returning
   // anything else closes it and the caller's promise resolves undefined.
   return true;

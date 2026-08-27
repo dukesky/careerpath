@@ -59,7 +59,14 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         msg.resume,
         (patch) => {
           latest = { ...latest, ...patch };
-          void publish(latest);
+          // A rejection here (storage quota, or "extension context invalidated"
+          // during a reload/update) must not vanish silently: without a
+          // handler it would either surface as an unhandled rejection or, for
+          // an error patch specifically, leave the run stuck at its last
+          // published phase until the five-minute stale rule finally fires.
+          void publish(latest).catch((err) =>
+            console.warn("failed to publish run progress", err),
+          );
         },
         { extraInfo: msg.supplement, runId },
       );
@@ -87,6 +94,11 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
       // runTailor folds its own failures into RunState, so reaching here means
       // something unexpected — record it rather than leaving a run that never
       // reaches a terminal state.
+      //
+      // This publish is the outermost frame of an un-awaited IIFE: if it
+      // itself rejects (same storage-quota / context-invalidated causes as
+      // above) with no handler, that becomes an unhandled promise rejection
+      // rather than a quietly stranded run.
       await publish({
         ...latest,
         phase: "error",
@@ -94,7 +106,7 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           kind: "server",
           message: err instanceof Error ? err.message : "Something went wrong.",
         },
-      });
+      }).catch((publishErr) => console.warn("failed to publish run failure", publishErr));
     }
   })();
 

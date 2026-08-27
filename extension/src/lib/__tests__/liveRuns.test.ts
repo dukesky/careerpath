@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { RunState } from "../run";
+import { cacheKey } from "../cache";
 import {
   STALE_RUN_MS,
   getLiveRun,
@@ -126,6 +127,41 @@ describe("liveRuns", () => {
 
     const all = await getAllLiveRuns();
     expect(Object.values(all)[0].state.phase).toBe("error");
+  });
+
+  // Only reachable by hand-editing chrome.storage.local, or by a future
+  // schema change shipping without a migration — no writer in this module
+  // can produce it. readAll's own doc comment promises "a corrupt or
+  // unreadable blob reads as empty rather than throwing"; this is that same
+  // promise applied per entry, not just to the whole blob. Without it,
+  // withStaleRule -> isRunning(run.state) -> state.phase throws on
+  // `undefined`, and that throw happens outside readAll's try/catch, so
+  // getLiveRun rejects instead of resolving null.
+  it("a malformed entry reads as absent, not as a throw", async () => {
+    await chrome.storage.local.set({
+      cp_live_runs: JSON.stringify({
+        [cacheKey(URL_A)]: { state: null, updatedAt: 123 },
+      }),
+    });
+
+    await expect(getLiveRun(URL_A)).resolves.toBeNull();
+  });
+
+  // This is the property that matters for the concurrency cap: a throw in
+  // getAllLiveRuns would break the cap for every posting at once, not just
+  // the corrupt one, so one bad entry must not poison its neighbors.
+  it("a malformed entry does not poison its neighbors", async () => {
+    const other = "https://example.com/jobs/2";
+    await chrome.storage.local.set({
+      cp_live_runs: JSON.stringify({
+        [cacheKey(URL_A)]: { state: null, updatedAt: 123 },
+        [cacheKey(other)]: { state: RUNNING, jdTitle: "B", updatedAt: Date.now() },
+      }),
+    });
+
+    const all = await getAllLiveRuns();
+    expect(Object.keys(all)).toEqual([cacheKey(other)]);
+    expect(Object.values(all)[0].jdTitle).toBe("B");
   });
 
   it("isRunning is true only for in-flight phases", () => {

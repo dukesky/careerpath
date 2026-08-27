@@ -55,8 +55,32 @@ export function isRunning(state: RunState): boolean {
 }
 
 /**
+ * Whether a parsed entry is shaped well enough to trust downstream.
+ *
+ * This is the reader's last line of defense, and the reader is the one
+ * participant guaranteed to be alive when a worker has been evicted. Without
+ * this check a malformed entry — hand-edited storage, or a future schema
+ * change shipped without a migration — reaches withStaleRule's
+ * isRunning(run.state), which throws on a missing/null `state` or `phase`.
+ * That throw happens outside readAll's own try/catch (which only guards the
+ * JSON.parse of the whole blob), so it would surface as a rejected promise
+ * instead of the "corrupt data reads as absent" behavior this module
+ * promises everywhere else.
+ */
+function isWellFormed(run: unknown): run is LiveRun {
+  if (!run || typeof run !== "object") return false;
+  const r = run as { state?: unknown; updatedAt?: unknown };
+  if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt)) return false;
+  if (!r.state || typeof r.state !== "object") return false;
+  return typeof (r.state as { phase?: unknown }).phase === "string";
+}
+
+/**
  * A corrupt or unreadable blob reads as empty rather than throwing. A cache is
- * expendable; a panel that cannot render because of one is not.
+ * expendable; a panel that cannot render because of one is not. This applies
+ * both to the blob as a whole (bad JSON, wrong top-level shape) and to each
+ * entry inside it (see isWellFormed) — an unreadable entry is indistinguishable
+ * from an absent one, and dropping it silently is the intended degradation.
  */
 async function readAll(): Promise<Record<string, LiveRun>> {
   try {
@@ -64,9 +88,12 @@ async function readAll(): Promise<Record<string, LiveRun>> {
     const raw = got[LIVE_RUNS_KEY];
     if (typeof raw !== "string") return {};
     const parsed: unknown = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, LiveRun>)
-      : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, LiveRun> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (isWellFormed(value)) out[key] = value;
+    }
+    return out;
   } catch {
     return {};
   }

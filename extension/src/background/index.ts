@@ -10,15 +10,48 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((err) => console.warn("sidePanel.setPanelBehavior failed", err));
 
+/**
+ * Give every tab that already exists its own panel instance.
+ *
+ * `tabs.onCreated` below only covers tabs opened from now on, so without this
+ * every tab open at install, at update, or before a worker cold start stays on
+ * the shared window-global panel — including, most likely, the job posting the
+ * user was looking at when they installed the extension.
+ *
+ * `query({})` needs no `tabs` permission: it returns the tabs with `url`
+ * stripped, and only `id` is read here. Do not add a url filter — that would
+ * require the permission this extension deliberately does not request.
+ */
+async function giveExistingTabsTheirOwnPanel(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(
+      tabs.map((tab) =>
+        tab.id === undefined
+          ? Promise.resolve()
+          : chrome.sidePanel
+              .setOptions({ tabId: tab.id, path: "src/sidepanel/index.html", enabled: true })
+              .catch((err) => console.warn("sidePanel.setOptions failed", err)),
+      ),
+    );
+  } catch (err) {
+    console.warn("tabs.query failed", err);
+  }
+}
+
 // Mint on install and refresh on every browser start. The token lasts 24h, so
 // a startup refresh covers any session shorter than a day; the API client's
-// 401 retry covers the rest.
+// 401 retry covers the rest. Also backfill existing tabs here: install and
+// startup are the two points where the worker knows it is starting fresh and
+// may be looking at tabs `onCreated` never fired for.
 chrome.runtime.onInstalled.addListener(() => {
   void ensureToken();
+  void giveExistingTabsTheirOwnPanel();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   void ensureToken(true);
+  void giveExistingTabsTheirOwnPanel();
 });
 
 // Each tab gets its OWN panel instance. Per Chrome's sidePanel docs, setting

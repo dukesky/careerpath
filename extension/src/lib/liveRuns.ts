@@ -54,6 +54,18 @@ export interface LiveRun {
   jdTitle: string;
   /** Epoch ms of the last status update. See STALE_RUN_MS. */
   updatedAt: number;
+  /**
+   * Which resume this run is for — see lib/fingerprint.ts.
+   *
+   * The same obligation cache.ts's own `resumeFingerprint` carries, for the
+   * same reason: this record is DISPLAYED, so the panel must be able to tell
+   * whether what it is about to show was produced from the resume the user
+   * has now. Without it, replacing a resume mid-run leaves output scored
+   * against a resume that no longer exists on screen — and because a FAILED
+   * run is never cleared, that is not a one-minute window but a permanent
+   * one, until the next successful run for that posting.
+   */
+  resumeFingerprint: string;
 }
 
 const STALE_ERROR = "That run stopped before it finished. Try again.";
@@ -78,8 +90,16 @@ export function isRunning(state: RunState): boolean {
  */
 function isWellFormed(run: unknown): run is LiveRun {
   if (!run || typeof run !== "object") return false;
-  const r = run as { state?: unknown; updatedAt?: unknown };
+  const r = run as { state?: unknown; updatedAt?: unknown; resumeFingerprint?: unknown };
   if (typeof r.updatedAt !== "number" || !Number.isFinite(r.updatedAt)) return false;
+  // Provenance, checked HERE so no reader can forget it — the same rule
+  // cache.ts states for its own late-added fields, and the same intended
+  // outcome: an entry written before this field existed cannot be vouched
+  // for, so it reads as absent. Those entries are dead anyway (an extension
+  // update restarts the worker and kills any fetch in flight), so dropping
+  // them is strictly better than the alternative, which is counting a
+  // phantom against the concurrency cap until the stale rule fires.
+  if (typeof r.resumeFingerprint !== "string" || r.resumeFingerprint === "") return false;
   if (!r.state || typeof r.state !== "object") return false;
   return typeof (r.state as { phase?: unknown }).phase === "string";
 }
@@ -143,6 +163,23 @@ export async function putLiveRun(url: string, run: LiveRun): Promise<void> {
   const all = await readAll();
   all[cacheKey(url)] = run;
   await chrome.storage.local.set({ [LIVE_RUNS_KEY]: JSON.stringify(all) });
+}
+
+/**
+ * Everything, in one write — the sibling of cache.ts's clearCachedRuns, and
+ * called from the same place: "also remove my resume and saved results from
+ * this browser." This key became DISPLAYABLE in the panel, which gave it that
+ * promise's obligations too; a failed run left behind here carries the
+ * previous session's analysis and tailored resume and would repaint on
+ * returning to that posting, after the panel had said it kept nothing.
+ *
+ * Safe to call without stopping anything, because it is only reachable when
+ * nothing is running: sign-out is disabled while any run is in flight (see
+ * App.tsx's `anyRunning`). Were it not, a run's next progress write would
+ * simply put its entry back.
+ */
+export async function clearAllLiveRuns(): Promise<void> {
+  await chrome.storage.local.remove([LIVE_RUNS_KEY]);
 }
 
 export async function clearLiveRun(url: string): Promise<void> {

@@ -15,7 +15,7 @@ import {
   type StoredResume,
 } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
-import { clearLiveRun, putLiveRun } from "@/lib/liveRuns";
+import { clearLiveRun, getLiveRun, putLiveRun } from "@/lib/liveRuns";
 import { startRun, type StartRunMessage } from "@/background/runs";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import { API_BASE } from "@/lib/config";
@@ -280,6 +280,10 @@ const JD_B: ExtractedJD = {
 // for what the background would have published.
 const ANALYSIS: GapAnalysis = analysisFixture(70);
 const TAILORED: TailorResult = tailoredFixture(80);
+// The fingerprint of the resume every test renders with. A seeded live run
+// must carry it or the panel treats the run as belonging to someone else's
+// resume — which is the point of the provenance test further down.
+const RESUME_FP = resumeFingerprint(RESUME);
 
 function analysisFixture(score: number): GapAnalysis {
   return {
@@ -1235,6 +1239,94 @@ describe("App - account bar, sign-out, and session handling", () => {
     expect(findButton(container, "Sign out").disabled).toBe(false);
   });
 
+  // The same Critical as the test above, in the shape this plan created.
+  // Runs live in the background now, keyed per posting, five at a time — so
+  // "a run is in flight" stopped being a fact about the panel and became a
+  // fact about storage that no single posting's view can see. The test above
+  // still passes only because it is single-posting: the run it starts is the
+  // one on screen. Here the run is somewhere else entirely, and signing out
+  // with the box checked would empty cp_resume/cp_results/cp_live_runs while
+  // B's run carried on to putCachedRun and wrote the previous session's
+  // tailored resume straight back into storage.
+  it("disables Sign out while a run is in flight for a posting the user is NOT looking at", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await setResume(STORED_RESUME);
+    await putLiveRun(JD_B.url, {
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+      jdTitle: JD_B.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // The posting on screen is genuinely idle — its own button says so, which
+    // is what makes this the multi-posting case rather than the old one.
+    expect(findButton(container, "Tailor my resume")).toBeTruthy();
+
+    const signOutBtn = findButton(container, "Sign out");
+    expect(signOutBtn.disabled).toBe(true);
+    // A disabled button fires no onClick, so this click is itself part of the
+    // assertion: without the guard it would open the dialog.
+    await act(async () => {
+      signOutBtn.click();
+    });
+    expect(container.querySelector(".dialog")).toBeNull();
+  });
+
+  // "Also remove my resume and saved results from this browser" has to cover
+  // the live-run store too, now that the panel renders it. A FAILED run is
+  // never cleared by the background and carries this session's own analysis
+  // and tailored resume, so one left behind repaints the previous session on
+  // return to that posting.
+  it("sign-out with the box checked clears runs left behind for other postings too", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await setResume(STORED_RESUME);
+    await putLiveRun(JD_B.url, {
+      state: {
+        phase: "error",
+        analysis: ANALYSIS,
+        tailored: TAILORED,
+        remaining: null,
+        error: { kind: "quota", message: "You've used all your free runs." },
+      },
+      jdTitle: JD_B.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Sign out").click();
+    });
+    const dialog = container.querySelector(".dialog") as HTMLElement;
+    const checkbox = dialog.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true); // the default, left alone
+    await act(async () => {
+      findButton(dialog, "Sign out").click();
+    });
+    await flush();
+
+    // Storage itself, not just the display.
+    expect(await getLiveRun(JD_B.url)).toBeNull();
+
+    // And the display: the user carries on anonymously with the same resume —
+    // which restores the fingerprint, so anything left in the store would be
+    // shown again — and returns to that posting.
+    await setResume(STORED_RESUME);
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("You've used all your free runs.");
+    expect(container.querySelector(".score")).toBeNull();
+  });
+
   it("does not offer the exhausted-trial sign-in CTA to a caller who is already signed in", async () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     activeJdState = { jd: JD_A, failure: null, loading: false };
@@ -2094,6 +2186,7 @@ describe("App - quota-first account bar", () => {
         state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
         jdTitle: JD_A.title,
         updatedAt: Date.now(),
+        resumeFingerprint: RESUME_FP,
       });
     });
     await flush();
@@ -2586,6 +2679,7 @@ describe("App - runs owned by the background", () => {
       state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
     });
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -2604,6 +2698,7 @@ describe("App - runs owned by the background", () => {
       state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
     });
     await act(async () => {
       fireStorageChange({ cp_live_runs: { newValue: "changed" } });
@@ -2628,6 +2723,7 @@ describe("App - runs owned by the background", () => {
       state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
     });
 
     activeJdState = { jd: JD_B, failure: null, loading: false };
@@ -2650,6 +2746,7 @@ describe("App - runs owned by the background", () => {
       },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
     });
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await setResume(STORED_RESUME);
@@ -2679,6 +2776,7 @@ describe("App - runs owned by the background", () => {
             },
             jdTitle: JD_A.title,
             updatedAt: Date.now(),
+            resumeFingerprint: RESUME_FP,
           });
           resolve({ started: true });
         };
@@ -2728,6 +2826,7 @@ describe("App - runs owned by the background", () => {
       },
       jdTitle: JD_A.title,
       updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
     });
     activeJdState = { jd: JD_A, failure: null, loading: false };
     await renderApp();
@@ -2740,6 +2839,36 @@ describe("App - runs owned by the background", () => {
     expect(container.textContent).toContain(
       "Includes experience you added that isn’t on your resume.",
     );
+  });
+
+  // Guarantee #6 from the inventory — "a result produced from a different
+  // resume is neither displayed nor its run id reused" — which held on the
+  // cache path (getCachedRun checks provenance) and not on the live path
+  // until this. A FAILED run is used deliberately: it is never cleared, so
+  // without the check the panel would score the user against a resume they
+  // no longer have permanently, not for the minute a run takes.
+  it("does not display a live run produced from a resume the user no longer has", async () => {
+    await putLiveRun(JD_A.url, {
+      state: {
+        phase: "error",
+        analysis: ANALYSIS,
+        tailored: TAILORED,
+        remaining: null,
+        error: { kind: "server", message: "That run stopped before it finished. Try again." },
+      },
+      jdTitle: JD_A.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: "the-resume-they-replaced",
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(container.textContent).not.toContain("That run stopped before it finished.");
+    expect(container.querySelector(".score")).toBeNull();
+    // Not stuck behind someone else's run either — this posting is idle and
+    // can be tailored against the resume that is actually loaded.
+    expect(findButton(container, "Tailor my resume").disabled).toBe(false);
   });
 
   it("explains the concurrency cap rather than failing silently", async () => {

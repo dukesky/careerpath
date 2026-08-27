@@ -38,22 +38,24 @@ export function AccountBar({
    */
   unlimited: boolean;
   /**
-   * App.tsx's `busy` — whether generate() currently owns the display. Same
-   * reasoning, same discipline as the "Clear N cached results" control a few
-   * lines down the panel in App.tsx: signing out (with the box checked) also
-   * clears the resume and the cache, so it is a SECOND route to exactly what
-   * that control's own `disabled={busy}` guards against — a mid-run clear
-   * that gets silently repainted and re-persisted the moment the run
-   * resolves, because generate()'s own guard only keys on which POSTING is
-   * active, not on whether the user is still signed in.
+   * Whether ANY run is in flight — App.tsx passes `busy || anyRunning`, not
+   * the displayed posting's `busy` alone, and the difference is load-bearing.
+   * Runs live in the background service worker now, keyed per posting, up to
+   * five at once; the panel is only a view of one of them. Signing out with
+   * the box checked clears the resume, the cache and the live runs, so it is
+   * a SECOND route to exactly what the "Clear N cached results" control's own
+   * `disabled` guards against — except that here the run that repaints and
+   * re-persists the previous session's result afterwards need not be the one
+   * on screen, or on any screen. Narrowing this back to the displayed
+   * posting reopens that.
    */
   busy: boolean;
   /**
    * App.tsx's `saving` — whether a Save (SaveButton, inside Results) has a
    * POST to /api/saved in flight. A SEPARATE prop from `busy` rather than
-   * folded into it, because the two state different facts and `busy`'s
-   * meaning above ("generate() currently owns the display") is load-bearing
-   * elsewhere; only the Sign-out button's own `disabled` combines them.
+   * folded into it, because the two state different facts — a save is not a
+   * run, and no run being in flight says nothing about a POST on the wire;
+   * only the Sign-out button's own `disabled` combines them.
    *
    * Sign-out is the FOURTH door into the save-in-flight lost-feedback race
    * that SaveButton's `onSavingChange` exists to close, and the worst of

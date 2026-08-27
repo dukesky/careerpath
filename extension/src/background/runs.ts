@@ -51,8 +51,16 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   const prior = await getCachedRun(forUrl, msg.fingerprint);
   const runId = msg.supplement.trim().length > 0 && prior?.runId ? prior.runId : newRunId();
 
+  // `resumeFingerprint` travels with every publish, not just the final write:
+  // the panel displays these records, so each one has to say which resume it
+  // was produced from — see LiveRun's own doc comment.
   const publish = (state: RunState) =>
-    putLiveRun(forUrl, { state, jdTitle: msg.jd.title, updatedAt: Date.now() });
+    putLiveRun(forUrl, {
+      state,
+      jdTitle: msg.jd.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: msg.fingerprint,
+    });
 
   await publish({ ...INITIAL_RUN_STATE, phase: "reading" });
 

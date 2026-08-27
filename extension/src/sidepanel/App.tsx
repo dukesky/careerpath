@@ -9,7 +9,7 @@ import { INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import { cacheKey, clearCachedRuns, countCachedRuns, getCachedRun } from "@/lib/cache";
-import { getLiveRun, isRunning, LIVE_RUNS_KEY } from "@/lib/liveRuns";
+import { getAllLiveRuns, isRunning, LIVE_RUNS_KEY } from "@/lib/liveRuns";
 // Types only — this must never pull the background's module graph into the
 // panel bundle.
 import type { StartRunMessage, StartRunResult } from "@/background/runs";
@@ -65,6 +65,21 @@ export default function App() {
   // A refusal the user has to be told about, or null. Cleared on the next
   // attempt and on moving to another posting — it describes one click.
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Whether ANY posting has a run in flight — not just the one on screen.
+   *
+   * A separate question from `busy` below, and the distinction is the whole
+   * point. `busy` answers "can this posting be tailored right now", which is
+   * per-posting by definition. This answers "is it safe to pull storage out
+   * from under a run", which is not: sign-out with the box checked empties
+   * cp_resume/cp_results/cp_live_runs, and a run still going for ANOTHER
+   * posting will reach putCachedRun afterwards and write the previous
+   * session's tailored resume straight back into cp_results. The old
+   * panel-global `busy` covered this by accident, because there could only
+   * ever be one run and it was the panel's own; five concurrent runs is the
+   * whole point of this plan, so it now has to be asked explicitly.
+   */
+  const [anyRunning, setAnyRunning] = useState(false);
   const { jd, failure, loading, reread } = useActiveJd();
   const [hasBroadAccess, setHasBroadAccess] = useState(true);
   const [granting, setGranting] = useState(false);
@@ -226,7 +241,23 @@ export default function App() {
       // storage event.
       if (url !== activeJdUrlRef.current) return;
       const seq = ++displaySeqRef.current;
-      const live = url ? await getLiveRun(url) : null;
+
+      // Every run, in one read: this posting's (for the display) and the rest
+      // (for `anyRunning`). `getAllLiveRuns` keys on cacheKey(url) and applies
+      // the same stale rule getLiveRun does, so `all[url]` IS getLiveRun(url)
+      // — with the other four postings' runs already in hand rather than
+      // needing a second pass over the same blob.
+      const all = await getAllLiveRuns();
+      setAnyRunning(Object.values(all).some((run) => isRunning(run.state)));
+
+      const found = url ? (all[url] ?? null) : null;
+      // Provenance, and the same rule getCachedRun applies to its own
+      // entries: a record that cannot be shown to belong to the resume loaded
+      // NOW is treated as absent — nothing displayed, no count folded in.
+      // Without this, replacing a resume mid-run leaves the panel scoring the
+      // user against a resume they no longer have, and a failed run makes
+      // that permanent rather than momentary.
+      const live = found && found.resumeFingerprint === fingerprint ? found : null;
 
       // Read BEFORE the staleness guard below, and deliberately so. A
       // completed run's `remaining` exists only in the last state the
@@ -566,6 +597,14 @@ export default function App() {
     setSupplementDraft("");
     draftsRef.current.clear();
     setBaselineForPosting(null);
+    // SignOutDialog cleared cp_live_runs too, so the panel's own reading of
+    // it has to go with the rest. Immediately, not on the next refresh: this
+    // handler exists precisely so the display never outlives the storage it
+    // describes. `runningPostingsRef` is bookkeeping ABOUT those records —
+    // left behind, it would report a run "finishing" that was deleted rather
+    // than completed, and spend a quota request saying so.
+    setAnyRunning(false);
+    runningPostingsRef.current.clear();
   }
 
   // Only called once signOut() itself has resolved successfully — ending the
@@ -604,12 +643,18 @@ export default function App() {
         <h1>{jd?.title || (failure ? "No posting found" : " ")}</h1>
       </header>
 
+      {/* `busy || anyRunning`, and this is the only consumer that needs the
+          difference. Sign-out with the box checked empties storage, so what
+          matters here is whether ANY run could still write to it afterwards —
+          including one going for a posting the user is not looking at. The
+          Tailor button further down deliberately keeps the narrower `busy`:
+          that question really is about the posting on screen. */}
       <AccountBar
         signedIn={signedIn}
         email={email}
         remaining={displayRemaining}
         unlimited={displayUnlimited}
-        busy={busy}
+        busy={busy || anyRunning}
         saving={saving}
         onLocalDataCleared={handleLocalDataCleared}
         onSignedOut={handleSignedOut}

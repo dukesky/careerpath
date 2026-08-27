@@ -2,6 +2,7 @@ import { useState } from "react";
 import { signOut } from "@/lib/clerk";
 import { clearHasSignedIn, clearResume } from "@/lib/storage";
 import { clearCachedRuns } from "@/lib/cache";
+import { clearAllLiveRuns } from "@/lib/liveRuns";
 
 /**
  * The confirmation shown when the user clicks "Sign out" in AccountBar.
@@ -62,6 +63,13 @@ export function SignOutDialog({
       if (removeLocal) {
         await clearResume();
         await clearCachedRuns();
+        // The third store, and the newest: runs in flight and runs that
+        // failed now live in chrome.storage.local too, and the panel renders
+        // them. A failed entry carries this session's analysis and tailored
+        // resume, so leaving it would let the previous session repaint on
+        // return to that posting — the same promise as the two lines above,
+        // and it has to cover the same ground.
+        await clearAllLiveRuns();
         onLocalDataCleared();
       }
       await signOut();

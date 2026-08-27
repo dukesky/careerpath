@@ -6,6 +6,7 @@ import {
   getLiveRun,
   putLiveRun,
   clearLiveRun,
+  clearAllLiveRuns,
   getAllLiveRuns,
   isRunning,
 } from "../liveRuns";
@@ -17,6 +18,8 @@ const RUNNING: RunState = {
   remaining: null,
   error: null,
 };
+
+const FP = "resume-fingerprint-1";
 
 const URL_A = "https://example.com/jobs/1";
 
@@ -43,7 +46,7 @@ beforeEach(() => {
 
 describe("liveRuns", () => {
   it("round-trips a run under its normalized posting key", async () => {
-    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "Staff MLE", updatedAt: Date.now() });
+    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "Staff MLE", updatedAt: Date.now(), resumeFingerprint: FP });
 
     const got = await getLiveRun(URL_A);
     expect(got?.state.phase).toBe("comparing");
@@ -54,7 +57,7 @@ describe("liveRuns", () => {
   // normalizes this way, and the two stores have to agree on what "the same
   // posting" means or a live run and its cached result key differently.
   it("treats a tracking-parameter variant as the same posting", async () => {
-    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "Staff MLE", updatedAt: Date.now() });
+    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "Staff MLE", updatedAt: Date.now(), resumeFingerprint: FP });
 
     expect(await getLiveRun(`${URL_A}?utm_source=newsletter`)).not.toBeNull();
   });
@@ -67,6 +70,7 @@ describe("liveRuns", () => {
       state: RUNNING,
       jdTitle: "Staff MLE",
       updatedAt: Date.now() - STALE_RUN_MS - 1,
+      resumeFingerprint: FP,
     });
 
     const got = await getLiveRun(URL_A);
@@ -82,6 +86,7 @@ describe("liveRuns", () => {
       state: RUNNING,
       jdTitle: "Staff MLE",
       updatedAt: Date.now() - 1000,
+      resumeFingerprint: FP,
     });
 
     expect((await getLiveRun(URL_A))?.state.phase).toBe("comparing");
@@ -99,6 +104,7 @@ describe("liveRuns", () => {
       state: failed,
       jdTitle: "Staff MLE",
       updatedAt: Date.now() - STALE_RUN_MS * 10,
+      resumeFingerprint: FP,
     });
 
     expect((await getLiveRun(URL_A))?.state.error?.kind).toBe("quota");
@@ -106,8 +112,8 @@ describe("liveRuns", () => {
 
   it("clears one posting without touching the others", async () => {
     const other = "https://example.com/jobs/2";
-    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "A", updatedAt: Date.now() });
-    await putLiveRun(other, { state: RUNNING, jdTitle: "B", updatedAt: Date.now() });
+    await putLiveRun(URL_A, { state: RUNNING, jdTitle: "A", updatedAt: Date.now(), resumeFingerprint: FP });
+    await putLiveRun(other, { state: RUNNING, jdTitle: "B", updatedAt: Date.now(), resumeFingerprint: FP });
 
     await clearLiveRun(URL_A);
 
@@ -123,6 +129,7 @@ describe("liveRuns", () => {
       state: RUNNING,
       jdTitle: "A",
       updatedAt: Date.now() - STALE_RUN_MS - 1,
+      resumeFingerprint: FP,
     });
 
     const all = await getAllLiveRuns();
@@ -155,13 +162,55 @@ describe("liveRuns", () => {
     await chrome.storage.local.set({
       cp_live_runs: JSON.stringify({
         [cacheKey(URL_A)]: { state: null, updatedAt: 123 },
-        [cacheKey(other)]: { state: RUNNING, jdTitle: "B", updatedAt: Date.now() },
+        [cacheKey(other)]: { state: RUNNING, jdTitle: "B", updatedAt: Date.now(), resumeFingerprint: FP },
       }),
     });
 
     const all = await getAllLiveRuns();
     expect(Object.keys(all)).toEqual([cacheKey(other)]);
     expect(Object.values(all)[0].jdTitle).toBe("B");
+  });
+
+  // The migration rule, and the same one cache.ts states for its own
+  // late-added provenance fields: an entry written before `resumeFingerprint`
+  // existed cannot be shown to belong to any particular resume, so it reads
+  // as absent rather than as a run whose output we would then display. Those
+  // entries are already dead — an extension update restarts the worker and
+  // kills the fetch — so this loses nothing and avoids a phantom holding a
+  // slot against the concurrency cap.
+  it("an entry written before resumeFingerprint existed reads as absent", async () => {
+    await chrome.storage.local.set({
+      cp_live_runs: JSON.stringify({
+        [cacheKey(URL_A)]: { state: RUNNING, jdTitle: "Staff MLE", updatedAt: Date.now() },
+      }),
+    });
+
+    await expect(getLiveRun(URL_A)).resolves.toBeNull();
+    expect(Object.keys(await getAllLiveRuns())).toEqual([]);
+  });
+
+  // Sign-out's "also remove my resume and saved results from this browser"
+  // has to reach this store too, now that the panel renders it.
+  it("clearAllLiveRuns removes every posting's run", async () => {
+    const other = "https://example.com/jobs/2";
+    await putLiveRun(URL_A, {
+      state: RUNNING,
+      jdTitle: "A",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+    await putLiveRun(other, {
+      state: RUNNING,
+      jdTitle: "B",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+
+    await clearAllLiveRuns();
+
+    expect(await getLiveRun(URL_A)).toBeNull();
+    expect(await getLiveRun(other)).toBeNull();
+    expect(await getAllLiveRuns()).toEqual({});
   });
 
   it("isRunning is true only for in-flight phases", () => {

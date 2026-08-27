@@ -15,6 +15,8 @@ import {
   type StoredResume,
 } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
+import { clearLiveRun, putLiveRun } from "@/lib/liveRuns";
+import { startRun, type StartRunMessage } from "@/background/runs";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import { API_BASE } from "@/lib/config";
 import App from "../App";
@@ -197,6 +199,37 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// `chrome.runtime.sendMessage` — the panel's ONLY way to start a run now that
+// the background service worker owns them. Same "replace the boundary"
+// pattern as the mocks above: `sendMessageCalls` records what the panel
+// actually asked for, `sendMessageImpl` decides what the worker answers.
+//
+// The default answer is set per describe block, not here, because the two
+// kinds of test want different things from it: the block that pins the
+// panel/background CONTRACT wants a worker that only answers, while every
+// block that just needs "a run happened and produced a result" installs
+// `backgroundStartsTheRun` below.
+// ---------------------------------------------------------------------------
+type SendMessageFn = (message: unknown) => Promise<unknown>;
+
+let sendMessageCalls: unknown[] = [];
+let sendMessageImpl: SendMessageFn = async () => ({ started: true });
+
+/**
+ * A worker that actually runs the run — the REAL `background/runs.ts`, driven
+ * in-process against the same faked chrome.storage the panel reads.
+ *
+ * A hand-written double was the alternative and is worse: it would have to
+ * re-implement run-id reuse, the frozen baseline, and the admission checks,
+ * and those are precisely the rules the tests below assert. A double that
+ * drifted from the real worker would keep passing while the product broke.
+ * `@/lib/run` is mocked file-wide, so this drives whatever `runTailorImpl` a
+ * test installs, exactly as the old in-panel generate() did.
+ */
+const backgroundStartsTheRun: SendMessageFn = (message) =>
+  startRun(message as StartRunMessage);
+
 // Applies to EVERY test in this file, both describe blocks below — clerk
 // state must not leak from one test into the next regardless of which
 // describe registered it.
@@ -243,6 +276,11 @@ const JD_B: ExtractedJD = {
   url: "https://beta.com/jobs/2",
 };
 
+// Ready-made states for the tests that seed a live run directly, standing in
+// for what the background would have published.
+const ANALYSIS: GapAnalysis = analysisFixture(70);
+const TAILORED: TailorResult = tailoredFixture(80);
+
 function analysisFixture(score: number): GapAnalysis {
   return {
     overall_match_score: score,
@@ -284,6 +322,22 @@ function fakeChromeStorage() {
         }),
         set: vi.fn(async (items: Record<string, unknown>) => {
           Object.assign(data, items);
+          // Chrome broadcasts onChanged for EVERY write; this fake broadcasts
+          // only for the live-runs key, and that narrowing is deliberate.
+          // It is the one key a write to which the panel must react to
+          // without anyone calling __fireStorageChange by hand — the
+          // background publishes a run's progress there, and the panel is
+          // now a view of it. Broadcasting the other keys too would fire
+          // App's sign-in listener from writes these tests make as SETUP,
+          // and since `@/lib/clerk` is mocked with a `signOut()` that cannot
+          // represent "signed out", the resulting refreshAccount() would
+          // resurrect a session a test had just ended. The sign-in keys keep
+          // their own explicit coverage below.
+          if ("cp_live_runs" in items) {
+            for (const fn of [...listeners]) {
+              fn({ cp_live_runs: { newValue: items.cp_live_runs } }, "local");
+            }
+          }
         }),
         remove: vi.fn(async (keys: string[]) => {
           for (const k of keys) delete data[k];
@@ -303,11 +357,27 @@ function fakeChromeStorage() {
         ),
       },
     },
+    runtime: {
+      sendMessage: vi.fn(async (message: unknown) => {
+        sendMessageCalls.push(message);
+        return sendMessageImpl(message);
+      }),
+    },
     // Test-only hook: fires what Chrome would fire.
     __fireStorageChange(changes: Record<string, { newValue?: unknown }>, area = "local") {
       for (const fn of [...listeners]) fn(changes, area);
     },
   };
+}
+
+// The one way this file fires a storage change by hand. Chrome's own event,
+// as far as the panel can tell.
+function fireStorageChange(changes: Record<string, { newValue?: unknown }>, area = "local") {
+  (
+    globalThis.chrome as unknown as {
+      __fireStorageChange: (c: Record<string, { newValue?: unknown }>, a?: string) => void;
+    }
+  ).__fireStorageChange(changes, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +451,10 @@ describe("App - cross-posting state", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -766,6 +840,10 @@ describe("App - account bar, sign-out, and session handling", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -1111,10 +1189,24 @@ describe("App - account bar, sign-out, and session handling", () => {
     await setResume(STORED_RESUME);
     await renderApp();
 
+    // The release reports a terminal state, because a real run always does:
+    // "in flight" is now a fact about what the background has published for
+    // this posting, not about a promise inside the panel, so a run that
+    // resolved having reported nothing is one that never finished. runTailor
+    // itself always ends at `done` or `error` (it folds its own failures into
+    // RunState), so a fixture that resolves silently models nothing real.
     let releaseRun: (() => void) | null = null;
-    runTailorImpl = () =>
+    runTailorImpl = (_jd, _resume, onUpdate) =>
       new Promise((resolve) => {
-        releaseRun = resolve;
+        releaseRun = () => {
+          onUpdate({
+            phase: "done",
+            analysis: analysisFixture(70),
+            tailored: tailoredFixture(80),
+            remaining: 3,
+          });
+          resolve();
+        };
       });
 
     await act(async () => {
@@ -1383,6 +1475,10 @@ describe("App - saving a tailored resume from the panel", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -1783,6 +1879,10 @@ describe("App - quota-first account bar", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -1971,6 +2071,50 @@ describe("App - quota-first account bar", () => {
     expect(container.textContent).not.toContain("3 runs left");
     expect(container.textContent).toContain("5 runs left today");
   });
+
+  // FINAL-REVIEW (I2)'s guarantee, through the new mechanism. A completed
+  // run's own count now reaches the panel only as the LAST state the
+  // background publishes before it clears the run — a window a couple of
+  // storage round trips wide, which a panel doing anything else can miss
+  // entirely. Missing it must not put the figure fetched at open back on
+  // screen, stating an allowance the user has already spent. So the panel
+  // asks the server instead: the one thing it must never do is keep showing
+  // a number it knows a run has just invalidated.
+  it("asks the server for the count when a run finishes without the panel reading one", async () => {
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+    expect(container.textContent).toContain("5 runs left today");
+
+    // A run is in flight for this posting, and the panel has read it.
+    await act(async () => {
+      await putLiveRun(JD_A.url, {
+        state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+        jdTitle: JD_A.title,
+        updatedAt: Date.now(),
+      });
+    });
+    await flush();
+    expect(findButton(container, "Working…")).toBeTruthy();
+
+    // It finishes: the result reaches the cache and the run is cleared. The
+    // state carrying the new count was never read here — exactly the case
+    // the panel cannot detect from the outside.
+    apiGetImpl = async () => ({ ok: true, data: { remaining: 4 } });
+    await act(async () => {
+      await putCachedRun(JD_A.url, cachedRun(70, "", "run-a-done"));
+      await clearLiveRun(JD_A.url);
+    });
+    await flush();
+
+    // The result is on screen...
+    expect(container.querySelector(".score")).toBeTruthy();
+    // ...and so is the allowance the caller actually has now.
+    expect(container.textContent).toContain("4 runs left today");
+    expect(container.textContent).not.toContain("5 runs left");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1990,6 +2134,10 @@ describe("App - noticing a sign-in from the other tab", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -2028,9 +2176,7 @@ describe("App - noticing a sign-in from the other tab", () => {
     apiGetImpl = async () => ({ ok: true, data: { remaining: 5 } });
 
     await act(async () => {
-      (globalThis.chrome as unknown as {
-        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
-      }).__fireStorageChange({ cp_has_signed_in: { newValue: true } });
+      fireStorageChange({ cp_has_signed_in: { newValue: true } });
     });
     await flush();
 
@@ -2065,9 +2211,7 @@ describe("App - noticing a sign-in from the other tab", () => {
     // key changes, because `cp_has_signed_in` was true before and is true
     // after.
     await act(async () => {
-      (globalThis.chrome as unknown as {
-        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
-      }).__fireStorageChange({ cp_signin_at: { newValue: 1_756_000_000_000 } });
+      fireStorageChange({ cp_signin_at: { newValue: 1_756_000_000_000 } });
     });
     await flush();
 
@@ -2081,9 +2225,7 @@ describe("App - noticing a sign-in from the other tab", () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
 
     await act(async () => {
-      (globalThis.chrome as unknown as {
-        __fireStorageChange: (c: Record<string, { newValue?: unknown }>) => void;
-      }).__fireStorageChange({ cp_resume: { newValue: "something" } });
+      fireStorageChange({ cp_resume: { newValue: "something" } });
     });
     await flush();
 
@@ -2109,6 +2251,10 @@ describe("App - permission explanation and the way out to the web app", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -2224,6 +2370,10 @@ describe("App - beta code", () => {
     runTailorCalls = [];
     getCachedRunOverride = null;
     getCachedRunCallCount = 0;
+    // These suites are about what the panel DISPLAYS, so they want a worker
+    // that really runs the run. See `backgroundStartsTheRun`.
+    sendMessageCalls = [];
+    sendMessageImpl = backgroundStartsTheRun;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -2362,5 +2512,249 @@ describe("App - beta code", () => {
     expect(await getBetaCode()).toBe("LETMEIN");
     expect(container.textContent).not.toContain("That code didn't work.");
     expect(container.textContent).not.toContain("Beta · unlimited");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Background-owned runs: the panel stops running generations and starts
+// rendering what the background publishes. Own describe block, own
+// container/root, for the same reason the other top-level blocks each have
+// one — no shared mutable DOM state between suites.
+//
+// This block's `sendMessageImpl` deliberately does NOT run anything: what is
+// under test here is the panel/background CONTRACT, so the worker only
+// answers. The blocks above install `backgroundStartsTheRun` instead, which
+// drives the real background/runs.ts.
+// ---------------------------------------------------------------------------
+describe("App - runs owned by the background", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.stubGlobal("chrome", fakeChromeStorage());
+    activeJdState = { jd: null, failure: null, loading: false };
+    runTailorImpl = async () => {};
+    runTailorCalls = [];
+    getCachedRunOverride = null;
+    getCachedRunCallCount = 0;
+    sendMessageCalls = [];
+    sendMessageImpl = async () => ({ started: true });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function flush() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function renderApp() {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+  }
+
+  it("asks the background to start a run instead of running it in the panel", async () => {
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    const sent = sendMessageCalls.at(-1) as { type: string; supplement: string };
+    expect(sent.type).toBe("start-run");
+    expect(runTailorCalls.length).toBe(0);
+  });
+
+  it("shows a run already in flight when the panel opens", async () => {
+    await putLiveRun(JD_A.url, {
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now(),
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(findButton(container, "Working…")).toBeTruthy();
+  });
+
+  // The panel is a view: progress arrives as a storage change, not a callback.
+  it("advances as the background publishes progress", async () => {
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await putLiveRun(JD_A.url, {
+      state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, error: null },
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now(),
+    });
+    await act(async () => {
+      fireStorageChange({ cp_live_runs: { newValue: "changed" } });
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Ada Lovelace");
+    // "Ada Lovelace" is also the stored resume's own name, rendered by
+    // ResumeBlock — so on its own the line above would pass with nothing from
+    // the run painted at all. The score card exists only once this run's
+    // analysis has reached the display.
+    expect(container.querySelector(".score")?.textContent).toBe("70 → 80 match");
+  });
+
+  // The point of the whole plan: a run belongs to the posting, so leaving and
+  // coming back finds it still going rather than gone.
+  it("keeps showing a posting's run after switching away and back", async () => {
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+    await putLiveRun(JD_A.url, {
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now(),
+    });
+
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await renderApp();
+    expect(hasButton(container, "Working…")).toBe(false);
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+    expect(findButton(container, "Working…")).toBeTruthy();
+  });
+
+  it("surfaces a failed background run when the user returns to that posting", async () => {
+    await putLiveRun(JD_A.url, {
+      state: {
+        phase: "error",
+        analysis: null,
+        tailored: null,
+        remaining: null,
+        error: { kind: "quota", message: "You've used all your free runs." },
+      },
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now(),
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    expect(container.textContent).toContain("You've used all your free runs.");
+  });
+
+  // generate() awaits the background before it refreshes, so its closure
+  // outlives the posting it was clicked on if the user moves first. What it
+  // reads back belongs to that posting and must not be painted under this
+  // one — the cross-posting confusion this panel has been fixed for three
+  // times, arriving through the one path the rewrite leaves open.
+  it("does not paint a run under the posting the user switched to while starting it", async () => {
+    let answerStart: (() => Promise<void>) | null = null;
+    sendMessageImpl = (message) =>
+      new Promise((resolve) => {
+        answerStart = async () => {
+          // What the background does before it answers: publish the run.
+          await putLiveRun((message as StartRunMessage).jd.url, {
+            state: {
+              phase: "reading",
+              analysis: null,
+              tailored: null,
+              remaining: null,
+              error: null,
+            },
+            jdTitle: JD_A.title,
+            updatedAt: Date.now(),
+          });
+          resolve({ started: true });
+        };
+      });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+
+    // The user moves to another posting while the start is still on the wire.
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await renderApp();
+
+    await act(async () => {
+      await answerStart?.();
+    });
+    await flush();
+
+    // Nothing is running for B, so nothing here may say otherwise.
+    expect(hasButton(container, "Working…")).toBe(false);
+    expect(findButton(container, "Tailor my resume")).toBeTruthy();
+
+    // ...and A's run is still A's, waiting where the user left it.
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+    expect(findButton(container, "Working…")).toBeTruthy();
+  });
+
+  // Failures are KEPT — the background clears a run only on success — so a
+  // failed retry would otherwise sit on top of this posting forever, hiding
+  // a result the user has already paid for behind an error and making the
+  // only way back to it another paid run.
+  it("keeps a posting's earlier result on screen when a later run for it failed", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(60, "what I did with Kafka", "run-a-cached"));
+    await putLiveRun(JD_A.url, {
+      state: {
+        phase: "error",
+        analysis: null,
+        tailored: null,
+        remaining: null,
+        error: { kind: "quota", message: "You've used all your free runs." },
+      },
+      jdTitle: JD_A.title,
+      updatedAt: Date.now(),
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // The failure is the news...
+    expect(container.textContent).toContain("You've used all your free runs.");
+    // ...and the result is still right there, with its own timestamp and its
+    // own disclosure, not blanked by it.
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 70 match");
+    expect(container.textContent).toContain(
+      "Includes experience you added that isn’t on your resume.",
+    );
+  });
+
+  it("explains the concurrency cap rather than failing silently", async () => {
+    sendMessageImpl = async () => ({ started: false, reason: "at-capacity" });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain(
+      "Five postings are already generating. Wait for one to finish.",
+    );
   });
 });

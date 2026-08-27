@@ -33,8 +33,10 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       console.warn("startRun failed", err);
       // Answer anyway: a dead message channel gives the panel no way to tell
       // "refused" from "the worker fell over", and it would wait forever on
-      // a promise that never resolves.
-      sendResponse({ started: false, reason: "at-capacity" });
+      // a promise that never resolves. `failed` rather than a borrowed
+      // `at-capacity` — the panel now has a caller, and telling a user five
+      // postings are generating when none are is a lie it can act on.
+      sendResponse({ started: false, reason: "failed" });
     });
   // `true` keeps the message channel open for the async reply. Returning
   // anything else closes it and the caller's promise resolves undefined.

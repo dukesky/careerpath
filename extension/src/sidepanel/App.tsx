@@ -5,16 +5,14 @@ import {
   SIGNIN_SIGNAL_KEY,
   type StoredResume,
 } from "@/lib/storage";
-import { runTailor, newRunId, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
+import { INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
-import {
-  cacheKey,
-  clearCachedRuns,
-  countCachedRuns,
-  getCachedRun,
-  putCachedRun,
-} from "@/lib/cache";
+import { cacheKey, clearCachedRuns, countCachedRuns, getCachedRun } from "@/lib/cache";
+import { getLiveRun, isRunning, LIVE_RUNS_KEY } from "@/lib/liveRuns";
+// Types only — this must never pull the background's module graph into the
+// panel bundle.
+import type { StartRunMessage, StartRunResult } from "@/background/runs";
 import { API_BASE } from "@/lib/config";
 import {
   currentUserEmail,
@@ -29,8 +27,21 @@ import { Results } from "./Results";
 import { AccountBar } from "./AccountBar";
 import { BetaCodeBox } from "./BetaCodeBox";
 
+/**
+ * Refusals the background can hand back, in the panel's words.
+ *
+ * `already-running` has no entry on purpose: the panel is about to render
+ * that run's own progress, which says everything a message could.
+ */
+const AT_CAPACITY_NOTICE = "Five postings are already generating. Wait for one to finish.";
+const COULD_NOT_START_NOTICE = "Couldn't start that run. Try again.";
+
 export default function App() {
   const [stored, setStored] = useState<StoredResume | null>(null);
+  // What is on screen for the posting the user is looking at. Owned by
+  // `refreshDisplay` below and by NOTHING else — the panel no longer runs a
+  // generation, so there are no patches to fold in here, only reads of what
+  // the background has published for THIS posting.
   const [state, setState] = useState<RunState>(INITIAL_RUN_STATE);
   // When the currently-displayed result was generated, ISO 8601. Non-null for
   // both a fresh run and a restored one — a result is a result.
@@ -39,27 +50,21 @@ export default function App() {
   // below: the draft is what is typed but not yet sent.
   const [appliedSupplement, setAppliedSupplement] = useState("");
   const [supplementDraft, setSupplementDraft] = useState("");
-  // The run this posting's displayed result came from. Reusing it makes a
-  // regeneration free. "" means there is nothing to refine, so the next
-  // generate mints a fresh id and is charged.
-  const [runIdForPosting, setRunIdForPosting] = useState("");
   // Drives the clear control, which stays hidden while there is nothing to
-  // clear. Refreshed after every write and after clearing.
+  // clear. Refreshed by `refreshDisplay` and after clearing.
   const [cachedCount, setCachedCount] = useState(0);
-  // Whether a runTailor() promise is currently unresolved. This is tracked
-  // SEPARATELY from `state.phase` and set/cleared ONLY inside generate()'s
-  // try/finally below — nothing else may write it. That separation is load-
-  // bearing: the JD-change effect a few lines down calls
-  // setState(INITIAL_RUN_STATE) on every tab switch, including a switch back
-  // to a URL whose run is still executing. If "is a run in flight" were
-  // derived from `state.phase` (as it originally was, via `phase ===
-  // "reading" | "comparing" | "writing"`), that reset would silently flip it
-  // back to "idle" mid-run and re-enable the button with no on-screen sign a
-  // run was still going — letting a second click start a second paid run
-  // against the same posting while the first was still charging quota.
-  // `busy` cannot be cleared by that effect because the effect never
-  // touches it.
-  const [busy, setBusy] = useState(false);
+  // Whether a start-run message is on the wire and unanswered. NOT "is a run
+  // in flight" — that is read from storage (see `busy` below). This covers
+  // only the round trip between the click and the background having published
+  // the run, during which storage says nothing is happening and the button
+  // would otherwise still look clickable. It is also the panel's half of the
+  // guard against a double start: the background's own admission check reads
+  // storage and then awaits before writing, so two clicks a few milliseconds
+  // apart can both pass it and mint two charged runs for one posting.
+  const [starting, setStarting] = useState(false);
+  // A refusal the user has to be told about, or null. Cleared on the next
+  // attempt and on moving to another posting — it describes one click.
+  const [notice, setNotice] = useState<string | null>(null);
   const { jd, failure, loading, reread } = useActiveJd();
   const [hasBroadAccess, setHasBroadAccess] = useState(true);
   const [granting, setGranting] = useState(false);
@@ -99,7 +104,6 @@ export default function App() {
 
   useEffect(() => {
     void getResume().then(setStored);
-    void countCachedRuns().then(setCachedCount);
   }, []);
 
   // isSignedIn()/currentUserEmail() are one-shot reads (see lib/clerk.ts),
@@ -161,6 +165,179 @@ export default function App() {
     setQuota(fetched);
   }, []);
 
+  /**
+   * Everything the user typed but has not sent, per posting.
+   *
+   * The draft is the one piece of displayed state storage cannot supply: a
+   * live run does not carry the supplement it was started with, and the
+   * cached entry only knows what the LAST finished run used. Without this,
+   * typing a paragraph under posting A, starting a run, glancing at B and
+   * coming back leaves A's box showing A's previous text — the user's typing
+   * silently gone. Keyed on the normalized URL, so the box under a posting
+   * can only ever contain that posting's own text; another posting's claimed
+   * experience cannot be sitting there when the user hits regenerate.
+   *
+   * Panel-lifetime memory on purpose: it is a draft, not a result, and
+   * nothing here is worth persisting to the user's disk.
+   */
+  const draftsRef = useRef(new Map<string, string>());
+  const displaySeqRef = useRef(0);
+  // Which posting the panel is showing RIGHT NOW, readable synchronously.
+  // `jd` is re-read on every tab switch and navigation (see useActiveJd), and
+  // a caller can be holding a closure over a posting the user has already
+  // left — generate() awaits the background before it refreshes.
+  const activeJdUrlRef = useRef<string | undefined>(undefined);
+  // Postings this panel has READ as having a run in flight. Only
+  // `refreshDisplay` writes it; see the quota refresh below for its one job.
+  // A set rather than a single value because leaving a posting mid-run and
+  // coming back after it finished has to still count as "that run finished".
+  const runningPostingsRef = useRef(new Set<string>());
+
+  /**
+   * Reads what is true for the posting on screen and renders that. The whole
+   * panel/background contract lives in this function.
+   *
+   * Precedence, in order: a live run for this URL (in flight, or failed and
+   * left in place so returning to the posting shows the error rather than a
+   * blank panel), else the cached result, else nothing. There is no third
+   * source and no patching — a run's progress for ANOTHER posting cannot
+   * reach this display at all, because the only thing read here is this
+   * URL's own key.
+   *
+   * `restoreDraft` is false for storage-driven refreshes: those fire while
+   * the user is typing (any posting's run publishing progress wakes this
+   * listener), and rewriting the textarea underneath them would eat the
+   * keystroke. Only a change of posting restores the draft.
+   */
+  const refreshDisplay = useCallback(
+    async (restoreDraft: boolean) => {
+      // Normalized, not raw: lib/cache.ts and lib/liveRuns.ts both key on
+      // cacheKey(url), so a navigation that only drops `?utm_source=…` has to
+      // resolve to the same posting here too, or the panel would look up a
+      // run under a key nothing ever wrote.
+      const url = jd?.url ? cacheKey(jd.url) : undefined;
+      // This call is for a posting the user has already left. generate()
+      // awaits the background before refreshing, so its closure can outlive
+      // the tab it was clicked on — and painting that posting's run under
+      // this one's header is the exact confusion this panel keeps having to
+      // be fixed for. Returning BEFORE taking a sequence number matters as
+      // much as not painting: taking one would invalidate the read that is
+      // for the posting actually on screen, leaving it blank until the next
+      // storage event.
+      if (url !== activeJdUrlRef.current) return;
+      const seq = ++displaySeqRef.current;
+      const live = url ? await getLiveRun(url) : null;
+
+      // Read BEFORE the staleness guard below, and deliberately so. A
+      // completed run's `remaining` exists only in the last state the
+      // background publishes before it clears the entry — a window a couple of
+      // storage round trips wide. The read that catches it is very often the
+      // one a newer read is about to supersede, and dropping the number with
+      // it would put the figure fetched when the panel opened back on screen,
+      // stating an allowance the user has already spent.
+      const reported = live?.state.remaining ?? null;
+      if (reported !== null) {
+        setQuota((q) => (q ? { ...q, remaining: reported } : q));
+      }
+
+      // ...and when that window IS missed, ask the server rather than leave a
+      // number up that a run has already invalidated.
+      const runningNow = live !== null && isRunning(live.state);
+      const justFinished =
+        url !== undefined && runningPostingsRef.current.has(url) && !runningNow;
+      if (url !== undefined) {
+        if (runningNow) runningPostingsRef.current.add(url);
+        else runningPostingsRef.current.delete(url);
+      }
+      if (justFinished && reported === null) void refreshQuota();
+
+      const [hit, count] = await Promise.all([
+        url && fingerprint ? getCachedRun(url, fingerprint) : null,
+        countCachedRuns(),
+      ]);
+      // chrome.storage reads are async and tab switches are fast, so this can
+      // resolve after the user has already moved on — painting it then would
+      // show one posting's result underneath another posting's header. A
+      // newer refresh has, by definition, read newer truth for the posting
+      // that is actually on screen.
+      if (seq !== displaySeqRef.current) return;
+
+      setCachedCount(count);
+      // From the cache in every case, including mid-run: it is this posting's
+      // frozen baseline, and the run in flight does not get to move it. The
+      // background reads the same entry when it writes the run's result, so
+      // the number on screen and the number stored cannot disagree.
+      setBaselineForPosting(hit?.baselineScore ?? null);
+
+      // A failed run does not take the user's last result away with it.
+      // Failures are kept (the background clears a run only on success), so
+      // without this the error would sit on top of this posting forever and
+      // the result already paid for — still on disk, still theirs — would be
+      // unreachable until they spent another run. That is the exact loss the
+      // cache exists to prevent. A run still IN FLIGHT does replace the
+      // result: that is the progress display, and it resolves in a minute.
+      const failedOverAResult = live !== null && live.state.phase === "error" ? hit : null;
+
+      if (live && failedOverAResult) {
+        setState({
+          ...live.state,
+          analysis: failedOverAResult.analysis,
+          tailored: failedOverAResult.tailored,
+        });
+        setGeneratedAt(failedOverAResult.generatedAt);
+        setAppliedSupplement(failedOverAResult.extraInfo);
+      } else if (live) {
+        setState(live.state);
+        // A run in flight has no finished result: no timestamp, and no
+        // applied supplement to disclose — the panel does not know what the
+        // background was handed.
+        setGeneratedAt(null);
+        setAppliedSupplement("");
+      } else if (hit) {
+        setState({
+          phase: "done",
+          analysis: hit.analysis,
+          tailored: hit.tailored,
+          // Not cached: it is a live server-side count, and a stale one must
+          // never be presented as the current allowance. Null here means
+          // "this read knows nothing about the count" — the display falls
+          // back to `quota`, which holds the freshest number the panel has
+          // actually been told, including a completed run's own.
+          remaining: null,
+          error: null,
+        });
+        setGeneratedAt(hit.generatedAt);
+        setAppliedSupplement(hit.extraInfo);
+      } else {
+        setState(INITIAL_RUN_STATE);
+        setGeneratedAt(null);
+        setAppliedSupplement("");
+      }
+
+      if (restoreDraft) {
+        setSupplementDraft(
+          (url ? draftsRef.current.get(url) : undefined) ?? hit?.extraInfo ?? "",
+        );
+      }
+    },
+    // `fingerprint` is a dependency deliberately, not incidentally: it is the
+    // mechanism by which replacing a resume clears a displayed result. The
+    // fingerprint changes, the effect below re-runs, and the now-invalid entry
+    // fails getCachedRun's provenance rule so nothing is restored.
+    [jd?.url, fingerprint, refreshQuota],
+  );
+
+  // Every keystroke, so the map above is current the moment the user switches
+  // away — there is no later point at which this could be captured.
+  const onSupplementChange = useCallback(
+    (value: string) => {
+      setSupplementDraft(value);
+      const url = jd?.url ? cacheKey(jd.url) : undefined;
+      if (url) draftsRef.current.set(url, value);
+    },
+    [jd?.url],
+  );
+
   // installClerkTokenSource() wires lib/clerk.ts's Clerk client into
   // session.ts as the source api.ts consults for every request (see
   // clerk.ts's own doc comment). It MUST run exactly once, and here, at the
@@ -220,24 +397,19 @@ export default function App() {
       area: string,
     ) => {
       if (area !== "local") return;
+      // The other half of this listener's job, and the channel the whole
+      // plan turns on: the background publishes a run's every step under
+      // LIVE_RUNS_KEY, and this is how the panel hears about it. One
+      // listener, not two — chrome.storage.onChanged is a single stream and
+      // splitting it across effects only doubles the registration.
+      if (LIVE_RUNS_KEY in changes) void refreshDisplay(false);
       if (!(HAS_SIGNED_IN_KEY in changes) && !(SIGNIN_SIGNAL_KEY in changes)) return;
       void refreshAccount();
       void refreshQuota();
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => chrome.storage.onChanged.removeListener(onChanged);
-  }, [refreshAccount, refreshQuota]);
-
-  // A completed run reports a fresher count than the one fetched when the
-  // panel opened, and `state` is wiped on every tab switch (see the
-  // JD-change effect) — so without this, switching tabs after a run
-  // resurrects the panel-open figure and states an allowance the user no
-  // longer has. Folding it into `quota` is what makes the fallback in
-  // `displayRemaining` safe rather than stale.
-  useEffect(() => {
-    if (state.remaining === null) return;
-    setQuota((q) => (q ? { ...q, remaining: state.remaining } : q));
-  }, [state.remaining]);
+  }, [refreshAccount, refreshQuota, refreshDisplay]);
 
   // `hasBroadAccess` starts `true` so the button never flashes on mount
   // before this async check resolves.
@@ -248,105 +420,47 @@ export default function App() {
 
   // `jd` is re-read on tab switch/navigation (see useActiveJd), so its `url`
   // is the panel's source of truth for "which posting am I looking at now."
-  // Track it in a ref (readable synchronously from the runTailor callback
-  // below), keyed on `url` specifically — not the `jd` object, which is a
-  // fresh reference on every read even when the posting hasn't changed.
+  // Keyed on `url` specifically — not the `jd` object, which is a fresh
+  // reference on every read even when the posting hasn't changed.
   //
-  // This used to reset and stop. That is what destroyed a result the user had
-  // just paid for the moment they opened another tab. It now clears the
-  // display and then restores whatever this posting already has.
+  // The wipe is synchronous and the restore is not, deliberately: a tab
+  // switch must clear the previous posting's result THIS render, not one
+  // storage round trip later, or the panel shows one posting's result under
+  // another posting's header for as long as the read takes.
   //
-  // It intentionally leaves `busy` alone: switching tabs must clear what's on
-  // screen, but must not make the button clickable again while generate() is
-  // still running.
-  const activeJdUrlRef = useRef<string | undefined>(jd?.url);
-  // Which posting generate() currently owns the display for, or undefined.
-  // Written ONLY alongside `busy`, in generate()'s try/finally — same
-  // discipline, same reason.
-  const runningForUrlRef = useRef<string | undefined>(undefined);
-  // The supplement the in-flight run was started with. `supplementDraft` is a
-  // single global piece of state, but the effect below early-returns for a
-  // posting whose run is still going — so without this, switching A -> B -> A
-  // mid-run leaves B's text in the box under A, and regenerating would submit
-  // B's claimed experience as A's. Written only where `busy` is.
-  const runningSupplementRef = useRef("");
+  // Everything this effect used to guard against — a run's patch landing
+  // after a tab switch, a cache restore painting over a live run — is gone
+  // rather than fixed: `refreshDisplay` reads the state belonging to the URL
+  // it is asked about, so there is no cross-posting write left to arrive.
+  //
+  // `refreshDisplay`'s identity IS (posting, resume), which is what makes it
+  // a dependency here. KEEP IT THAT WAY: anything else added to its own deps
+  // turns this into a wipe that fires whenever that thing changes, and the
+  // first casualty would be the paragraph the user is in the middle of
+  // typing. `jd?.url` is listed alongside it because this effect ALSO
+  // publishes that url, and a reader should not have to derive that from
+  // another hook's dependency list.
   useEffect(() => {
-    // Normalized, not raw: `activeJdUrlRef` and `runningForUrlRef` (below) are
-    // both compared against this value, and cache.ts already keys entries on
-    // `cacheKey(url)` rather than the raw URL. Without normalizing here too,
-    // "same posting" means one thing to these guards and another to the
-    // cache: a navigation that only drops `?utm_source=…` changes the raw URL
-    // while normalizing to the same posting, so every raw comparison below
-    // would conclude "different posting" while getCachedRun/putCachedRun
-    // conclude "same" — wiping a live run's display and repainting a stale
-    // cached result over it, then losing the fresh result once it lands
-    // because the raw comparison fails again. cacheKey is idempotent, so
-    // re-normalizing an already-normalized value before getCachedRun/
-    // putCachedRun below is harmless.
-    const url = jd?.url ? cacheKey(jd.url) : undefined;
-    activeJdUrlRef.current = url;
-    // A run in flight for THIS posting already owns the display. Wiping and
-    // restoring here would replace the live run with the PREVIOUS cached
-    // result — labelled "done", carrying its old timestamp — while the button
-    // still reads "Working…". In the ordering where this read resolves after
-    // the run's own write, it never corrects itself, and the user's freshly
-    // paid result is hidden behind an older one. That is the exact loss this
-    // cache exists to prevent, so leave a live run alone.
-    //
-    // `url &&` is load-bearing, not defensive noise. runningForUrlRef.current
-    // is `undefined` when idle, and `url` is ALSO `undefined` on any page with
-    // no detected posting (useActiveJd sets jd to null there). Without this
-    // guard the two `undefined`s compare equal, the wipe is skipped, and the
-    // previous posting's result stays frozen on screen while the user browses
-    // unrelated pages.
-    if (url && runningForUrlRef.current === url) {
-      // Returning to a posting whose run is still going. Leave the display to
-      // the run, but put its own supplement back — the draft may hold another
-      // posting's text from the tab we just came from.
-      setSupplementDraft(runningSupplementRef.current);
-      return;
-    }
+    activeJdUrlRef.current = jd?.url ? cacheKey(jd.url) : undefined;
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
     setAppliedSupplement("");
     setSupplementDraft("");
-    setRunIdForPosting("");
     setBaselineForPosting(null);
-    if (!url || !fingerprint) return;
-    void getCachedRun(url, fingerprint).then((hit) => {
-      // chrome.storage reads are async and tab switches are fast, so this can
-      // resolve after the user has already moved on. Painting it then would
-      // show one posting's result underneath another posting's header.
-      if (!hit || activeJdUrlRef.current !== url) return;
-      // A run may also have STARTED while this read was pending — same stale
-      // paint, no tab switch needed.
-      if (runningForUrlRef.current === url) return;
-      setState({
-        phase: "done",
-        analysis: hit.analysis,
-        tailored: hit.tailored,
-        // Not cached: it is a live server-side count, and a stale one must
-        // never be presented as the current allowance. Null here means "this
-        // restore knows nothing about the count" — the display falls back to
-        // `quota`, which holds the freshest number the panel has actually
-        // been told, including a completed run's own (see the effect that
-        // folds it in, above).
-        remaining: null,
-        error: null,
-      });
-      setGeneratedAt(hit.generatedAt);
-      setAppliedSupplement(hit.extraInfo);
-      setSupplementDraft(hit.extraInfo);
-      setRunIdForPosting(hit.runId);
-      setBaselineForPosting(hit.baselineScore);
-    });
-    // `fingerprint` is a dependency deliberately, not incidentally: it is the
-    // mechanism by which replacing a resume clears a displayed result. The
-    // fingerprint changes, this effect re-runs, the display is wiped, and the
-    // now-invalid entry fails getCachedRun's provenance rule so nothing is
-    // restored over it.
-  }, [jd?.url, fingerprint]);
+    // A refusal, and an unanswered start, both describe one click on one
+    // posting; carrying either across a tab switch would attach it to a
+    // posting the user never clicked — a button reading "Working…" under a
+    // posting with nothing running.
+    setNotice(null);
+    setStarting(false);
+    void refreshDisplay(true);
+  }, [jd?.url, refreshDisplay]);
 
+  // Derived, not tracked. There is no panel-side promise to be "in" any
+  // more: a run in flight is a fact about storage, and the button reads it
+  // the same way a newly opened panel does. `starting` covers only the gap
+  // before the background has published anything.
+  const busy = starting || isRunning(state);
   const canRun = Boolean(jd && stored) && !busy && !saving;
 
   async function generate(supplement: string) {
@@ -355,95 +469,45 @@ export default function App() {
     // save, but that is the callers' guard, not this function's. Defence in
     // depth for a race whose symptom is silent (a save's outcome lost to an
     // unmounted SaveButton — see SaveButton.tsx's doc comment) is worth one
-    // line.
+    // line. It is also what makes `starting` a real guard against two rapid
+    // clicks starting two charged runs for one posting.
     if (!jd || !stored || busy || saving) return;
-    // Pin which posting this run is for. If the user switches tabs while a
-    // run is in flight, activeJdUrlRef.current moves on; a patch that lands
-    // after that point is for a posting the user is no longer looking at,
-    // so drop it instead of painting stale results over the new page.
-    const forUrl = cacheKey(jd.url);
-    // Refining reuses this posting's run id, which is what makes it free.
-    // A first generate — or one after a cache entry too old to carry an id —
-    // mints a new one and is charged.
-    const runId = supplement.trim().length > 0 && runIdForPosting
-      ? runIdForPosting
-      : newRunId();
-    setState(INITIAL_RUN_STATE);
-    setGeneratedAt(null);
-    setAppliedSupplement("");
-    runningForUrlRef.current = forUrl;
-    runningSupplementRef.current = supplement;
-    setBusy(true);
-    // Accumulate the run's own result HERE rather than reading it back out of
-    // `state` when the run finishes. The line below deliberately drops the
-    // final patch from the DISPLAY when the user has switched tabs — so
-    // `state` would hold nothing to cache, losing exactly the result this
-    // cache exists to preserve, in exactly the case that motivated it.
-    let latest: RunState = INITIAL_RUN_STATE;
+    setNotice(null);
+    setStarting(true);
     try {
-      await runTailor(
+      // Everything the run needs, in one message. The background mints or
+      // reuses the run id, freezes the baseline, and writes the result to the
+      // cache — none of that is the panel's business any more, and doing any
+      // of it here as well would drift.
+      const result = (await chrome.runtime.sendMessage({
+        type: "start-run",
         jd,
-        stored.resume,
-        (patch) => {
-          latest = { ...latest, ...patch };
-          if (activeJdUrlRef.current !== forUrl) return;
-          setState((prev) => ({ ...prev, ...patch }));
-        },
-        { extraInfo: supplement, runId },
-      );
-      if (latest.phase === "done" && latest.analysis && latest.tailored) {
-        const finishedAt = new Date().toISOString();
-        // Read the baseline from storage rather than from `baselineForPosting`.
-        // That state is null between the JD-change effect firing and its
-        // storage read resolving, and the button is live during that window —
-        // so a user who clicks regenerate on a still-blank panel would
-        // otherwise re-measure and durably overwrite the stored baseline,
-        // which is the exact symptom this whole change exists to remove.
-        //
-        // Keyed by `forUrl`, and deliberately NOT via a ref: a ref is mutated
-        // by the JD-change effect, so it would hand another posting's baseline
-        // to this run. This lookup also gives the right answer when the resume
-        // has changed — getCachedRun rejects the entry on the fingerprint, so
-        // a new resume correctly gets a new measurement.
-        const cachedForBaseline = await getCachedRun(forUrl, fingerprint);
-        const baseline =
-          cachedForBaseline?.baselineScore ?? latest.analysis.overall_match_score;
-        await putCachedRun(forUrl, {
-          analysis: latest.analysis,
-          tailored: latest.tailored,
-          generatedAt: finishedAt,
-          extraInfo: supplement,
-          runId,
-          baselineScore: baseline,
-          resumeFingerprint: fingerprint,
-        });
-        setCachedCount(await countCachedRuns());
-        // These describe THIS posting's displayed result, so they belong
-        // inside the guard with setState. Outside it, a run finishing while
-        // the user is on another posting stamps that posting with this run's
-        // marker and run id — mislabelling it, and spending this id's free
-        // refinements under the wrong entry. Nothing is lost by guarding
-        // them: the correct values went into the cache entry above and come
-        // back on the next restore.
-        if (activeJdUrlRef.current === forUrl) {
-          setAppliedSupplement(supplement);
-          setRunIdForPosting(runId);
-          setBaselineForPosting(baseline);
-          // Paint the completed run rather than only stamping it. `latest` is a
-          // complete RunState, so this is a no-op on the normal path — but it
-          // also covers the window between runTailor resolving and the finally
-          // below, where the display can have been wiped by a tab switch back
-          // to this same posting while runningForUrlRef still suppressed the
-          // cache restore. Without it the user's freshly paid result is
-          // invisible until they switch tabs again.
-          setState(latest);
-          setGeneratedAt(finishedAt);
-        }
+        resume: stored.resume,
+        supplement,
+        fingerprint,
+      } satisfies StartRunMessage)) as StartRunResult | undefined;
+
+      if (result?.started !== true && result?.reason !== "already-running") {
+        // `already-running` says nothing, on purpose: the refresh below is
+        // about to put that run's own progress on screen, which tells the
+        // user more than any sentence could. Everything else — the cap, a
+        // worker that fell over, an undefined answer from a message channel
+        // that closed — has to be said out loud, or the click looks ignored.
+        setNotice(
+          result?.reason === "at-capacity" ? AT_CAPACITY_NOTICE : COULD_NOT_START_NOTICE,
+        );
       }
+      // The background publishes the run BEFORE it answers, so this read
+      // finds it. Without it the panel would sit idle until the storage
+      // event arrived, leaving the button clickable for one more round trip.
+      await refreshDisplay(false);
+    } catch {
+      // sendMessage itself rejected — no receiving end, or the extension was
+      // reloaded out from under this panel. Same user-visible fact as a
+      // worker that fell over.
+      setNotice(COULD_NOT_START_NOTICE);
     } finally {
-      runningForUrlRef.current = undefined;
-      runningSupplementRef.current = "";
-      setBusy(false);
+      setStarting(false);
     }
   }
 
@@ -470,7 +534,11 @@ export default function App() {
     setGeneratedAt(null);
     setAppliedSupplement("");
     setSupplementDraft("");
-    setRunIdForPosting("");
+    // Including the unsent ones. "Clear N cached results" is the panel's
+    // forget-everything control; a draft that survived it would come back
+    // the next time the user returned to that posting, from a panel that had
+    // just said it kept nothing.
+    draftsRef.current.clear();
     setBaselineForPosting(null);
   }
 
@@ -496,7 +564,7 @@ export default function App() {
     setGeneratedAt(null);
     setAppliedSupplement("");
     setSupplementDraft("");
-    setRunIdForPosting("");
+    draftsRef.current.clear();
     setBaselineForPosting(null);
   }
 
@@ -562,6 +630,9 @@ export default function App() {
       <button className="primary" onClick={() => void generate(supplementDraft)} disabled={!canRun}>
         {busy ? "Working…" : state.tailored ? "Tailor again" : "Tailor my resume"}
       </button>
+      {/* Directly under the button that produced it, because it is the
+          answer to that click and nothing else on screen changed. */}
+      {notice && <p className="muted tiny center">{notice}</p>}
       {!stored && <p className="muted tiny center">Add your resume to get started.</p>}
       {failure && <p className="muted tiny center">{failure.message}</p>}
       {failure?.kind === "permission" && !hasBroadAccess && (
@@ -605,7 +676,7 @@ export default function App() {
         appliedSupplement={appliedSupplement}
         supplement={{
           text: supplementDraft,
-          onChange: setSupplementDraft,
+          onChange: onSupplementChange,
           onSubmit: () => void generate(supplementDraft),
           busy,
           canRun,

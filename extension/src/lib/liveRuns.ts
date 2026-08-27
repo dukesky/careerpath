@@ -16,7 +16,16 @@ import type { RunState } from "./run";
  * .onChanged broadcasts progress to every open panel for free.
  */
 
-const LIVE_RUNS_KEY = "cp_live_runs";
+/**
+ * Exported because the panel filters chrome.storage.onChanged on it — this is
+ * the key a write to which means "a run moved", and the panel is a view of
+ * that. Importing it rather than repeating the string follows the same rule
+ * as storage.ts's HAS_SIGNED_IN_KEY: this repository has been bitten by
+ * constants that had to agree across two files with nothing tying them
+ * together, and a drifted key here fails SILENTLY — the panel simply stops
+ * updating mid-run.
+ */
+export const LIVE_RUNS_KEY = "cp_live_runs";
 
 /**
  * How long a run may go without a status update before a reader treats it as

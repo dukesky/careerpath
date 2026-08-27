@@ -25,9 +25,16 @@ export interface StartRunMessage {
   fingerprint: string;
 }
 
+/**
+ * `failed` is not something startRun() itself ever returns — it is what the
+ * message handler answers when startRun() rejects, so the panel can tell "the
+ * worker fell over" from "we refused". Without it the handler had to borrow
+ * `at-capacity`, and the panel would tell a user five postings were already
+ * generating when in fact nothing was.
+ */
 export type StartRunResult =
   | { started: true }
-  | { started: false; reason: "at-capacity" | "already-running" };
+  | { started: false; reason: "at-capacity" | "already-running" | "failed" };
 
 export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   const forUrl = cacheKey(msg.jd.url);

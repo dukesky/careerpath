@@ -1008,8 +1008,9 @@ Not a task — no subagent can do this, and **the plan's central assumption is o
 4. Start generations on **three postings at once**; all three complete.
 5. Try a **sixth** concurrent run: the panel says five are already generating.
 6. Force a failure (exhaust quota) in the background; return to that posting and confirm the error is on screen rather than a blank panel.
-7. Leave a run going and **restart Chrome** mid-run. Reopen the posting: within five minutes it should read *"That run stopped before it finished. Try again."* rather than spinning forever. **This is the stale-rule check and the one most likely to reveal a design flaw.**
+7. Leave a run going and **restart Chrome** mid-run. Then **leave the panel open on that posting and do not touch it for six minutes** — no tab switch, no reopen, no click. It must change on its own to *"That run stopped before it finished. Try again."*, and "Sign out" and "Clear N cached results" must both become clickable again. **This is the stale-rule check and the one most likely to reveal a design flaw.** Do NOT reopen the posting to check: reopening is itself a read, so the stale rule would fire on the reopen and the step would pass whether or not the panel can ever recover by itself — which is the situation the rule was written for.
 8. Open the panel on two different tabs and confirm their contents are independent.
+9. Start a run on posting **A**, then switch to posting **B** and look at "Clear N cached results": it must be **disabled** while A is still going, even though B itself is idle. Wait for A to finish, click it on B, then return to A: the panel must show nothing for A — no result, and no leftover run — rather than repainting what was just cleared.
 
 ---
 

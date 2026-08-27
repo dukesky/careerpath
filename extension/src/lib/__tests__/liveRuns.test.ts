@@ -213,6 +213,63 @@ describe("liveRuns", () => {
     expect(await getAllLiveRuns()).toEqual({});
   });
 
+  // Five runs publishing 4-5 times each, plus a clear apiece, is ~25
+  // interleaved read-modify-write cycles on ONE blob. Without serialization
+  // the two below both read the same empty blob and the second `set`
+  // overwrites the first, so one posting's run simply vanishes from the store
+  // — and with it from the concurrency count and from its own panel.
+  it("does not lose one posting's write to another posting's overlapping one", async () => {
+    const other = "https://example.com/jobs/2";
+
+    // Deliberately not awaited in turn: this is the interleaving the
+    // background produces whenever two runs publish within a storage round
+    // trip of each other.
+    const first = putLiveRun(URL_A, {
+      state: RUNNING,
+      jdTitle: "A",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+    const second = putLiveRun(other, {
+      state: RUNNING,
+      jdTitle: "B",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+    await Promise.all([first, second]);
+
+    expect((await getLiveRun(URL_A))?.jdTitle).toBe("A");
+    expect((await getLiveRun(other))?.jdTitle).toBe("B");
+  });
+
+  // The worse half of the same defect, and the one with a user-visible price:
+  // A finishes and is cleared, but B's progress write read the blob a moment
+  // earlier and lands afterwards, putting A back with a RUNNING phase and a
+  // stale `updatedAt`. The panel then spins over a result that already
+  // succeeded, and five minutes later calls that succeeded run stale and
+  // invites the user to pay for it again.
+  it("does not resurrect a cleared run behind another posting's overlapping write", async () => {
+    const other = "https://example.com/jobs/2";
+    await putLiveRun(URL_A, {
+      state: RUNNING,
+      jdTitle: "A",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+
+    const cleared = clearLiveRun(URL_A);
+    const published = putLiveRun(other, {
+      state: RUNNING,
+      jdTitle: "B",
+      updatedAt: Date.now(),
+      resumeFingerprint: FP,
+    });
+    await Promise.all([cleared, published]);
+
+    expect(await getLiveRun(URL_A)).toBeNull();
+    expect((await getLiveRun(other))?.jdTitle).toBe("B");
+  });
+
   it("isRunning is true only for in-flight phases", () => {
     expect(isRunning({ ...RUNNING, phase: "reading" })).toBe(true);
     expect(isRunning({ ...RUNNING, phase: "comparing" })).toBe(true);

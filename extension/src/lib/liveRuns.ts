@@ -159,10 +159,31 @@ export async function getAllLiveRuns(): Promise<Record<string, LiveRun>> {
   return out;
 }
 
+/**
+ * Serializes read-modify-write on the shared blob. Every writer here does
+ * `get` -> mutate -> `set`, which was safe when only one run could exist and
+ * is not now that five can: two overlapping cycles lose one update, and the
+ * losing case resurrects a cleared entry with a running phase, so the panel
+ * spins over a result that already succeeded. One JS context owns all of
+ * these, so chaining is enough.
+ *
+ * `.then(work, work)` and not `.then(work)`: a rejected predecessor (storage
+ * quota, "extension context invalidated") must not stop every later write.
+ * The rejection still reaches ITS OWN caller, because the promise handed back
+ * is the same one stored here.
+ */
+let writeQueue: Promise<void> = Promise.resolve();
+function serialize(work: () => Promise<void>): Promise<void> {
+  writeQueue = writeQueue.then(work, work);
+  return writeQueue;
+}
+
 export async function putLiveRun(url: string, run: LiveRun): Promise<void> {
-  const all = await readAll();
-  all[cacheKey(url)] = run;
-  await chrome.storage.local.set({ [LIVE_RUNS_KEY]: JSON.stringify(all) });
+  return serialize(async () => {
+    const all = await readAll();
+    all[cacheKey(url)] = run;
+    await chrome.storage.local.set({ [LIVE_RUNS_KEY]: JSON.stringify(all) });
+  });
 }
 
 /**
@@ -183,7 +204,9 @@ export async function clearAllLiveRuns(): Promise<void> {
 }
 
 export async function clearLiveRun(url: string): Promise<void> {
-  const all = await readAll();
-  delete all[cacheKey(url)];
-  await chrome.storage.local.set({ [LIVE_RUNS_KEY]: JSON.stringify(all) });
+  return serialize(async () => {
+    const all = await readAll();
+    delete all[cacheKey(url)];
+    await chrome.storage.local.set({ [LIVE_RUNS_KEY]: JSON.stringify(all) });
+  });
 }

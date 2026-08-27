@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+// The backfill tests below invoke background/index.ts's REAL onInstalled
+// callback, which also calls ensureToken(). Unmocked, that fires a genuine
+// `POST http://localhost:3000/api/device-token`: in CI the connection is
+// refused and token.ts swallows it, but on a developer machine with the web
+// app running it mints a live device token as a side effect of running the
+// test suite. Nothing here asserts on tokens, so stub the whole module.
+vi.mock("@/lib/token", () => ({
+  ensureToken: vi.fn(async () => "test-device-token"),
+}));
+
 let onCreatedCb: ((tab: { id?: number }) => void) | undefined;
 let onInstalledCb: (() => void) | undefined;
 let setOptionsCalls: Array<{ tabId?: number; path?: string; enabled?: boolean }> = [];

@@ -44,10 +44,10 @@ export function AccountBar({
    * five at once; the panel is only a view of one of them. Signing out with
    * the box checked clears the resume, the cache and the live runs, so it is
    * a SECOND route to exactly what the "Clear N cached results" control's own
-   * `disabled` guards against — except that here the run that repaints and
-   * re-persists the previous session's result afterwards need not be the one
-   * on screen, or on any screen. Narrowing this back to the displayed
-   * posting reopens that.
+   * `disabled` guards against — and, like it, has to account for a run that
+   * repaints and re-persists the previous session's result afterwards without
+   * being the one on screen, or on any screen. Narrowing either control back
+   * to the displayed posting reopens that.
    */
   busy: boolean;
   /**

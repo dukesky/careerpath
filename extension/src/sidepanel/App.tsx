@@ -9,7 +9,7 @@ import { INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import { hasBroadHostAccess, requestBroadHostAccess } from "@/lib/permissions";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import { cacheKey, clearCachedRuns, countCachedRuns, getCachedRun } from "@/lib/cache";
-import { getAllLiveRuns, isRunning, LIVE_RUNS_KEY } from "@/lib/liveRuns";
+import { clearAllLiveRuns, getAllLiveRuns, isRunning, LIVE_RUNS_KEY } from "@/lib/liveRuns";
 // Types only — this must never pull the background's module graph into the
 // panel bundle.
 import type { StartRunMessage, StartRunResult } from "@/background/runs";
@@ -494,6 +494,24 @@ export default function App() {
   const busy = starting || isRunning(state);
   const canRun = Boolean(jd && stored) && !busy && !saving;
 
+  // Below the other effects only because it reads `busy`, which is derived
+  // just above.
+  //
+  // liveRuns.ts's stale rule fires on a READ, and every other read here is
+  // event-driven — a storage change, a posting change, a click. An evicted
+  // worker produces none of those, so without this the panel that is
+  // watching a stranded run is the one place the stale rule can never reach:
+  // the button reads "Working…" forever and Sign out stays disabled. Polling
+  // only while something is running keeps this off the idle path entirely.
+  //
+  // `false` is `restoreDraft`: a poll must never rewrite the textarea the
+  // user may be typing in, the same reason the storage listener passes false.
+  useEffect(() => {
+    if (!busy && !anyRunning) return;
+    const id = setInterval(() => void refreshDisplay(false), 30_000);
+    return () => clearInterval(id);
+  }, [busy, anyRunning, refreshDisplay]);
+
   async function generate(supplement: string) {
     // `saving` as well as `busy`, and checked HERE rather than only on the
     // buttons: `canRun` already disables both regenerate triggers during a
@@ -560,6 +578,18 @@ export default function App() {
   // through Results.tsx's `tailored &&` gate and loses the save's outcome.
   async function clearCache() {
     await clearCachedRuns();
+    // The live-run store too, and for the same argument this function already
+    // makes about drafts: this is the panel's forget-everything control. A
+    // FAILED run is never cleared by the background — deliberately, so the
+    // error survives leaving the posting — and it carries that run's own
+    // analysis and tailored resume, so one left behind here would repaint on
+    // the next return to that posting, from a panel that had just said it
+    // kept nothing. It is also the only store the extension writes with no
+    // cap and no eviction; `cp_results` is capped at MAX_CACHED_RUNS.
+    //
+    // Safe to call without stopping anything, because the control is disabled
+    // while ANY run is in flight — see `busy || anyRunning` in the JSX.
+    await clearAllLiveRuns();
     setCachedCount(0);
     setState(INITIAL_RUN_STATE);
     setGeneratedAt(null);
@@ -571,6 +601,11 @@ export default function App() {
     // just said it kept nothing.
     draftsRef.current.clear();
     setBaselineForPosting(null);
+    // The same two lines handleLocalDataCleared ends with, for the same
+    // reason: these are the panel's own reading OF cp_live_runs, and the
+    // display must never outlive the storage it describes.
+    setAnyRunning(false);
+    runningPostingsRef.current.clear();
   }
 
   // SignOutDialog reports local-data clearing and session end as two
@@ -662,11 +697,17 @@ export default function App() {
 
       <ResumeBlock stored={stored} onChange={setStored} />
 
+      {/* `busy || anyRunning`, the same distinction AccountBar's own prop doc
+          draws and for the same reason: this control removes the WHOLE
+          `cp_results` key, so what matters is whether any run could still
+          write to it afterwards — including one going for a posting the user
+          is not looking at, which would reach putCachedRun and put a result
+          back into a store the user had just emptied. */}
       {cachedCount > 0 && (
         <button
           className="textbtn"
           onClick={() => void clearCache()}
-          disabled={busy || saving}
+          disabled={busy || anyRunning || saving}
         >
           Clear {cachedCount} cached result{cachedCount === 1 ? "" : "s"}
         </button>

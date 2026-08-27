@@ -15,7 +15,7 @@ import {
   type StoredResume,
 } from "@/lib/storage";
 import { countCachedRuns, getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
-import { clearLiveRun, getLiveRun, putLiveRun } from "@/lib/liveRuns";
+import { clearLiveRun, getLiveRun, putLiveRun, STALE_RUN_MS } from "@/lib/liveRuns";
 import { startRun, type StartRunMessage } from "@/background/runs";
 import { resumeFingerprint } from "@/lib/fingerprint";
 import { API_BASE } from "@/lib/config";
@@ -2642,6 +2642,10 @@ describe("App - runs owned by the background", () => {
       root.unmount();
     });
     container.remove();
+    // Exactly one test in this file installs fake timers (the stranded-run
+    // recovery below). This is a no-op for every other test, and it means a
+    // failure inside that one cannot leave the clock faked for the next.
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -2885,5 +2889,135 @@ describe("App - runs owned by the background", () => {
     expect(container.textContent).toContain(
       "Five postings are already generating. Wait for one to finish.",
     );
+  });
+
+  // liveRuns.ts's stale rule is applied on READ, deliberately — an evicted
+  // service worker cannot mark its own run failed, so only the reader is
+  // guaranteed alive. But every other read in this panel is event-driven: a
+  // storage change, a change of posting, a click. A worker evicted mid-run
+  // produces NONE of those, and the user who is watching the panel produces
+  // none either. So the panel watching a stranded run was the one place the
+  // stale rule could never reach — "Working…" forever, with Sign out and
+  // Clear disabled alongside it. Only the poll can end this.
+  //
+  // Fake timers here and nowhere else in this file, and only setInterval /
+  // clearInterval / Date: setTimeout stays REAL so `flush()` above still
+  // works exactly as it does for every other test.
+  it("recovers from a stranded run on its own, with the panel left open and untouched", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    await setResume(STORED_RESUME);
+    // FRESH at render, not already stale. Seeding it stale would let the very
+    // first read report the error and the test would pass with no poll at
+    // all — the read on open is not the read this pins.
+    await putLiveRun(JD_A.url, {
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      jdTitle: JD_A.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    await renderApp();
+
+    expect(findButton(container, "Working…")).toBeTruthy();
+    expect(findButton(container, "Sign out").disabled).toBe(true);
+
+    // The worker is gone. Nothing writes storage, so no onChanged fires; the
+    // posting does not change, so the JD effect does not re-run; the user
+    // touches nothing. Only time passes.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STALE_RUN_MS + 60_000);
+    });
+    await flush();
+
+    expect(hasButton(container, "Working…")).toBe(false);
+    expect(container.textContent).toContain(
+      "That run stopped before it finished. Try again.",
+    );
+    // ...and the two controls the stuck `anyRunning` was holding shut.
+    expect(findButton(container, "Tailor my resume").disabled).toBe(false);
+    expect(findButton(container, "Sign out").disabled).toBe(false);
+  });
+
+  // "Clear N cached results" removes the WHOLE cp_results key, so it is the
+  // same door AccountBar's Sign out already guards — one control away, and it
+  // was still gated on the narrowed per-posting `busy`. A run in flight for
+  // another posting would reach putCachedRun afterwards and write a result
+  // back into a store the user had just emptied.
+  it("disables Clear cached results while a run is in flight for a posting the user is NOT looking at", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(60, "", "run-a-cached"));
+    await putLiveRun(JD_B.url, {
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+      jdTitle: JD_B.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // The posting on screen is genuinely idle — its own button says so (it
+    // reads "Tailor again" because A has a cached result), which is what
+    // makes this the multi-posting case rather than the single one.
+    expect(findButton(container, "Tailor again").disabled).toBe(false);
+
+    const clearBtn = findButton(container, "Clear 1 cached result");
+    expect(clearBtn.disabled).toBe(true);
+    // A disabled button fires no onClick, so this click is itself part of the
+    // assertion: without the guard it would empty the store under B's run.
+    await act(async () => {
+      clearBtn.click();
+    });
+    await flush();
+
+    expect(await countCachedRuns()).toBe(1);
+    expect(await getLiveRun(JD_B.url)).not.toBeNull();
+  });
+
+  // The panel's forget-everything control has to reach cp_live_runs too, for
+  // the reason it already gives about drafts. A FAILED run is never cleared
+  // by the background and carries that run's own analysis, tailored resume
+  // and error — so one left behind repaints on the next return to that
+  // posting, from a panel that just said it kept nothing.
+  it("clearing the cache also forgets a failed run left behind for another posting", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, cachedRun(60, "", "run-a-cached"));
+    await putLiveRun(JD_B.url, {
+      state: {
+        phase: "error",
+        analysis: ANALYSIS,
+        tailored: TAILORED,
+        remaining: null,
+        error: { kind: "quota", message: "You've used all your free runs." },
+      },
+      jdTitle: JD_B.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Clear 1 cached result").click();
+    });
+    await flush();
+
+    // Storage itself, not just the display.
+    expect(await getLiveRun(JD_B.url)).toBeNull();
+
+    // ...and the display, on returning to that posting with the same resume
+    // loaded — which keeps the fingerprint that would have made anything left
+    // in the store displayable again.
+    activeJdState = { jd: JD_B, failure: null, loading: false };
+    await act(async () => {
+      root.render(<App />);
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("You've used all your free runs.");
+    expect(container.querySelector(".score")).toBeNull();
   });
 });

@@ -157,14 +157,34 @@ export async function getCachedRun(
 }
 
 /**
+ * Serializes read-modify-write on this key, for the reason lib/liveRuns.ts
+ * states for its own: `get` -> mutate -> `set` was safe when only one run
+ * could exist and is not now that five can. Two runs finishing within a
+ * storage round trip of each other both read the list, both prepend their own
+ * entry, and the second `set` overwrites the first — so a result the user
+ * was charged for never reaches `cp_results` at all. Its own queue, not
+ * liveRuns', because these are different keys and there is nothing to gain by
+ * making a live-run publish wait behind a cache write.
+ */
+let writeQueue: Promise<void> = Promise.resolve();
+function serialize(work: () => Promise<void>): Promise<void> {
+  // `.then(work, work)`: a rejected predecessor must not stop later writes.
+  // The rejection still reaches its own caller — same promise.
+  writeQueue = writeQueue.then(work, work);
+  return writeQueue;
+}
+
+/**
  * Newest first. Re-tailoring a posting replaces its entry rather than adding a
  * second one, so "Tailor again" cannot fill the cache with one posting.
  */
 export async function putCachedRun(url: string, cached: CachedRun): Promise<void> {
-  const key = cacheKey(url);
-  const rest = (await readAll()).filter((e) => e.key !== key);
-  const next = [{ key, ...cached }, ...rest].slice(0, MAX_CACHED_RUNS);
-  await chrome.storage.local.set({ [RESULTS_KEY]: JSON.stringify(next) });
+  return serialize(async () => {
+    const key = cacheKey(url);
+    const rest = (await readAll()).filter((e) => e.key !== key);
+    const next = [{ key, ...cached }, ...rest].slice(0, MAX_CACHED_RUNS);
+    await chrome.storage.local.set({ [RESULTS_KEY]: JSON.stringify(next) });
+  });
 }
 
 export async function clearCachedRuns(): Promise<void> {

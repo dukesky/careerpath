@@ -116,6 +116,26 @@ describe("result cache", () => {
     expect(hit?.generatedAt).toBe("2026-08-14T10:00:00.000Z");
   });
 
+  // Up to five runs finish independently now, so two `get` -> mutate -> `set`
+  // cycles on this one key can interleave. Without serialization the second
+  // `set` overwrites the first, and a result the user was CHARGED for never
+  // reaches cp_results at all — the worst outcome any store here can produce.
+  it("does not lose one posting's result to another's overlapping write", async () => {
+    // Deliberately not awaited in turn — this is what two runs completing
+    // within a storage round trip of each other actually do.
+    const first = putCachedRun("https://acme.com/jobs/1", run(62));
+    const second = putCachedRun("https://acme.com/jobs/2", run(71));
+    await Promise.all([first, second]);
+
+    expect((await getCachedRun("https://acme.com/jobs/1", FP))?.analysis.overall_match_score).toBe(
+      62,
+    );
+    expect((await getCachedRun("https://acme.com/jobs/2", FP))?.analysis.overall_match_score).toBe(
+      71,
+    );
+    expect(await countCachedRuns()).toBe(2);
+  });
+
   it("hits the same entry when the url carries tracking parameters", async () => {
     await putCachedRun("https://acme.com/jobs/1", run(62));
     const hit = await getCachedRun("https://acme.com/jobs/1?utm_source=linkedin#top", FP);

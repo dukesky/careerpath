@@ -1,0 +1,102 @@
+import type { ExtractedJD } from "@/content/extract";
+import type { ParsedResume } from "@shared/contract";
+import { cacheKey, getCachedRun, putCachedRun } from "@/lib/cache";
+import {
+  MAX_CONCURRENT_RUNS,
+  clearLiveRun,
+  getAllLiveRuns,
+  getLiveRun,
+  isRunning,
+  putLiveRun,
+} from "@/lib/liveRuns";
+import { INITIAL_RUN_STATE, newRunId, runTailor, type RunState } from "@/lib/run";
+
+/**
+ * Runs live here, not in the panel, so that closing the panel or switching
+ * tabs cannot kill one. The panel starts a run with this message and then
+ * only ever READS state back out of lib/liveRuns.
+ */
+export interface StartRunMessage {
+  type: "start-run";
+  jd: ExtractedJD;
+  resume: ParsedResume;
+  supplement: string;
+  /** Which resume this run is for — see lib/fingerprint.ts. */
+  fingerprint: string;
+}
+
+export type StartRunResult =
+  | { started: true }
+  | { started: false; reason: "at-capacity" | "already-running" };
+
+export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
+  const forUrl = cacheKey(msg.jd.url);
+
+  const existing = await getLiveRun(forUrl);
+  if (existing && isRunning(existing.state)) return { started: false, reason: "already-running" };
+
+  const running = Object.values(await getAllLiveRuns()).filter((r) => isRunning(r.state));
+  if (running.length >= MAX_CONCURRENT_RUNS) return { started: false, reason: "at-capacity" };
+
+  // Refining reuses this posting's run id, which is what makes it free; a
+  // first run — or one after an entry too old to carry an id — mints a new
+  // one and is charged.
+  const prior = await getCachedRun(forUrl, msg.fingerprint);
+  const runId = msg.supplement.trim().length > 0 && prior?.runId ? prior.runId : newRunId();
+
+  const publish = (state: RunState) =>
+    putLiveRun(forUrl, { state, jdTitle: msg.jd.title, updatedAt: Date.now() });
+
+  await publish({ ...INITIAL_RUN_STATE, phase: "reading" });
+
+  // Deliberately not awaited: the caller is a message handler and must answer
+  // "started" immediately. The run's own writes are what the panel watches.
+  void (async () => {
+    let latest: RunState = INITIAL_RUN_STATE;
+    try {
+      await runTailor(
+        msg.jd,
+        msg.resume,
+        (patch) => {
+          latest = { ...latest, ...patch };
+          void publish(latest);
+        },
+        { extraInfo: msg.supplement, runId },
+      );
+
+      if (latest.phase === "done" && latest.analysis && latest.tailored) {
+        // The baseline is READ, not re-measured. Recomputing it per run is
+        // what made the panel show the "before" score dropping after a user
+        // added experience — the number is meant to be what it says.
+        const baseline = prior?.baselineScore ?? latest.analysis.overall_match_score;
+        await putCachedRun(forUrl, {
+          analysis: latest.analysis,
+          tailored: latest.tailored,
+          generatedAt: new Date().toISOString(),
+          extraInfo: msg.supplement,
+          runId,
+          baselineScore: baseline,
+          resumeFingerprint: msg.fingerprint,
+        });
+        // Success moves the record from "in flight" to "cached"; a failure
+        // deliberately stays put, so returning to the posting shows the error
+        // rather than a blank panel.
+        await clearLiveRun(forUrl);
+      }
+    } catch (err) {
+      // runTailor folds its own failures into RunState, so reaching here means
+      // something unexpected — record it rather than leaving a run that never
+      // reaches a terminal state.
+      await publish({
+        ...latest,
+        phase: "error",
+        error: {
+          kind: "server",
+          message: err instanceof Error ? err.message : "Something went wrong.",
+        },
+      });
+    }
+  })();
+
+  return { started: true };
+}

@@ -21,6 +21,20 @@ chrome.runtime.onStartup.addListener(() => {
   void ensureToken(true);
 });
 
+// Each tab gets its OWN panel instance. Per Chrome's sidePanel docs, setting
+// a path for a specific tabId yields a different instance than the default
+// panel — which is what stops one posting's panel state from appearing under
+// another. This deliberately does NOT look at the tab's URL: doing so would
+// require the `tabs` permission, and disabling the panel on unrecognised
+// sites would also remove the only route a user has to grant access to a new
+// job board.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.id === undefined) return;
+  void chrome.sidePanel
+    .setOptions({ tabId: tab.id, path: "src/sidepanel/index.html", enabled: true })
+    .catch((err) => console.warn("sidePanel.setOptions failed", err));
+});
+
 // Runs are owned by this worker so the panel can be closed, switched away
 // from, or destroyed without killing one. `sendMessage` wakes this worker if
 // it has been evicted, which is standard MV3 behaviour and needs no handling.

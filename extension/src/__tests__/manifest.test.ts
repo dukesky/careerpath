@@ -23,6 +23,7 @@ type Manifest = {
   host_permissions?: string[];
   optional_host_permissions?: string[];
   content_security_policy?: { extension_pages?: string };
+  web_accessible_resources?: Array<{ resources?: string[]; matches?: string[] }>;
   icons?: Record<string, string>;
   action?: { default_title?: string; default_icon?: Record<string, string> };
 };
@@ -201,5 +202,44 @@ describe("manifest", () => {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
     });
+  });
+});
+
+describe("manifest — the sign-in page's web accessibility", () => {
+  // The OAuth return leg is a WEB navigation: after Google, Clerk sends the
+  // browser from its own origin to this page, and Chrome blocks that with
+  // ERR_BLOCKED_BY_CLIENT unless the page is listed. Email sign-in needs no
+  // redirect back, so nothing else here catches its absence — this assertion
+  // is the only thing standing between a well-meaning cleanup and a broken
+  // Google sign-in that shows up only in a real browser.
+  it("exposes the sign-in page so Clerk's OAuth redirect can reach it", () => {
+    const entry = manifest.web_accessible_resources?.find((w) =>
+      w.resources?.includes("src/signin/index.html"),
+    );
+    expect(entry).toBeDefined();
+  });
+
+  // THE SECURITY PROPERTY. The extension ID is pinned by the manifest `key`,
+  // so an all-sites entry would let ANY website probe for this extension and
+  // iframe a live sign-in form. Clerk's own origins can already drive the
+  // sign-in flow and so gain nothing they did not have; anyone else must not
+  // be able to open it. Widening this list is the mistake this test fails on.
+  it("exposes it to Clerk's origins only, never to all sites", () => {
+    const entry = manifest.web_accessible_resources?.find((w) =>
+      w.resources?.includes("src/signin/index.html"),
+    );
+
+    expect(entry?.matches).toBeDefined();
+    expect(entry?.matches?.length).toBeGreaterThan(0);
+    for (const match of entry?.matches ?? []) {
+      // Every entry names ONE explicit https host. A wildcard anywhere in the
+      // host is what turns this from "Clerk may open the sign-in page" into
+      // "the web may", so the assertion is on the shape rather than on the
+      // hostnames themselves — the account portal on a custom domain does not
+      // have "clerk" in its name, and an earlier version of this test wrongly
+      // assumed it did.
+      expect(match).toMatch(/^https:\/\/[a-z0-9.-]+\/\*$/);
+      expect(match).not.toContain("*.");
+    }
   });
 });

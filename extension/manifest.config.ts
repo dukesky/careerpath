@@ -31,6 +31,21 @@ const PRODUCTION_API_HOSTS = [
   "https://clerk.career-allpath.com/*",
 ];
 
+// The origins allowed to navigate to the sign-in page — see
+// web_accessible_resources below for why this exists and why it is a
+// deliberately short list. Both Clerk hosts are included because the OAuth
+// return leg can come from either the Frontend API host or the account
+// portal, and which one it is depends on Clerk's own flow rather than on
+// anything this extension controls. Both modes are listed unconditionally:
+// unlike host_permissions, this grants no access to the developer instance —
+// it only names who may open a page that is itself Clerk-gated.
+const CLERK_WEB_ORIGINS = [
+  "https://clerk.career-allpath.com/*",
+  "https://accounts.career-allpath.com/*",
+  "https://fair-lemur-34.clerk.accounts.dev/*",
+  "https://accounts.fair-lemur-34.clerk.accounts.dev/*",
+];
+
 // Development adds the local Next.js server and the Clerk development
 // instance. These never ship: `vite build` (mode "production") excludes
 // them; only `npm run build:dev` (mode "development") includes them.
@@ -115,18 +130,31 @@ export default defineManifest((env) => ({
   side_panel: {
     default_path: "src/sidepanel/index.html",
   },
-  // No web_accessible_resources entry for the sign-in page, deliberately.
-  // web_accessible_resources gates access from WEB contexts (a page fetching
-  // or framing an extension resource); opening this page via
-  // chrome.runtime.getURL + chrome.tabs.create from the panel, and direct
-  // address-bar navigation (how the Task 4 gate opens it), both work without
-  // one. An entry here would instead be pure downside for an auth page
-  // specifically: with the extension ID pinned by `key` above, any website
-  // could probe for this extension and iframe a live sign-in form. See
-  // task-4-report.md's fix report for the reasoning and how to tell, from a
-  // real gate run, whether this is ever actually needed — if the page will
-  // not open without it, add it back scoped (NOT `<all_urls>`) and record
-  // that as a finding rather than a precaution.
+  // The sign-in page IS web-accessible, but only to Clerk's own origins.
+  //
+  // This entry was removed once, on the reasoning that the two ways the page
+  // gets opened — chrome.runtime.getURL from the panel, and address-bar
+  // navigation — both work without it, so exposing an auth page was pure
+  // downside. Both halves of that were true; the list of ways was not.
+  //
+  // The OAuth return leg is a third way, and it is a WEB navigation: after
+  // Google, Clerk sends the browser from its own origin to this page. Chrome
+  // blocks that with ERR_BLOCKED_BY_CLIENT unless the page is listed here —
+  // observed in a real browser, which is the only place it shows up. Email
+  // sign-in never hits this because it needs no redirect back, so the gap
+  // survived every test and one round of live verification.
+  //
+  // `matches` is Clerk's origins ONLY, never <all_urls>. That preserves what
+  // removing the entry was protecting against: with the extension ID pinned
+  // by `key` above, an <all_urls> entry would let any website probe for this
+  // extension and iframe a live sign-in form. Clerk's origins can already
+  // drive the sign-in flow, so they gain nothing they did not have.
+  web_accessible_resources: [
+    {
+      resources: ["src/signin/index.html"],
+      matches: CLERK_WEB_ORIGINS,
+    },
+  ],
   icons: {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",

@@ -10,6 +10,9 @@ import {
   putLiveRun,
 } from "@/lib/liveRuns";
 import { INITIAL_RUN_STATE, newRunId, runTailor, type RunState } from "@/lib/run";
+// TEMPORARY: diagnostic breadcrumbs for the service-worker lifetime question.
+// Remove with lib/runLog.ts once that is settled.
+import { logRun } from "@/lib/runLog";
 
 /**
  * Runs live here, not in the panel, so that closing the panel or switching
@@ -63,6 +66,7 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
     });
 
   await publish({ ...INITIAL_RUN_STATE, phase: "reading" });
+  void logRun("start", `${forUrl} runId=${runId}`);
 
   // Deliberately not awaited: the caller is a message handler and must answer
   // "started" immediately. The run's own writes are what the panel watches.
@@ -74,6 +78,7 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         msg.resume,
         (patch) => {
           latest = { ...latest, ...patch };
+          void logRun("phase", `${forUrl} ${latest.phase}`);
           // A rejection here (storage quota, or "extension context invalidated"
           // during a reload/update) must not vanish silently: without a
           // handler it would either surface as an unhandled rejection or, for
@@ -104,8 +109,12 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         // deliberately stays put, so returning to the posting shows the error
         // rather than a blank panel.
         await clearLiveRun(forUrl);
+        void logRun("cached", forUrl);
+      } else {
+        void logRun("ended-not-done", `${forUrl} phase=${latest.phase}`);
       }
     } catch (err) {
+      void logRun("threw", `${forUrl} ${err instanceof Error ? err.message : String(err)}`);
       // runTailor folds its own failures into RunState, so reaching here means
       // something unexpected — record it rather than leaving a run that never
       // reaches a terminal state.

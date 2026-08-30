@@ -1,5 +1,7 @@
 import { ensureToken } from "@/lib/token";
 import { startRun, type StartRunMessage } from "./runs";
+// TEMPORARY: see the diagnostic block at the end of this file.
+import { clearRunLog, dumpRunLog } from "@/lib/runLog";
 
 /**
  * Opens the side panel when the toolbar icon is clicked, and keeps a device
@@ -89,3 +91,18 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
   // anything else closes it and the caller's promise resolves undefined.
   return true;
 });
+
+// TEMPORARY: diagnostic access to the run breadcrumb trail, for the MV3
+// service-worker lifetime question. Attaching DevTools to a service worker
+// prevents Chrome from evicting it, so the failure cannot be observed live —
+// the trail is written to storage during the run and read back here
+// afterwards, from a console that was never attached while it mattered.
+//
+// Usage, in the service worker console AFTER a failed run:
+//   await cpDumpRunLog()
+//
+// Remove together with lib/runLog.ts once this is settled.
+(globalThis as unknown as { cpDumpRunLog: () => Promise<string> }).cpDumpRunLog =
+  async () => dumpRunLog();
+(globalThis as unknown as { cpClearRunLog: () => Promise<void> }).cpClearRunLog =
+  async () => clearRunLog();

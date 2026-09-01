@@ -13,6 +13,7 @@ import { INITIAL_RUN_STATE, newRunId, runTailor, type RunState } from "@/lib/run
 // TEMPORARY: diagnostic breadcrumbs for the service-worker lifetime question.
 // Remove with lib/runLog.ts once that is settled.
 import { logRun } from "@/lib/runLog";
+import { currentAuthToken } from "@/lib/session";
 
 /**
  * Runs live here, not in the panel, so that closing the panel or switching
@@ -37,7 +38,10 @@ export interface StartRunMessage {
  */
 export type StartRunResult =
   | { started: true }
-  | { started: false; reason: "at-capacity" | "already-running" | "failed" };
+  | {
+      started: false;
+      reason: "at-capacity" | "already-running" | "failed" | "session-expired";
+    };
 
 export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   const forUrl = cacheKey(msg.jd.url);
@@ -47,12 +51,6 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
 
   const running = Object.values(await getAllLiveRuns()).filter((r) => isRunning(r.state));
   if (running.length >= MAX_CONCURRENT_RUNS) return { started: false, reason: "at-capacity" };
-
-  // Refining reuses this posting's run id, which is what makes it free; a
-  // first run — or one after an entry too old to carry an id — mints a new
-  // one and is charged.
-  const prior = await getCachedRun(forUrl, msg.fingerprint);
-  const runId = msg.supplement.trim().length > 0 && prior?.runId ? prior.runId : newRunId();
 
   // `resumeFingerprint` travels with every publish, not just the final write:
   // the panel displays these records, so each one has to say which resume it
@@ -64,6 +62,44 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
       updatedAt: Date.now(),
       resumeFingerprint: msg.fingerprint,
     });
+
+  // Identity is settled BEFORE a run is minted, so a user whose session
+  // cannot be confirmed hears about it on the click rather than after a
+  // minute of watching a spinner reach an error that reads like a network
+  // fault.
+  //
+  // Deliberately AFTER the two checks above and not before them: those are
+  // local storage reads, while this one can cost a Clerk load() round trip on
+  // a cold worker. Ordering it later also keeps `already-running` winning,
+  // which matters — that path exists so the panel renders the existing run's
+  // own progress, and a session hiccup must not replace that with an error.
+  //
+  // Only `session_unavailable` stops a run. A device caller and a caller with
+  // no token at all both proceed: anonymous use keeps working exactly as it
+  // did, and sign-in stays an upgrade rather than a gate.
+  const auth = await currentAuthToken();
+  if (auth?.kind === "session_unavailable") {
+    // PUBLISHED, not merely returned. The panel's "Sign in again" button
+    // renders off the run state (App.tsx), not off this result, so publishing
+    // is the thing that puts a route back to sign-in on screen. The wording
+    // matches lib/api.ts's for the same condition, so a user sees one
+    // sentence for one problem however they reach it.
+    await publish({
+      ...INITIAL_RUN_STATE,
+      phase: "error",
+      error: {
+        kind: "session_expired",
+        message: "We couldn't confirm your session. Sign in again to continue.",
+      },
+    });
+    return { started: false, reason: "session-expired" };
+  }
+
+  // Refining reuses this posting's run id, which is what makes it free; a
+  // first run — or one after an entry too old to carry an id — mints a new
+  // one and is charged.
+  const prior = await getCachedRun(forUrl, msg.fingerprint);
+  const runId = msg.supplement.trim().length > 0 && prior?.runId ? prior.runId : newRunId();
 
   await publish({ ...INITIAL_RUN_STATE, phase: "reading" });
   void logRun("start", `${forUrl} runId=${runId}`);

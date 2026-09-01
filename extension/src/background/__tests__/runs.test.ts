@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { RunState } from "@/lib/run";
 import { getLiveRun, MAX_CONCURRENT_RUNS } from "@/lib/liveRuns";
 import { getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
+import type { AuthToken } from "@/lib/session";
 import { startRun } from "../runs";
 
 let runTailorImpl: (
@@ -26,6 +27,19 @@ vi.mock("@/lib/run", async (importOriginal) => {
       return runTailorImpl(jd, resume, onUpdate, opts);
     },
   };
+});
+
+let authImpl: () => Promise<AuthToken | null> = async () => ({
+  kind: "device",
+  token: "device-token",
+});
+
+// Unmocked, currentAuthToken() calls ensureToken(), which fires a real
+// POST to /api/device-token — refused in CI, but on a developer machine with
+// the web app running it mints a live token as a side effect of the suite.
+vi.mock("@/lib/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/session")>();
+  return { ...actual, currentAuthToken: () => authImpl() };
 });
 
 const JD = { text: "job text", title: "Staff MLE", company: "Acme", url: "https://example.com/jobs/1" };
@@ -69,6 +83,7 @@ async function putCachedRunFixture(
 beforeEach(() => {
   runTailorImpl = async () => {};
   runTailorOpts = [];
+  authImpl = async () => ({ kind: "device", token: "device-token" });
 
   const data: Record<string, unknown> = {};
   vi.stubGlobal("chrome", {
@@ -190,5 +205,59 @@ describe("startRun", () => {
     // find and silently mints a fresh (charged) id. The sibling test above
     // only covers the read half — this covers the write half.
     expect((await getCachedRun(JD.url, FP))?.runId).toBe("run-abc");
+  });
+
+  // The bug this whole plan exists to fix used to make every background run a
+  // device run. Now that identity is real, a session we cannot confirm has to
+  // stop the run BEFORE it starts — otherwise the user watches a spinner for
+  // the better part of a minute and then gets an error that looks like a
+  // network problem rather than a sign-in problem.
+  it("refuses to start when the session cannot be confirmed", async () => {
+    authImpl = async () => ({ kind: "session_unavailable" });
+
+    const result = await startRun(msg());
+
+    expect(result).toEqual({ started: false, reason: "session-expired" });
+  });
+
+  // Published, not merely returned. The panel's "Sign in again" button keys
+  // off the RUN state, not off the start result, so publishing is what puts a
+  // route back to sign-in on screen.
+  it("publishes a session_expired run state so the panel can offer sign-in", async () => {
+    authImpl = async () => ({ kind: "session_unavailable" });
+
+    await startRun(msg());
+    await new Promise((r) => setTimeout(r, 0));
+
+    const live = await getLiveRun(JD.url);
+    expect(live?.state.phase).toBe("error");
+    expect(live?.state.error?.kind).toBe("session_expired");
+  });
+
+  it("does not consult runTailor at all when the session cannot be confirmed", async () => {
+    authImpl = async () => ({ kind: "session_unavailable" });
+    await startRun(msg());
+    expect(runTailorOpts).toHaveLength(0);
+  });
+
+  // THE CONSTRAINT THIS MUST NOT BREAK. Anonymous use keeps working exactly
+  // as before; sign-in is an upgrade, never a gate. A device caller must sail
+  // straight through this check.
+  it("starts normally for an anonymous caller on the device identity", async () => {
+    authImpl = async () => ({ kind: "device", token: "device-token" });
+    expect(await startRun(msg())).toEqual({ started: true });
+  });
+
+  it("starts normally for a signed-in caller", async () => {
+    authImpl = async () => ({ kind: "clerk", token: "clerk-token" });
+    expect(await startRun(msg())).toEqual({ started: true });
+  });
+
+  // No device token could be minted and the user is not signed in. The
+  // request goes out with no Authorization header and the server treats it as
+  // the legacy anon caller — a pre-existing path, not this plan's business.
+  it("starts normally when there is no token at all", async () => {
+    authImpl = async () => null;
+    expect(await startRun(msg())).toEqual({ started: true });
   });
 });

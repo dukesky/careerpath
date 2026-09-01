@@ -10,6 +10,12 @@ vi.mock("@/lib/token", () => ({
   ensureToken: vi.fn(async () => "test-device-token"),
 }));
 
+// index.ts now imports background/identity.ts, which imports the Clerk SDK.
+// Nothing here asserts on identity; stub it so these tests stay about panels.
+vi.mock("@clerk/chrome-extension/background", () => ({
+  createClerkClient: async () => ({ isSignedIn: false, session: null }),
+}));
+
 let onCreatedCb: ((tab: { id?: number }) => void) | undefined;
 let onInstalledCb: (() => void) | undefined;
 let setOptionsCalls: Array<{ tabId?: number; path?: string; enabled?: boolean }> = [];
@@ -36,6 +42,14 @@ beforeEach(() => {
       onInstalled: { addListener: vi.fn((cb) => { onInstalledCb = cb; }) },
       onStartup: { addListener: vi.fn() },
       onMessage: { addListener: vi.fn() },
+    },
+    storage: {
+      local: {
+        get: vi.fn(async () => ({})),
+        set: vi.fn(async () => {}),
+        remove: vi.fn(async () => {}),
+      },
+      onChanged: { addListener: vi.fn() },
     },
   });
 });

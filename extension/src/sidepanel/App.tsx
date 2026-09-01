@@ -536,11 +536,17 @@ export default function App() {
         fingerprint,
       } satisfies StartRunMessage)) as StartRunResult | undefined;
 
-      if (result?.started !== true && result?.reason !== "already-running") {
-        // `already-running` says nothing, on purpose: the refresh below is
-        // about to put that run's own progress on screen, which tells the
-        // user more than any sentence could. Everything else — the cap, a
-        // worker that fell over, an undefined answer from a message channel
+      if (
+        result?.started !== true &&
+        result?.reason !== "already-running" &&
+        result?.reason !== "session-expired"
+      ) {
+        // `already-running` and `session-expired` say nothing, on purpose:
+        // the refresh below is about to put a published run state on screen,
+        // and in both cases that state tells the user more than a notice
+        // could — the run's own progress for the first, and an error carrying
+        // a "Sign in again" button for the second. Everything else — the cap,
+        // a worker that fell over, an undefined answer from a message channel
         // that closed — has to be said out loud, or the click looks ignored.
         setNotice(
           result?.reason === "at-capacity" ? AT_CAPACITY_NOTICE : COULD_NOT_START_NOTICE,

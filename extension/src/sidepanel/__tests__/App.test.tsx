@@ -2908,6 +2908,25 @@ describe("App - runs owned by the background", () => {
     );
   });
 
+  // The refusal has already published a session_expired run state, and the
+  // panel renders that with a "Sign in again" button. A notice on top of it
+  // would tell the user their run "couldn't start" — true, but useless —
+  // right beside the one control that actually fixes it. Silence is the
+  // correct amount to say, exactly as for `already-running`.
+  it("says nothing extra when the background refuses for an expired session", async () => {
+    sendMessageImpl = async () => ({ started: false, reason: "session-expired" });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Couldn't start that run.");
+  });
+
   // liveRuns.ts's stale rule is applied on READ, deliberately — an evicted
   // service worker cannot mark its own run failed, so only the reader is
   // guaranteed alive. But every other read in this panel is event-driven: a

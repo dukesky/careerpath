@@ -1,5 +1,6 @@
 import { ensureToken } from "@/lib/token";
 import { startRun, type StartRunMessage } from "./runs";
+import { installBackgroundClerkTokenSource } from "./identity";
 // TEMPORARY: see the diagnostic block at the end of this file.
 import { clearRunLog, dumpRunLog } from "@/lib/runLog";
 
@@ -7,6 +8,13 @@ import { clearRunLog, dumpRunLog } from "@/lib/runLog";
  * Opens the side panel when the toolbar icon is clicked, and keeps a device
  * token warm so the panel never blocks on minting one.
  */
+
+// Module scope, so the worker has an identity before any message handler can
+// run — including the cold start where the wake IS a start-run message. It
+// costs nothing here: the Clerk client is created lazily, on the first
+// request for a token. Without this call, session.ts's signed-out default
+// stands in this realm and every background run is a device run.
+installBackgroundClerkTokenSource();
 
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })

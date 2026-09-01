@@ -602,9 +602,12 @@ git commit -m "feat(extension): give the service worker a Clerk identity of its 
 在 `extension/src/background/__tests__/runs.test.ts` 中，于文件顶部已有的 `vi.mock("@/lib/run", ...)` 之后加入 session 的 mock：
 
 ```ts
-let authImpl: () => Promise<
-  { kind: "clerk"; token: string } | { kind: "device"; token: string } | { kind: "session_unavailable" } | null
-> = async () => ({ kind: "device", token: "device-token" });
+import type { AuthToken } from "@/lib/session";
+
+let authImpl: () => Promise<AuthToken | null> = async () => ({
+  kind: "device",
+  token: "device-token",
+});
 
 // Unmocked, currentAuthToken() calls ensureToken(), which fires a real
 // POST to /api/device-token — refused in CI, but on a developer machine with

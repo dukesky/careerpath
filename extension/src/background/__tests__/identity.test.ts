@@ -1,0 +1,149 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+let createCalls: Array<{ publishableKey: string }> = [];
+let createImpl: () => Promise<unknown> = async () => ({ isSignedIn: false, session: null });
+
+// The /background subpath, NOT /client. Its createClerkClient forces
+// `background: true`, which is what yields a headless client that works
+// without a DOM and loads itself. Mocking the wrong path here would let a
+// wrong import in the module under test pass unnoticed.
+vi.mock("@clerk/chrome-extension/background", () => ({
+  createClerkClient: (opts: { publishableKey: string }) => {
+    createCalls.push(opts);
+    return createImpl();
+  },
+}));
+
+let storageListener: ((changes: Record<string, unknown>, area: string) => void) | undefined;
+
+beforeEach(() => {
+  createCalls = [];
+  createImpl = async () => ({ isSignedIn: false, session: null });
+  storageListener = undefined;
+  vi.resetModules();
+
+  const data: Record<string, unknown> = {};
+  vi.stubGlobal("chrome", {
+    storage: {
+      local: {
+        get: vi.fn(async (keys: string[]) => {
+          const out: Record<string, unknown> = {};
+          for (const k of keys) if (k in data) out[k] = data[k];
+          return out;
+        }),
+        set: vi.fn(async (items: Record<string, unknown>) => {
+          Object.assign(data, items);
+        }),
+        remove: vi.fn(async (keys: string[]) => {
+          for (const k of keys) delete data[k];
+        }),
+      },
+      onChanged: {
+        addListener: vi.fn((cb) => {
+          storageListener = cb;
+        }),
+      },
+    },
+  });
+});
+
+/** Installs the source and hands back the function it registered. */
+async function installedSource() {
+  const session = await import("@/lib/session");
+  const spy = vi.spyOn(session, "setClerkTokenSource");
+  const { installBackgroundClerkTokenSource } = await import("../identity");
+  installBackgroundClerkTokenSource();
+  const source = spy.mock.calls.at(-1)?.[0];
+  if (!source) throw new Error("installBackgroundClerkTokenSource did not set a source");
+  return source;
+}
+
+describe("installBackgroundClerkTokenSource", () => {
+  it("installs a source that reports the signed-in user's token", async () => {
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "worker-token" },
+    });
+    const source = await installedSource();
+    expect(await source()).toEqual({ signedIn: true, token: "worker-token" });
+  });
+
+  it("passes the publishable key and never calls load() itself", async () => {
+    const load = vi.fn();
+    createImpl = async () => ({ isSignedIn: false, session: null, load });
+    const source = await installedSource();
+    await source();
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0].publishableKey).toBeTruthy();
+    // createClerkClient({background:true}) already calls
+    // load({standardBrowser:false}) internally. A second load() here would be
+    // a duplicate round trip against Clerk's Frontend API on every cold start.
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("creates the client once and reuses it across requests", async () => {
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "t" },
+    });
+    const source = await installedSource();
+    await source();
+    await source();
+    expect(createCalls).toHaveLength(1);
+  });
+
+  // A transient Clerk outage at worker cold start must not poison every later
+  // request for the rest of that worker's life. The panel's client has the
+  // same reset for the same reason — see lib/clerk.ts's `load()`.
+  it("does not cache a failure forever", async () => {
+    const { setHasSignedIn } = await import("@/lib/storage");
+    await setHasSignedIn();
+
+    createImpl = async () => {
+      throw new Error("clerk unreachable");
+    };
+    const source = await installedSource();
+    await expect(source()).rejects.toThrow("clerk unreachable");
+
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "recovered" },
+    });
+    expect(await source()).toEqual({ signedIn: true, token: "recovered" });
+  });
+
+  // Sign-out happens in the PANEL. The worker's cached client would go on
+  // reporting a signed-in user until the worker died, so a run started after
+  // sign-out would transact as someone who is no longer signed in.
+  it("drops the cached client when Clerk's stored JWT changes", async () => {
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "first" },
+    });
+    const source = await installedSource();
+    await source();
+    expect(createCalls).toHaveLength(1);
+
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "second" },
+    });
+    storageListener?.({ "clerk.career-allpath.com|__clerk_client_jwt|v2": {} }, "local");
+
+    expect(await source()).toEqual({ signedIn: true, token: "second" });
+    expect(createCalls).toHaveLength(2);
+  });
+
+  it("ignores unrelated storage changes", async () => {
+    createImpl = async () => ({
+      isSignedIn: true,
+      session: { getToken: async () => "t" },
+    });
+    const source = await installedSource();
+    await source();
+    storageListener?.({ cp_results: {} }, "local");
+    await source();
+    expect(createCalls).toHaveLength(1);
+  });
+});

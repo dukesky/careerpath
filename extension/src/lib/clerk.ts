@@ -16,8 +16,9 @@
  */
 import type { createClerkClient } from "@clerk/chrome-extension/client";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
+import { makeClerkTokenSource } from "./clerkTokenSource";
 import { setClerkTokenSource } from "./session";
-import { getHasSignedIn, setHasSignedIn } from "./storage";
+import { setHasSignedIn } from "./storage";
 
 /**
  * `createClerkClient` is overloaded: pass `background: true` and it returns
@@ -108,70 +109,16 @@ export function getClerk(): Promise<ClerkClient> {
 
 /**
  * Wires this module's Clerk client into session.ts as the source api.ts
- * consults for every request. Call once, from wherever the panel bootstraps
- * (Task 5) — NOT from here, and NOT from the sign-in page, which has no
- * reason to touch api.ts's auth path.
+ * consults for every request. Call once, from wherever the panel bootstraps —
+ * NOT from the sign-in page, which has no reason to touch api.ts's auth path.
  *
- * The source function itself:
- *
- * 1. Awaits `getClerk()` — i.e. awaits `load()` — before answering, on
- *    EVERY call, not just the first. `getClerk` returns the same memoized
- *    promise to every caller, so this never races `load()`; a call made
- *    before `load()` resolves simply waits, rather than answering early off
- *    a not-yet-populated `session`/`isSignedIn`. That is required, not
- *    incidental: session.ts's contract only treats "signed in, no token" as
- *    a real failure because the source has already waited out Clerk's
- *    hydration — see session.ts's `ClerkAuthState` doc comment. A source
- *    that could answer before `load()` finished would turn every fast click
- *    right after the panel opens into a spurious session_unavailable.
- * 2. Never reports `{ signedIn: false }` for a user who IS signed in. If
- *    `client.isSignedIn` is true but `session` is missing or `getToken()`
- *    resolves null, this reports `{ signedIn: true, token: null }` — the
- *    state session.ts turns into `session_unavailable`, not a silent
- *    downgrade to the device identity. Collapsing the two was the exact bug
- *    that made session.ts's `ClerkAuthState` type exist in the first place.
- * 3. Answers WITHOUT Clerk when Clerk cannot be reached and this browser has
- *    never signed in — see the catch below for why that asymmetry is the
- *    point rather than a shortcut.
+ * The behaviour lives in lib/clerkTokenSource.ts, shared with the service
+ * worker's own client (background/identity.ts). Read that module's doc
+ * comment before changing anything here: the panel and the worker MUST answer
+ * identically, and this file supplies only the client, never the rules.
  */
 export function installClerkTokenSource(): void {
-  setClerkTokenSource(async () => {
-    let client: ClerkClient;
-    try {
-      client = await getClerk();
-    } catch (err) {
-      // Clerk is unreachable — an incident, a paused dev instance, a
-      // corporate proxy blocking *.clerk.accounts.dev. What to do about it
-      // depends entirely on whether there is a session at stake.
-      //
-      // Never signed in on this browser: there is nothing to protect.
-      // Falling through to the device identity IS the behaviour anonymous
-      // users had before sign-in existed, and it is the only correct answer
-      // — rethrowing here would make session.ts report
-      // `session_unavailable`, api.ts refuse the request with no fetch, and
-      // the entire pre-existing anonymous user base lose the extension for
-      // the duration of a Clerk outage they have no relationship with. The
-      // plan's binding constraint is that anonymous use keeps working
-      // exactly as before and sign-in is an upgrade, never a gate.
-      //
-      // Signed in before: rethrow. We cannot tell whether this user's
-      // session is still valid, and guessing "signed out" would spend their
-      // device trial against the 3-per-30-days bucket while the panel still
-      // showed their email and daily allowance — the exact silent downgrade
-      // this whole design exists to prevent. Refusing the request is the
-      // honest outcome, and the one the user is told about.
-      if (await getHasSignedIn()) throw err;
-      return { signedIn: false };
-    }
-    if (!client.isSignedIn) return { signedIn: false };
-    // Recorded here as well as in `isSignedIn` because this is the path that
-    // runs on every request; a user who signs in and immediately runs must
-    // have the flag set before the next Clerk failure, not only after the
-    // panel next re-checks its account state.
-    await setHasSignedIn();
-    const token = client.session ? await client.session.getToken() : null;
-    return { signedIn: true, token };
-  });
+  setClerkTokenSource(makeClerkTokenSource(getClerk));
 }
 
 export async function currentUserEmail(): Promise<string | null> {

@@ -199,6 +199,23 @@ vi.mock("@/lib/api", async (importOriginal) => {
   };
 });
 
+// Unmocked, currentAuthToken() calls ensureToken(), which fires a real
+// POST to /api/device-token — refused in CI, but on a developer machine with
+// the web app running it mints a live token as a side effect of running the
+// test suite. `backgroundStartsTheRun` below drives the REAL `startRun`,
+// which now consults currentAuthToken() before admitting a run, so every
+// test that starts a run through it would otherwise pay that real fetch and
+// its timing, which several tests below are not written to tolerate. Device
+// is the right default: it is what every test here got implicitly before
+// startRun had an identity check at all.
+vi.mock("@/lib/session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/session")>();
+  return {
+    ...actual,
+    currentAuthToken: async () => ({ kind: "device" as const, token: "device-token" }),
+  };
+});
+
 // ---------------------------------------------------------------------------
 // `chrome.runtime.sendMessage` — the panel's ONLY way to start a run now that
 // the background service worker owns them. Same "replace the boundary"

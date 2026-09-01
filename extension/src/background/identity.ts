@@ -38,12 +38,18 @@ function getBackgroundClerk(): Promise<ClerkLike> {
   if (!clerkPromise) {
     // Deliberately NOT followed by a load() call: createClerkClient resolves
     // only after it has loaded the client itself.
-    clerkPromise = createClerkClient({ publishableKey: CLERK_PUBLISHABLE_KEY }).catch(
-      (err: unknown) => {
-        clerkPromise = undefined;
-        throw err;
-      },
-    );
+    const pending: Promise<ClerkLike> = createClerkClient({
+      publishableKey: CLERK_PUBLISHABLE_KEY,
+    }).catch((err: unknown) => {
+      // Retract ONLY this promise. A sign-out can land while a create is
+      // still in flight: the storage listener clears the slot, a later call
+      // fills it with a fresh client, and this rejection arrives last. An
+      // unconditional clear here would throw that newer, valid client away
+      // and cost the next caller a needless load() round trip.
+      if (clerkPromise === pending) clerkPromise = undefined;
+      throw err;
+    });
+    clerkPromise = pending;
   }
   return clerkPromise;
 }

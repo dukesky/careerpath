@@ -135,6 +135,59 @@ describe("installBackgroundClerkTokenSource", () => {
     expect(createCalls).toHaveLength(2);
   });
 
+  // The listener above can fire while a create() is still in flight — a
+  // sign-out can land mid-request, not just between requests. If a create's
+  // own .catch cleared `clerkPromise` unconditionally, a LATE rejection from
+  // a stale, already-superseded create could wipe out a newer, valid,
+  // already-resolved client — costing the next caller a needless extra
+  // create even though nothing was wrong with the cache. This pins the fix:
+  // a create only clears the slot it still owns.
+  it("does not let a late-rejecting stale create clobber a newer valid client", async () => {
+    let rejectFirst: ((err: Error) => void) | undefined;
+    let createCount = 0;
+
+    createImpl = () => {
+      createCount += 1;
+      if (createCount === 1) {
+        // Held open deliberately — this create is still in flight when the
+        // storage listener fires below.
+        return new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      }
+      return Promise.resolve({
+        isSignedIn: true,
+        session: { getToken: async () => "second" },
+      });
+    };
+
+    const source = await installedSource();
+
+    // Call A starts the first create and is left pending.
+    const callA = source();
+
+    // Sign-out lands while call A's create is still in flight: the listener
+    // clears the cache slot out from under it.
+    storageListener?.({ "clerk.career-allpath.com|__clerk_client_jwt|v2": {} }, "local");
+
+    // Call B sees an empty slot and creates + caches a second, good client.
+    expect(await source()).toEqual({ signedIn: true, token: "second" });
+    expect(createCalls).toHaveLength(2);
+
+    // Call A's stale create finally rejects. Its own .catch must see that
+    // the slot no longer belongs to it and leave call B's client cached.
+    rejectFirst?.(new Error("stale create failed"));
+    // Consumed here (not asserted on) so the rejection is handled either
+    // way — makeClerkTokenSource may or may not rethrow it depending on the
+    // has-signed-in flag, and that choice is not what this test is about.
+    await callA.catch(() => {});
+
+    // A third call must reuse call B's cached client, not create a third
+    // one.
+    expect(await source()).toEqual({ signedIn: true, token: "second" });
+    expect(createCalls).toHaveLength(2);
+  });
+
   it("ignores unrelated storage changes", async () => {
     createImpl = async () => ({
       isSignedIn: true,

@@ -204,6 +204,21 @@ describe("run tokens", () => {
     const token = await issueRunToken("user_abc123");
     expect(await verifyDeviceToken(token)).toBeNull();
   });
+
+  // Nothing this server mints carries both claims — this is a defence against
+  // a forged or malformed token, and against a future edit that reorders the
+  // checks in verifyBearer. The comment there promises `uid` wins; without
+  // this test that promise is unverifiable, and swapping the two checks would
+  // pass every other test in this file.
+  it("prefers the user claim when a token somehow carries both", async () => {
+    const both = await new SignJWT({ uid: "user_abc123", did: "device_xyz" })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime("15m")
+      .sign(new TextEncoder().encode(process.env.DEVICE_TOKEN_SECRET!));
+
+    expect(await verifyBearer(both)).toEqual({ kind: "user", userId: "user_abc123" });
+  });
 });
 
 describe("resolveCaller with a run token", () => {

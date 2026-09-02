@@ -143,7 +143,8 @@ function bearer(request: Request): string | null {
  * read here) so this stays a pure, testable function; routes obtain it with
  * `const { userId } = await auth()`.
  *
- * Precedence: signed-in user > valid device token > legacy anon header.
+ * Precedence: signed-in user > valid bearer token (a run token resolves to
+ * its user, a device token resolves to its device) > legacy anon header.
  * A bearer token that is present but fails verification short-circuits to a
  * rejection — see the CallerResult doc comment.
  */

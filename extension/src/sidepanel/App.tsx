@@ -67,6 +67,23 @@ export default function App() {
   // attempt and on moving to another posting — it describes one click.
   const [notice, setNotice] = useState<string | null>(null);
   /**
+   * Whether the last click failed for a reason only signing in again fixes.
+   *
+   * Needed because that failure never becomes a run STATE. The panel refuses
+   * before it sends `start-run`, so nothing is ever published, and the
+   * "Sign in again" card below keys off `state.error` — which stays empty
+   * while `AccountBar` cheerfully goes on offering "Sign out". Without this
+   * the user read "Sign in again to continue" with nothing to click.
+   *
+   * A boolean, not the message: `notice` already carries the words. This
+   * carries only the fact that a route back to sign-in is warranted, which a
+   * `network` or `server` mint failure does NOT warrant — those are not
+   * sign-in problems and a sign-in button would send the user somewhere that
+   * cannot help. Cleared beside `notice`, and for the same reason: it
+   * describes one click on one posting.
+   */
+  const [signInNeeded, setSignInNeeded] = useState(false);
+  /**
    * Whether ANY posting has a run in flight — not just the one on screen.
    *
    * A separate question from `busy` below, and the distinction is the whole
@@ -484,6 +501,7 @@ export default function App() {
     // posting the user never clicked — a button reading "Working…" under a
     // posting with nothing running.
     setNotice(null);
+    setSignInNeeded(false);
     setStarting(false);
     void refreshDisplay(true);
   }, [jd?.url, refreshDisplay]);
@@ -523,6 +541,7 @@ export default function App() {
     // clicks starting two charged runs for one posting.
     if (!jd || !stored || busy || saving) return;
     setNotice(null);
+    setSignInNeeded(false);
     setStarting(true);
     try {
       // Identity is settled HERE, not in the worker. The panel is the only
@@ -537,6 +556,13 @@ export default function App() {
         // allowance. `null` is different and does NOT land here — that is an
         // anonymous caller, who proceeds normally.
         setNotice(runToken.message);
+        // Nothing is published for this refusal — the message never left the
+        // panel — so the "Sign in again" card cannot key off the run state
+        // the way it does for a session that dies mid-run. Raise it here, and
+        // ONLY for the kind sign-in actually fixes: a `network` or `server`
+        // failure gets the notice alone, because pointing that user at a
+        // sign-in page would waste their time.
+        if (runToken.kind === "session_expired") setSignInNeeded(true);
         return;
       }
 
@@ -553,18 +579,12 @@ export default function App() {
         runToken: runToken?.ok ? runToken.token : undefined,
       } satisfies StartRunMessage)) as StartRunResult | undefined;
 
-      if (
-        result?.started !== true &&
-        result?.reason !== "already-running" &&
-        result?.reason !== "session-expired"
-      ) {
-        // `already-running` and `session-expired` say nothing, on purpose:
-        // the refresh below is about to put a published run state on screen,
-        // and in both cases that state tells the user more than a notice
-        // could — the run's own progress for the first, and an error carrying
-        // a "Sign in again" button for the second. Everything else — the cap,
-        // a worker that fell over, an undefined answer from a message channel
-        // that closed — has to be said out loud, or the click looks ignored.
+      if (result?.started !== true && result?.reason !== "already-running") {
+        // `already-running` says nothing, on purpose: the refresh below is
+        // about to put that run's own progress on screen, which tells the
+        // user more than a notice could. Everything else — the cap, a worker
+        // that fell over, an undefined answer from a message channel that
+        // closed — has to be said out loud, or the click looks ignored.
         setNotice(
           result?.reason === "at-capacity" ? AT_CAPACITY_NOTICE : COULD_NOT_START_NOTICE,
         );
@@ -815,8 +835,16 @@ export default function App() {
           api.ts's `send()` doc comment. This is the visible half of that
           guarantee: a route back to sign-in, not just the generic message
           Results.tsx already renders for every error kind including this
-          one. */}
-      {state.phase === "error" && state.error?.kind === "session_expired" && (
+          one.
+
+          Two ways in, one card. A session can die mid-run (the run state
+          above) or before one starts, when the panel cannot mint a run token
+          (`signInNeeded` — see its declaration). The second never produces a
+          run state at all, so it needs its own flag; it does not need its own
+          affordance, and giving it one would leave two "Sign in again"
+          buttons to keep in step. */}
+      {(signInNeeded ||
+        (state.phase === "error" && state.error?.kind === "session_expired")) && (
         <section className="card">
           <p className="muted tiny">Sign in to pick up where you left off.</p>
           <a className="btn primary" href={signInPageUrl()} target="_blank" rel="noreferrer">

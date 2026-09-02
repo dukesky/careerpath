@@ -13,7 +13,6 @@ import { INITIAL_RUN_STATE, newRunId, runTailor, type RunState } from "@/lib/run
 // TEMPORARY: diagnostic breadcrumbs for the service-worker lifetime question.
 // Remove with lib/runLog.ts once that is settled.
 import { logRun } from "@/lib/runLog";
-import { currentAuthToken } from "@/lib/session";
 
 /**
  * Runs live here, not in the panel, so that closing the panel or switching
@@ -44,10 +43,7 @@ export interface StartRunMessage {
  */
 export type StartRunResult =
   | { started: true }
-  | {
-      started: false;
-      reason: "at-capacity" | "already-running" | "failed" | "session-expired";
-    };
+  | { started: false; reason: "at-capacity" | "already-running" | "failed" };
 
 export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   const forUrl = cacheKey(msg.jd.url);
@@ -69,37 +65,19 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
       resumeFingerprint: msg.fingerprint,
     });
 
-  // Identity is settled BEFORE a run is minted, so a user whose session
-  // cannot be confirmed hears about it on the click rather than after a
-  // minute of watching a spinner reach an error that reads like a network
-  // fault.
+  // Identity is NOT settled here. This worker has no Clerk session of its own
+  // and no way to obtain one, so `currentAuthToken()` in this realm can only
+  // ever answer "device" — which is precisely the silent downgrade this whole
+  // change removed. The identity a run transacts under arrives in the message
+  // (`runToken` above), minted by the panel, which is the only context that
+  // can confirm a session. A refusal for an unconfirmable session therefore
+  // belongs to the panel too, BEFORE it sends this message — see
+  // lib/runToken.ts and the panel's `generate`. Do not add a session check
+  // back here: it could not fire, and a gate that cannot fire reads to the
+  // next maintainer as the protection, and invites deleting the one that is.
   //
-  // Deliberately AFTER the two checks above and not before them: those are
-  // local storage reads, while this one can cost a Clerk load() round trip on
-  // a cold worker. Ordering it later also keeps `already-running` winning,
-  // which matters — that path exists so the panel renders the existing run's
-  // own progress, and a session hiccup must not replace that with an error.
-  //
-  // Only `session_unavailable` stops a run. A device caller and a caller with
-  // no token at all both proceed: anonymous use keeps working exactly as it
-  // did, and sign-in stays an upgrade rather than a gate.
-  const auth = await currentAuthToken();
-  if (auth?.kind === "session_unavailable") {
-    // PUBLISHED, not merely returned. The panel's "Sign in again" button
-    // renders off the run state (App.tsx), not off this result, so publishing
-    // is the thing that puts a route back to sign-in on screen. The wording
-    // matches lib/api.ts's for the same condition, so a user sees one
-    // sentence for one problem however they reach it.
-    await publish({
-      ...INITIAL_RUN_STATE,
-      phase: "error",
-      error: {
-        kind: "session_expired",
-        message: "We couldn't confirm your session. Sign in again to continue.",
-      },
-    });
-    return { started: false, reason: "session-expired" };
-  }
+  // An absent `runToken` is an anonymous caller and starts normally, exactly
+  // as before sign-in existed. Sign-in is an upgrade, never a gate.
 
   // Refining reuses this posting's run id, which is what makes it free; a
   // first run — or one after an entry too old to carry an id — mints a new

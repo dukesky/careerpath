@@ -316,7 +316,13 @@ describe("api client", () => {
     // while the panel showed the user their daily allowance — the silent
     // downgrade this override exists to prevent, reachable through an empty
     // string.
-    it("does not fall back to the ambient identity for an empty override", async () => {
+    //
+    // Asserted POSITIVELY, on the exact header. `not.toBe("Bearer
+    // device-token")` also passes when there is no Authorization header at
+    // all — and an absent header resolves server-side to an anonymous caller,
+    // which is the same silent downgrade wearing a different hat. `Bearer `
+    // is what must go out: a loud 401 the panel forks into session_expired.
+    it("sends an empty bearer rather than falling back for an empty override", async () => {
       await setToken("device-token");
       const fetchMock = vi.fn<typeof fetch>(async () => json({}));
       vi.stubGlobal("fetch", fetchMock);
@@ -324,9 +330,7 @@ describe("api client", () => {
       await apiPost("/api/analyze", { a: 1 }, "");
 
       const init = fetchMock.mock.calls[0][1] as RequestInit;
-      expect((init.headers as Record<string, string>).Authorization).not.toBe(
-        "Bearer device-token",
-      );
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer ");
     });
   });
 });

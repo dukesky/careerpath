@@ -2933,6 +2933,81 @@ describe("App - runs owned by the background", () => {
     expect(container.textContent).toContain("Sign in again.");
   });
 
+  // The refusal above never becomes a run STATE — nothing is sent, so nothing
+  // is published — and the "Sign in again" card keys off the run state.
+  // Without its own flag the user was told their session had expired while
+  // AccountBar went on offering "Sign out", and had no way to act on it.
+  it("offers a route back to sign-in when the mint fails for an expired session", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    runTokenResult = { ok: false, kind: "session_expired", message: "Sign in again." };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(findAnchor(container, "Sign in again").getAttribute("href")).toBe(SIGNIN_URL);
+  });
+
+  // The other half, and the reason this is gated on the KIND rather than on
+  // "the mint failed": signing in again does nothing about an unreachable
+  // server, so offering it would send the user somewhere that cannot help.
+  // The notice alone is the whole correct answer here.
+  it("offers no sign-in route when the mint fails for a network problem", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    runTokenResult = {
+      ok: false,
+      kind: "network",
+      message: "Couldn't reach career-path.",
+    };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Couldn't reach career-path.");
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Sign in again",
+      ),
+    ).toBeUndefined();
+  });
+
+  // The card describes ONE click. Leaving it up after the next attempt would
+  // tell a user whose session is fine that it is not.
+  it("clears the sign-in route when the next attempt succeeds", async () => {
+    clerkState = { signedIn: true, email: "ada@example.com" };
+    runTokenResult = { ok: false, kind: "session_expired", message: "Sign in again." };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+    expect(findAnchor(container, "Sign in again")).toBeTruthy();
+
+    runTokenResult = { ok: true, token: "run-token-xyz" };
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(
+      Array.from(container.querySelectorAll("a")).find(
+        (a) => a.textContent?.trim() === "Sign in again",
+      ),
+    ).toBeUndefined();
+  });
+
   // Anonymous callers are unaffected — the run starts with no token.
   it("starts without a run token when nobody is signed in", async () => {
     runTokenResult = null;
@@ -2947,25 +3022,6 @@ describe("App - runs owned by the background", () => {
 
     expect(sendMessageCalls).toHaveLength(1);
     expect((sendMessageCalls[0] as { runToken?: string }).runToken).toBeUndefined();
-  });
-
-  // The refusal has already published a session_expired run state, and the
-  // panel renders that with a "Sign in again" button. A notice on top of it
-  // would tell the user their run "couldn't start" — true, but useless —
-  // right beside the one control that actually fixes it. Silence is the
-  // correct amount to say, exactly as for `already-running`.
-  it("says nothing extra when the background refuses for an expired session", async () => {
-    sendMessageImpl = async () => ({ started: false, reason: "session-expired" });
-    activeJdState = { jd: JD_A, failure: null, loading: false };
-    await setResume(STORED_RESUME);
-    await renderApp();
-
-    await act(async () => {
-      findButton(container, "Tailor my resume").click();
-    });
-    await flush();
-
-    expect(container.textContent).not.toContain("Couldn't start that run.");
   });
 
   // liveRuns.ts's stale rule is applied on READ, deliberately — an evicted

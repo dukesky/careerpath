@@ -112,10 +112,12 @@ export function getClerk(): Promise<ClerkClient> {
  * consults for every request. Call once, from wherever the panel bootstraps —
  * NOT from the sign-in page, which has no reason to touch api.ts's auth path.
  *
- * The behaviour lives in lib/clerkTokenSource.ts, shared with the service
- * worker's own client (background/identity.ts). Read that module's doc
- * comment before changing anything here: the panel and the worker MUST answer
- * identically, and this file supplies only the client, never the rules.
+ * The behaviour lives in lib/clerkTokenSource.ts, and this is its only
+ * caller — the service worker has no Clerk client of its own and cannot be
+ * given one, so a background run travels under a token the panel mints (see
+ * lib/runToken.ts). Read that module's doc comment before changing anything
+ * here: this file supplies only the client, never the rules, and the rule for
+ * an unreachable Clerk is deliberately asymmetric.
  */
 export function installClerkTokenSource(): void {
   setClerkTokenSource(makeClerkTokenSource(getClerk));

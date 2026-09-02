@@ -34,9 +34,15 @@ let authImpl: () => Promise<AuthToken | null> = async () => ({
   token: "device-token",
 });
 
-// Unmocked, currentAuthToken() calls ensureToken(), which fires a real
-// POST to /api/device-token — refused in CI, but on a developer machine with
-// the web app running it mints a live token as a side effect of the suite.
+// startRun does NOT consult this — it cannot, and must not: this worker has
+// no Clerk session, so currentAuthToken() in its realm can only ever answer
+// "device", which was the silent downgrade the run token removed. The mock is
+// here so the ambient identity can be varied underneath startRun and the
+// three "starts normally" tests below can pin that varying it changes
+// nothing. (It also keeps an unmocked currentAuthToken() from reaching
+// ensureToken(), which fires a real POST to /api/device-token — refused in
+// CI, but on a developer machine with the web app running it would mint a
+// live token as a side effect of the suite.)
 vi.mock("@/lib/session", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/session")>();
   return { ...actual, currentAuthToken: () => authImpl() };
@@ -207,42 +213,13 @@ describe("startRun", () => {
     expect((await getCachedRun(JD.url, FP))?.runId).toBe("run-abc");
   });
 
-  // The bug this whole plan exists to fix used to make every background run a
-  // device run. Now that identity is real, a session we cannot confirm has to
-  // stop the run BEFORE it starts — otherwise the user watches a spinner for
-  // the better part of a minute and then gets an error that looks like a
-  // network problem rather than a sign-in problem.
-  it("refuses to start when the session cannot be confirmed", async () => {
-    authImpl = async () => ({ kind: "session_unavailable" });
-
-    const result = await startRun(msg());
-
-    expect(result).toEqual({ started: false, reason: "session-expired" });
-  });
-
-  // Published, not merely returned. The panel's "Sign in again" button keys
-  // off the RUN state, not off the start result, so publishing is what puts a
-  // route back to sign-in on screen.
-  it("publishes a session_expired run state so the panel can offer sign-in", async () => {
-    authImpl = async () => ({ kind: "session_unavailable" });
-
-    await startRun(msg());
-    await new Promise((r) => setTimeout(r, 0));
-
-    const live = await getLiveRun(JD.url);
-    expect(live?.state.phase).toBe("error");
-    expect(live?.state.error?.kind).toBe("session_expired");
-  });
-
-  it("does not consult runTailor at all when the session cannot be confirmed", async () => {
-    authImpl = async () => ({ kind: "session_unavailable" });
-    await startRun(msg());
-    expect(runTailorOpts).toHaveLength(0);
-  });
-
   // THE CONSTRAINT THIS MUST NOT BREAK. Anonymous use keeps working exactly
-  // as before; sign-in is an upgrade, never a gate. A device caller must sail
-  // straight through this check.
+  // as before; sign-in is an upgrade, never a gate. The three tests below say
+  // it the strongest way available: whatever the ambient identity answers,
+  // the run starts. startRun consults it for nothing — a run's identity
+  // arrives in the message (`runToken`), minted by the panel — so a gate
+  // added back here could not fire, and a gate that cannot fire reads to the
+  // next maintainer as the protection and invites deleting the one that is.
   it("starts normally for an anonymous caller on the device identity", async () => {
     authImpl = async () => ({ kind: "device", token: "device-token" });
     expect(await startRun(msg())).toEqual({ started: true });

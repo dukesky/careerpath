@@ -5,8 +5,8 @@ import { getHasSignedIn, setHasSignedIn } from "./storage";
  * The structural subset of Clerk's client this module needs.
  *
  * Declared structurally rather than imported from the SDK so this module
- * pulls in no Clerk code at all — which is what lets the service worker share
- * it with the panel without dragging in the panel's DOM-bound client.
+ * pulls in no Clerk code at all — which is what keeps it testable without the
+ * SDK, and keeps a reader of the rules below from having to load them.
  */
 export interface ClerkLike {
   isSignedIn: boolean;
@@ -16,12 +16,20 @@ export interface ClerkLike {
 /**
  * The three-state contract api.ts depends on, in ONE place.
  *
- * There are two callers — the panel (lib/clerk.ts) and the service worker
- * (background/identity.ts) — and they differ ONLY in how they obtain a
- * client. The behaviour below must not differ between them, and duplicating
- * it in the worker is how it would come to: this repository has been bitten
- * three times by one rule written down in two files with nothing pinning them
- * together.
+ * ONE caller: the panel, via lib/clerk.ts. The service worker has no Clerk
+ * client — it cannot get one, which is why a run's identity is minted in the
+ * panel and handed over with the `start-run` message (see background/runs.ts
+ * and lib/runToken.ts). Do NOT read this module as evidence that the worker
+ * holds a session; a stale claim that it did is what made a session gate in
+ * the worker look alive long after it had become unreachable code.
+ *
+ * Kept as its own module even with one caller, because rule 2 below is also
+ * needed on the panel's mint path (lib/runToken.ts's catch), and this
+ * repository has been bitten three times by one rule written down in two
+ * files with nothing pinning them together. The two are prose-linked rather
+ * than shared code — they answer different questions ("what state is Clerk
+ * in" versus "may this run start") — so changing one means visiting the
+ * other.
  *
  * The behaviour itself:
  *
@@ -39,7 +47,8 @@ export interface ClerkLike {
  *    base for the duration of a Clerk outage they have no relationship with.
  *    A browser that HAS signed in gets the rethrow, because guessing "signed
  *    out" would spend that user's device trial while the panel still showed
- *    their email and daily allowance.
+ *    their email and daily allowance. lib/runToken.ts holds the same rule for
+ *    the pre-run mint; the two must keep agreeing.
  *
  * `getClient` is expected to have awaited Clerk's load before resolving, so
  * "signed in with no token" means something is wrong rather than "still

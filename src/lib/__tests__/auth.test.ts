@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { decodeJwt } from "jose";
+import { decodeJwt, SignJWT } from "jose";
 import {
   issueDeviceToken,
   verifyDeviceToken,
+  issueRunToken,
+  verifyBearer,
   resolveCaller,
   callerKey,
 } from "@/lib/auth";
@@ -156,5 +158,76 @@ describe("callerKey", () => {
     expect(callerKey({ kind: "device", deviceId: "d1" })).toBe("device:d1");
     expect(callerKey({ kind: "anon", anonId: "a1" })).toBe("anon:a1");
     expect(callerKey({ kind: "anon", anonId: "" })).toBe("anon:none");
+  });
+});
+
+describe("run tokens", () => {
+  beforeEach(() => {
+    process.env.DEVICE_TOKEN_SECRET = "test-secret-value-at-least-32-chars-long";
+  });
+
+  it("round-trips a user id", async () => {
+    const token = await issueRunToken("user_abc123");
+    expect(await verifyBearer(token)).toEqual({ kind: "user", userId: "user_abc123" });
+  });
+
+  it("rejects a tampered token", async () => {
+    const token = await issueRunToken("user_abc123");
+    const tampered = `${token.slice(0, -4)}AAAA`;
+    expect(await verifyBearer(tampered)).toBeNull();
+  });
+
+  it("rejects an expired token", async () => {
+    // Signed with the same secret and algorithm, but already past its
+    // expiry — the one property a short TTL is bought for.
+    const past = Math.floor(Date.now() / 1000) - 60;
+    const expired = await new SignJWT({ uid: "user_abc123" })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt(past - 60)
+      .setExpirationTime(past)
+      .sign(new TextEncoder().encode(process.env.DEVICE_TOKEN_SECRET!));
+    expect(await verifyBearer(expired)).toBeNull();
+  });
+
+  // THE COLLISION TEST. Both token kinds are signed with the SAME secret and
+  // the SAME algorithm, so jwtVerify succeeds for either — only the claim
+  // tells them apart. If that discrimination is ever lost, a device token
+  // would be honoured as a user and every anonymous caller would spend some
+  // real account's daily quota.
+  it("does not mistake a device token for a run token", async () => {
+    const { token } = await issueDeviceToken();
+    const identity = await verifyBearer(token);
+    expect(identity?.kind).toBe("device");
+  });
+
+  it("does not mistake a run token for a device token", async () => {
+    const token = await issueRunToken("user_abc123");
+    expect(await verifyDeviceToken(token)).toBeNull();
+  });
+});
+
+describe("resolveCaller with a run token", () => {
+  beforeEach(() => {
+    process.env.DEVICE_TOKEN_SECRET = "test-secret-value-at-least-32-chars-long";
+  });
+
+  const req = (token: string) =>
+    new Request("https://example.com/api/analyze", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+  it("resolves a run token to the user it was minted for", async () => {
+    const token = await issueRunToken("user_abc123");
+    const result = await resolveCaller(req(token), null);
+    expect(result).toEqual({ ok: true, caller: { kind: "user", userId: "user_abc123" } });
+  });
+
+  // The existing rule, restated because this task adds a second way for the
+  // bearer branch to succeed: a bearer that is present but invalid is a 401,
+  // NEVER a silent downgrade to anon. That refusal is the extension's only
+  // way to learn its token died.
+  it("still refuses an invalid bearer rather than falling back to anon", async () => {
+    const result = await resolveCaller(req("not-a-token"), null);
+    expect(result).toEqual({ ok: false, reason: "invalid_token" });
   });
 });

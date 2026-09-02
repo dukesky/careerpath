@@ -29,6 +29,16 @@ export type CallerResult =
 
 const DEVICE_TOKEN_TTL = "24h";
 
+/**
+ * Short by design. A run token lets the extension's service worker transact
+ * as a user, and unlike the Clerk session it was minted from, nothing in the
+ * worker can re-mint it — so it has to outlive one generation (about a
+ * minute, three API calls) with room for a retry, and not much more. Fifteen
+ * minutes bounds a leaked token's damage to that user's remaining daily
+ * allowance; it grants nothing else.
+ */
+const RUN_TOKEN_TTL = "15m";
+
 const MIN_SECRET_CHARS = 32;
 
 function secret(): Uint8Array {
@@ -60,21 +70,54 @@ export async function issueDeviceToken(): Promise<{
   return { token, deviceId };
 }
 
-/** Returns the device id, or null for any invalid/expired/forged token. */
-export async function verifyDeviceToken(token: string): Promise<string | null> {
+/** Mint the token the panel hands its service worker so runs bill to this user. */
+export async function issueRunToken(userId: string): Promise<string> {
+  return new SignJWT({ uid: userId })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(RUN_TOKEN_TTL)
+    .sign(secret());
+}
+
+/**
+ * What an `Authorization: Bearer` actually is, or null if it is not ours.
+ *
+ * Both token kinds are signed with the SAME secret and algorithm, so the
+ * signature check cannot separate them — the CLAIM does: `uid` for a run
+ * token, `did` for a device token. One verify, then discriminate. Two
+ * separate verify functions would each accept the other's token at the
+ * signature step and rely on a claim check anyway, so this keeps the one
+ * decision in one place.
+ *
+ * `uid` is checked FIRST. A token carrying both claims is not something this
+ * server ever mints, and treating such a thing as the weaker identity is the
+ * safe direction to be wrong in.
+ */
+export type BearerIdentity =
+  | { kind: "user"; userId: string }
+  | { kind: "device"; deviceId: string };
+
+export async function verifyBearer(token: string): Promise<BearerIdentity | null> {
   if (!token) return null;
   try {
     // Pin the algorithm. A Uint8Array key already restricts jose to the HS
     // family, but stating it makes the intent explicit rather than an
     // emergent property of the key type.
-    const { payload } = await jwtVerify(token, secret(), {
-      algorithms: ["HS256"],
-    });
+    const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
+    const uid = payload.uid;
+    if (typeof uid === "string" && uid.length > 0) return { kind: "user", userId: uid };
     const did = payload.did;
-    return typeof did === "string" && did.length > 0 ? did : null;
+    if (typeof did === "string" && did.length > 0) return { kind: "device", deviceId: did };
+    return null;
   } catch {
     return null;
   }
+}
+
+/** Returns the device id, or null for anything that is not a valid device token. */
+export async function verifyDeviceToken(token: string): Promise<string | null> {
+  const identity = await verifyBearer(token);
+  return identity?.kind === "device" ? identity.deviceId : null;
 }
 
 /**
@@ -118,9 +161,13 @@ export async function resolveCaller(
     // never a silent downgrade to anon, or the extension can't learn its
     // token died.
     if (!token) return { ok: false, reason: "invalid_token" };
-    const deviceId = await verifyDeviceToken(token);
-    if (!deviceId) return { ok: false, reason: "invalid_token" };
-    return { ok: true, caller: { kind: "device", deviceId } };
+    const identity = await verifyBearer(token);
+    if (!identity) return { ok: false, reason: "invalid_token" };
+    // A run token IS the user, minted for the extension's service worker
+    // because the worker has no Clerk session of its own to present.
+    return identity.kind === "user"
+      ? { ok: true, caller: { kind: "user", userId: identity.userId } }
+      : { ok: true, caller: { kind: "device", deviceId: identity.deviceId } };
   }
 
   const anonId = (request.headers.get(ANON_HEADER) ?? "")

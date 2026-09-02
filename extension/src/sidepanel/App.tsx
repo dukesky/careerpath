@@ -21,6 +21,7 @@ import {
   signInPageUrl,
 } from "@/lib/clerk";
 import { fetchQuota, type QuotaInfo } from "@/lib/quota";
+import { fetchRunToken } from "@/lib/runToken";
 import { useActiveJd } from "./useActiveJd";
 import { ResumeBlock } from "./ResumeBlock";
 import { Results } from "./Results";
@@ -524,6 +525,21 @@ export default function App() {
     setNotice(null);
     setStarting(true);
     try {
+      // Identity is settled HERE, not in the worker. The panel is the only
+      // context with a working Clerk session — the worker's realm cannot be
+      // given one — so it mints the token the run will travel under and hands
+      // it over with the request.
+      const runToken = await fetchRunToken();
+      if (runToken && !runToken.ok) {
+        // Signed in, but no token. Refuse rather than fall back to the device
+        // identity: that would quietly bill the run to the 3-per-30-days
+        // trial while the header still showed this user their daily
+        // allowance. `null` is different and does NOT land here — that is an
+        // anonymous caller, who proceeds normally.
+        setNotice(runToken.message);
+        return;
+      }
+
       // Everything the run needs, in one message. The background mints or
       // reuses the run id, freezes the baseline, and writes the result to the
       // cache — none of that is the panel's business any more, and doing any
@@ -534,6 +550,7 @@ export default function App() {
         resume: stored.resume,
         supplement,
         fingerprint,
+        runToken: runToken?.ok ? runToken.token : undefined,
       } satisfies StartRunMessage)) as StartRunResult | undefined;
 
       if (

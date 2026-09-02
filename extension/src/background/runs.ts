@@ -27,6 +27,12 @@ export interface StartRunMessage {
   supplement: string;
   /** Which resume this run is for — see lib/fingerprint.ts. */
   fingerprint: string;
+  /**
+   * The identity this run transacts under. Minted by the panel, which has a
+   * working Clerk session; the worker has none of its own. Absent for an
+   * anonymous caller, who runs on the device identity.
+   */
+  runToken?: string;
 }
 
 /**
@@ -124,7 +130,7 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
             console.warn("failed to publish run progress", err),
           );
         },
-        { extraInfo: msg.supplement, runId },
+        { extraInfo: msg.supplement, runId, runToken: msg.runToken },
       );
 
       if (latest.phase === "done" && latest.analysis && latest.tailored) {

@@ -9,9 +9,9 @@ let runTailorImpl: (
   jd: unknown,
   resume: unknown,
   onUpdate: (patch: Partial<RunState>) => void,
-  opts: { extraInfo?: string; runId?: string },
+  opts: { extraInfo?: string; runId?: string; runToken?: string },
 ) => Promise<void> = async () => {};
-let runTailorOpts: Array<{ extraInfo?: string; runId?: string }> = [];
+let runTailorOpts: Array<{ extraInfo?: string; runId?: string; runToken?: string }> = [];
 
 vi.mock("@/lib/run", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/run")>();
@@ -21,7 +21,7 @@ vi.mock("@/lib/run", async (importOriginal) => {
       jd: unknown,
       resume: unknown,
       onUpdate: (p: Partial<RunState>) => void,
-      opts: { extraInfo?: string; runId?: string },
+      opts: { extraInfo?: string; runId?: string; runToken?: string },
     ) => {
       runTailorOpts.push(opts);
       return runTailorImpl(jd, resume, onUpdate, opts);
@@ -259,5 +259,17 @@ describe("startRun", () => {
   it("starts normally when there is no token at all", async () => {
     authImpl = async () => null;
     expect(await startRun(msg())).toEqual({ started: true });
+  });
+
+  it("passes the message's run token through to the run", async () => {
+    await startRun({ ...msg(), runToken: "run-token-xyz" });
+    expect(runTailorOpts.at(-1)?.runToken).toBe("run-token-xyz");
+  });
+
+  // No token means an anonymous caller. The run proceeds on the device
+  // identity, exactly as it does today.
+  it("starts without a run token for an anonymous caller", async () => {
+    await startRun(msg());
+    expect(runTailorOpts.at(-1)?.runToken).toBeUndefined();
   });
 });

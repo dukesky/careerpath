@@ -216,6 +216,12 @@ vi.mock("@/lib/session", async (importOriginal) => {
   };
 });
 
+// `@/lib/runToken` — the panel's identity-minting step, consulted before
+// every `start-run` message. `runTokenResult` defaults to a token, matching
+// the vast majority of tests here which are not about identity at all.
+let runTokenResult: unknown = { ok: true, token: "run-token-xyz" };
+vi.mock("@/lib/runToken", () => ({ fetchRunToken: async () => runTokenResult }));
+
 // ---------------------------------------------------------------------------
 // `chrome.runtime.sendMessage` — the panel's ONLY way to start a run now that
 // the background service worker owns them. Same "replace the boundary"
@@ -259,6 +265,7 @@ beforeEach(() => {
   apiPostCalls = [];
   apiGetImpl = async () => ({ ok: true, data: { remaining: 3 } });
   apiGetPaths = [];
+  runTokenResult = { ok: true, token: "run-token-xyz" };
 });
 
 // ---------------------------------------------------------------------------
@@ -2906,6 +2913,40 @@ describe("App - runs owned by the background", () => {
     expect(container.textContent).toContain(
       "Five postings are already generating. Wait for one to finish.",
     );
+  });
+
+  // Signed in but unable to mint: the run must not start at all. Falling back
+  // to the device identity here is the silent downgrade this whole change
+  // exists to remove.
+  it("refuses to start when a signed-in user cannot get a run token", async () => {
+    runTokenResult = { ok: false, kind: "session_expired", message: "Sign in again." };
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(sendMessageCalls).toHaveLength(0);
+    expect(container.textContent).toContain("Sign in again.");
+  });
+
+  // Anonymous callers are unaffected — the run starts with no token.
+  it("starts without a run token when nobody is signed in", async () => {
+    runTokenResult = null;
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await setResume(STORED_RESUME);
+    await renderApp();
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(sendMessageCalls).toHaveLength(1);
+    expect((sendMessageCalls[0] as { runToken?: string }).runToken).toBeUndefined();
   });
 
   // The refusal has already published a session_expired run state, and the

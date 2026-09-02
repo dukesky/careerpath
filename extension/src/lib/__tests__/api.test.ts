@@ -265,4 +265,50 @@ describe("api client", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect("x-access-code" in (init.headers as Record<string, string>)).toBe(false);
   });
+
+  describe("explicit token override", () => {
+    it("sends the override instead of consulting the ambient identity", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () => json({}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await apiPost("/api/analyze", { a: 1 }, "run-token-xyz");
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBe(
+        "Bearer run-token-xyz",
+      );
+    });
+
+    // THE RULE THIS OVERRIDE EXISTS FOR. A run token is the user's identity in
+    // a form the worker cannot re-mint. Refreshing to a device token on 401
+    // would succeed, and the run would silently finish against the 3-per-30-days
+    // device bucket while the panel showed the user their daily allowance — the
+    // exact silent downgrade this whole change is undoing. One fetch, no mint,
+    // no retry.
+    it("never refreshes to a device token when the override is rejected", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () => json({ error: "expired" }, 401));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await apiPost("/api/analyze", { a: 1 }, "run-token-xyz");
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.kind).toBe("session_expired");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to the ambient identity when no override is given", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () => json({}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await apiPost("/api/analyze", { a: 1 });
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBe(
+        "Bearer device-token",
+      );
+    });
+  });
 });

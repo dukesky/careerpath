@@ -1,6 +1,6 @@
 import { API_BASE } from "./config";
 import { ensureToken } from "./token";
-import { currentAuthToken } from "./session";
+import { currentAuthToken, type AuthToken } from "./session";
 import { getBetaCode } from "./storage";
 
 export type ApiErrorKind =
@@ -78,8 +78,20 @@ async function send<T>(
   path: string,
   init: RequestInit,
   allowRefresh = true,
+  overrideToken?: string,
 ): Promise<ApiResult<T>> {
-  const auth = await currentAuthToken();
+  // An explicit token means the caller already settled identity and this
+  // request must travel under it. The service worker uses this: it has no
+  // Clerk session of its own, so the panel mints a run token and passes it
+  // in. `currentAuthToken()` in the worker's realm always answers "device",
+  // which is precisely the bug this parameter removes.
+  //
+  // It is treated as a `clerk` identity, not a `device` one, because that is
+  // what it behaves like at the 401 fork below: it carries the user, and
+  // nothing on this side can re-mint it.
+  const auth: AuthToken | null = overrideToken
+    ? { kind: "clerk", token: overrideToken }
+    : await currentAuthToken();
 
   if (auth?.kind === "session_unavailable") {
     return {
@@ -117,7 +129,7 @@ async function send<T>(
 
   if (res.status === 401 && allowRefresh) {
     const refreshed = await ensureToken(true);
-    if (refreshed) return send<T>(path, init, false);
+    if (refreshed) return send<T>(path, init, false, overrideToken);
   }
 
   if (!res.ok) return toFailure<T>(res);
@@ -134,16 +146,25 @@ async function send<T>(
  * `send()` is where the Clerk-vs-device fork lives, so a GET that bypassed it
  * would report a different caller's quota than the POSTs it is describing.
  */
-export function apiGet<T>(path: string): Promise<ApiResult<T>> {
-  return send<T>(path, { method: "GET" });
+export function apiGet<T>(path: string, overrideToken?: string): Promise<ApiResult<T>> {
+  return send<T>(path, { method: "GET" }, true, overrideToken);
 }
 
-export function apiPost<T>(path: string, body: unknown): Promise<ApiResult<T>> {
-  return send<T>(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+export function apiPost<T>(
+  path: string,
+  body: unknown,
+  overrideToken?: string,
+): Promise<ApiResult<T>> {
+  return send<T>(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    true,
+    overrideToken,
+  );
 }
 
 /** Multipart — do NOT set Content-Type; the browser adds the boundary. */

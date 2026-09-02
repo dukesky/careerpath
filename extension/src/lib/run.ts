@@ -43,6 +43,13 @@ export interface RunOptions {
    * start a fresh, charged run.
    */
   runId?: string;
+  /**
+   * The identity this run transacts under, when the caller is the service
+   * worker. The worker has no Clerk session of its own; the panel mints this
+   * and passes it in. Omitted in the panel, where the ambient identity is
+   * already correct.
+   */
+  runToken?: string;
 }
 
 /**
@@ -68,7 +75,11 @@ export async function runTailor(
 
   onUpdate({ phase: "reading", analysis: null, tailored: null, error: null });
 
-  const parsed = await apiPost<{ jd: ParsedJD }>("/api/parse-jd", { text: jd.text });
+  const parsed = await apiPost<{ jd: ParsedJD }>(
+    "/api/parse-jd",
+    { text: jd.text },
+    opts.runToken,
+  );
   if (!parsed.ok) return fail(parsed.kind, parsed.message);
 
   const runId = opts.runId || newRunId();
@@ -85,10 +96,12 @@ export async function runTailor(
   const analyzeCall = apiPost<{ analysis: GapAnalysis; remaining: number | null }>(
     "/api/analyze",
     payload,
+    opts.runToken,
   );
   const tailorCall = apiPost<{ tailored: TailorResult; remaining: number | null }>(
     "/api/tailor",
     payload,
+    opts.runToken,
   );
 
   const analyzed = await analyzeCall;

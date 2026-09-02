@@ -73,6 +73,13 @@ async function toFailure<T>(res: Response): Promise<ApiResult<T>> {
  *   quota on screen would be a lie and nothing would look broken. So: no
  *   refresh, no retry, and a distinct error kind the panel turns into
  *   "your session expired".
+ *
+ * `overrideToken` lets a caller — the service worker, which has no Clerk
+ * session of its own — pin the identity explicitly instead of consulting
+ * `currentAuthToken()`. It is folded into the `clerk` branch of the fork
+ * above, not the `device` one: it carries the user, nothing on this side can
+ * re-mint it, and a rejection must fail loudly rather than silently retry as
+ * a device.
  */
 async function send<T>(
   path: string,
@@ -89,9 +96,18 @@ async function send<T>(
   // It is treated as a `clerk` identity, not a `device` one, because that is
   // what it behaves like at the 401 fork below: it carries the user, and
   // nothing on this side can re-mint it.
-  const auth: AuthToken | null = overrideToken
-    ? { kind: "clerk", token: overrideToken }
-    : await currentAuthToken();
+  //
+  // This MUST be a presence check (`!== undefined`), not a truthy check. An
+  // empty-string override is a caller bug, but falling through to
+  // `currentAuthToken()` for it would silently downgrade to the device
+  // identity — the exact bug this parameter exists to remove, just reached
+  // through `""` instead of an omitted argument. Keeping it as `clerk` means
+  // an empty override sends `Bearer ` and comes back a loud 401
+  // `session_expired`, not a quiet device-bucket charge.
+  const auth: AuthToken | null =
+    overrideToken !== undefined
+      ? { kind: "clerk", token: overrideToken }
+      : await currentAuthToken();
 
   if (auth?.kind === "session_unavailable") {
     return {
@@ -145,6 +161,8 @@ async function send<T>(
  * A GET through the same identity and 401 handling as every other call —
  * `send()` is where the Clerk-vs-device fork lives, so a GET that bypassed it
  * would report a different caller's quota than the POSTs it is describing.
+ * `overrideToken` is threaded through to `send()` unchanged; see its doc
+ * comment for why an override is pinned as a `clerk` identity.
  */
 export function apiGet<T>(path: string, overrideToken?: string): Promise<ApiResult<T>> {
   return send<T>(path, { method: "GET" }, true, overrideToken);

@@ -179,4 +179,27 @@ describe("runTailor", () => {
       .map((c) => JSON.parse(String((c[1] as RequestInit).body)).extraInfo);
     expect(sent).toEqual(["I used PyTorch on X", "I used PyTorch on X"]);
   });
+
+  // Pins the high-risk requirement from the brief: ALL THREE apiPost calls —
+  // parse-jd, analyze, tailor — must carry the run token, not just the two
+  // that happen to run in parallel. Dropping any one of them sends that leg
+  // as a device caller with nothing visibly wrong in the UI.
+  it("sends the runToken as the bearer identity on all three legs", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
+      if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+      return json({ tailored: {}, remaining: 4 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const call of fetchMock.mock.calls) {
+      const init = call[1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBe(
+        "Bearer run-token-xyz",
+      );
+    }
+  });
 });

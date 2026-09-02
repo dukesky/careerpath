@@ -310,5 +310,23 @@ describe("api client", () => {
         "Bearer device-token",
       );
     });
+
+    // An empty override is a caller bug, but it must fail LOUDLY. Falling back
+    // to the ambient identity here would bill the run to the device bucket
+    // while the panel showed the user their daily allowance — the silent
+    // downgrade this override exists to prevent, reachable through an empty
+    // string.
+    it("does not fall back to the ambient identity for an empty override", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () => json({}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await apiPost("/api/analyze", { a: 1 }, "");
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).not.toBe(
+        "Bearer device-token",
+      );
+    });
   });
 });

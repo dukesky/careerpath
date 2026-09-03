@@ -22,18 +22,28 @@ export interface ChatMessage {
 // ---------------------------------------------------------------------------
 
 const MODEL_MAP: Record<LLMTask, string> = {
-  parse: "deepseek/deepseek-chat", // resume parsing — unchanged
-  parse_jd: "anthropic/claude-haiku-4.5", // on the critical path; must be fast
-  analyze: "anthropic/claude-sonnet-4.6",
-  tailor: "anthropic/claude-sonnet-4.6",
-  ocr: "anthropic/claude-sonnet-4.6", // vision-capable; hardcoded, ignores `quality`
+  // V4 Flash, not the `deepseek-chat` alias: that alias still resolves to V3
+  // (Dec 2024), while this is the July 2026 GA release at roughly a fifth of
+  // the price. Pinned to the dated release rather than a floating alias so a
+  // provider-side re-point cannot silently change what parses resumes.
+  parse: "deepseek/deepseek-v4-flash-0731",
+  parse_jd: "google/gemini-3.8-flash", // on the critical path; must be fast
+  analyze: "google/gemini-3.8-flash",
+  tailor: "google/gemini-3.8-flash",
+  ocr: "google/gemini-3.8-flash", // vision-capable; hardcoded, ignores `quality`
 };
 
 // The `quality` flag only overrides analyze/tailor. OCR is always the map value.
-// quality → latest Sonnet; fast → latest Haiku.
+//
+// Both tiers currently resolve to the SAME model, so the flag is inert: a
+// `fast` request and a `quality` request route identically and cost the same.
+// That is a deliberate consequence of collapsing the former Haiku/Sonnet pair
+// onto one Gemini model, not an oversight — but it does mean nothing should
+// read `quality` today as "slower, better, or more expensive". The extension
+// hardcodes `quality` (see its lib/run.ts), so it is unaffected either way.
 const QUALITY_MODELS: Record<Quality, string> = {
-  fast: "anthropic/claude-haiku-4.5",
-  quality: "anthropic/claude-sonnet-4.6",
+  fast: "google/gemini-3.8-flash",
+  quality: "google/gemini-3.8-flash",
 };
 
 // Sensible default sampling temperature per task.

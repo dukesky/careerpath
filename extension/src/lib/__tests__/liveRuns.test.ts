@@ -16,6 +16,7 @@ const RUNNING: RunState = {
   analysis: null,
   tailored: null,
   remaining: null,
+  rescoredScore: null,
   error: null,
 };
 

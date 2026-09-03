@@ -90,6 +90,11 @@ export default function WorkspacePage() {
   const [runError, setRunError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<GapAnalysis | null>(null);
   const [tailored, setTailored] = useState<TailorResult | null>(null);
+  // The tailored resume re-measured by /api/rescore, or null until it lands.
+  // Null is the normal state for the first ~30 seconds of a result and forever
+  // if the rescore fails; ResultsView falls back to the tailor model's own
+  // projected score, so null is never a broken screen.
+  const [rescoredScore, setRescoredScore] = useState<number | null>(null);
   // The resume exactly as generated — kept so edits can be reverted.
   const [generatedTailored, setGeneratedTailored] =
     useState<TailorResult | null>(null);
@@ -236,6 +241,9 @@ export default function WorkspacePage() {
     setRunError(null);
     setAnalysis(null);
     setTailored(null);
+    // Cleared with the rest: a regenerate must not show the previous run's
+    // measurement beside this run's numbers.
+    setRescoredScore(null);
     setRunPhase("running");
 
     // One id per generate action, shared by both requests below, so the pair
@@ -300,6 +308,42 @@ export default function WorkspacePage() {
       if (typeof tData.remaining === "number") setRemaining(tData.remaining);
       setRunPhase("idle");
       setView("results");
+
+      // The rewritten resume, measured with the SAME instrument that produced
+      // the "before" number — see /api/rescore. Fired only after the results
+      // view is already on screen and deliberately not awaited into the
+      // rendering path above: it is a second analyze-grade model call, and
+      // making the user wait on it would double the time to first result for a
+      // refinement of one figure.
+      //
+      // Everything about the failure path is silence. `rescoredScore` stays
+      // null, ResultsView keeps showing the tailor model's own projection, and
+      // no error is raised — a completed generate must never be reported as
+      // failed because a cosmetic follow-up did.
+      void (async () => {
+        try {
+          const res = await fetch("/api/rescore", {
+            method: "POST",
+            headers: apiHeaders(),
+            body: JSON.stringify({
+              // The TAILORED resume. Sending `resume` here would re-measure
+              // the original and silently render "72 → 72".
+              structuredResume: generated.resume,
+              structuredJD: parsedJd,
+              quality,
+              // The same runId the pair above was charged under: the route
+              // uses it to confirm this run actually happened. A fresh id
+              // would be rejected, correctly.
+              runId,
+            }),
+          });
+          if (!res.ok) return;
+          const d = (await res.json()) as { score?: unknown };
+          if (typeof d.score === "number") setRescoredScore(d.score);
+        } catch {
+          // Network error on a leg nobody is waiting for.
+        }
+      })();
     } catch {
       setRunError("Network error. Please try again.");
       setRunPhase("error");
@@ -461,6 +505,7 @@ export default function WorkspacePage() {
           <ResultsView
             analysis={analysis}
             tailored={tailored}
+            rescoredScore={rescoredScore}
             originalResume={resume}
             generatedResume={(generatedTailored ?? tailored).resume}
             company={parsedJd?.company ?? ""}

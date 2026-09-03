@@ -104,10 +104,71 @@ Chaining tailor after analyze so the projected score is anchored to the baseline
 ## 9. Success criteria
 
 1. Generating a posting, then regenerating it with supplementary experience, leaves the left-hand number unchanged.
-2. Both displayed numbers are multiples of 5.
+2. ~~Both displayed numbers are multiples of 5.~~ Superseded by the 2026-09-03 addendum below: both displayed numbers are raw integers.
 3. A cache entry whose fingerprint does not match the current resume is not displayed, and its `runId` is not reused.
 4. A cache entry written before this change (no fingerprint) is not displayed.
 5. Replacing the resume and returning to a previously generated posting shows a fresh panel, not the old result.
 6. Restoring a posting whose fingerprint matches shows its stored baseline, not a freshly computed one.
 7. `analyze` runs at temperature 0.
 8. `App.test.tsx` covers criterion 1 — two runs on one posting, asserting the baseline is stable.
+
+---
+
+## Addendum — 2026-09-03: the right-hand number is now a measurement
+
+**Superseded here:** §7's "chaining out of scope", and with it §5's rounding
+and success criterion 2. §§3, 4, 6 are unchanged and still govern.
+
+Since 2026-09-03 the panel's right-hand number is the **tailored resume scored
+by the analyze call itself** — the same system prompt, the same schema, the
+same model, temperature 0 — fetched from a new `POST /api/rescore` after the
+run's `done` patch has already painted. `projected_match_score` remains the
+fallback and is shown until the rescore lands, and forever if it fails.
+
+**Why this was not visible in 2026-08-17.** §7 rejected chaining, and it was
+right to: putting analyze in front of tailor serializes two calls and doubles
+the wall clock to first result. But it framed the choice as "one instrument or
+current latency", and there is a third option the discussion never reached — a
+**third call, after first paint**. The user reads a complete result at the same
+moment they do today; twenty to thirty seconds later one number on that screen
+becomes more accurate. The cost is real (about +40% in LLM spend, roughly
+$0.04 a generate) and it buys the delta the product has always claimed to be
+selling.
+
+**What this changes about §5.** Rounding to the nearest five existed because
+the two numbers came from two uncalibrated instruments, where a three-point
+difference means nothing. That premise is gone: both numbers now come from the
+same instrument at temperature 0. What rounding does now is destroy real
+signal — an honest 87 → 88 renders as 85 → 90, wrong in both halves — so
+`roundToFive` is deleted and both numbers render as raw integers. **If the
+right-hand number ever reverts to another model's self-assessment, the
+rounding has to come back with it.**
+
+**What it does not change.** The baseline is still frozen per (posting,
+resume) exactly as §3 describes — the left number is a historical fact about
+the document the user arrived with, and a rescore of the rewrite is not a
+reason to re-measure it. §4's one-rule provenance check is untouched:
+`rescoredScore` is an OPTIONAL cache field, and an entry lacking it (written
+before this change, or from a run whose rescore failed) is still perfectly
+valid and displayed with the projection.
+
+**Honesty.** A rescore below the baseline is displayed as it is. No `max()`,
+no floor. A number invented to look like progress is worse than one that shows
+none, and this is the same rule as the product's no-fabrication constraint on
+the resume itself.
+
+**Not paid for by the user.** The rescore consumes no quota — a generate is
+still one unit. It is gated instead: the run marker `consumeRun` already
+writes must exist for that caller and runId (read-only — the marker's parity
+is load-bearing for quota.ts's leg accounting), plus a per-run rescore ceiling,
+the standard per-IP rate limit, and the same beta bypass the other routes have.
+
+**Revised success criteria** (criterion 2 in §9 is superseded as marked there;
+9 and 10 are new):
+
+9. After a generate, exactly one `POST /api/rescore` is made, under the same
+   identity as analyze/tailor and with the same `runId`, and the allowance
+   still moves by one.
+10. The right-hand number equals the rescore's score once it lands, and the
+    tailor model's projection before that and if it fails. Evaluator assertion
+    **A7** measures 9 and 10 end to end in a real browser.

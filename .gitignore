@@ -53,3 +53,9 @@ next-env.d.ts
 
 # Chrome Web Store upload packages (npm run package)
 /extension/*.zip
+
+# e2e evaluator (evaluator/) — local artifacts only
+/evaluator/node_modules/
+/evaluator/profile/
+/evaluator/reports/
+/evaluator/.work/

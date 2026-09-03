@@ -97,6 +97,38 @@ class MemoryStore implements KVStore {
 let store: KVStore | null = null;
 
 /**
+ * Where the in-memory fallback actually lives: on `globalThis`, not in this
+ * module's own scope.
+ *
+ * A module-level `new MemoryStore()` is one store per MODULE INSTANCE, and
+ * that is not the same thing as one store per process. `next dev` bundles each
+ * route handler separately, so /api/analyze, /api/quota and /api/rescore each
+ * get their own copy of this module and their own Map — with the result that a
+ * generate charges inside analyze's copy, `GET /api/quota` reads quota's copy
+ * and answers `used: 0`, and /api/rescore looks for the run marker analyze
+ * wrote and does not find it. Every one of those routes is behaving correctly;
+ * they are simply not talking to the same store. It is invisible from the
+ * outside except as "the counter never moves", which reads as a quota bug and
+ * is not one — the evaluator's A7 is what finally surfaced it, as a 403 from a
+ * marker gate whose marker had genuinely been written.
+ *
+ * Keying on `Symbol.for` puts it in the cross-realm registry, so every bundle
+ * in the process finds the same object. This changes NOTHING in production
+ * with Upstash configured (that branch is taken first) and nothing about the
+ * warning below: across serverless instances the memory store is still wrong,
+ * and still per-instance. It only makes "per-process" true where the process
+ * really is the boundary — local dev, tests, and the evaluator harness.
+ */
+const MEMORY_STORE_KEY = Symbol.for("career-path.kv.memory-store");
+type GlobalWithStore = typeof globalThis & { [MEMORY_STORE_KEY]?: KVStore };
+
+function sharedMemoryStore(): KVStore {
+  const g = globalThis as GlobalWithStore;
+  g[MEMORY_STORE_KEY] ??= new MemoryStore();
+  return g[MEMORY_STORE_KEY];
+}
+
+/**
  * Resolve REST credentials from either the Upstash-native names
  * (UPSTASH_REDIS_REST_URL/TOKEN) or the Vercel Marketplace names
  * (KV_REST_API_URL/TOKEN). Note: the read-only token can't incr/rpush, so we
@@ -148,16 +180,22 @@ export function getKV(): KVStore {
       }),
     );
   }
-  store = new MemoryStore();
+  store = sharedMemoryStore();
   return store;
 }
 
 /**
  * Test-only: drop the cached store so the next getKV() builds a fresh one.
  * Never call this from application code.
+ *
+ * Clears the process-global memory store as well as this module's reference to
+ * it. Both are required: leaving the global in place would carry one test
+ * file's counters into the next, since a vitest worker runs several files in
+ * one process and `Symbol.for` deliberately reaches across module instances.
  */
 export function resetKV(): void {
   store = null;
+  delete (globalThis as GlobalWithStore)[MEMORY_STORE_KEY];
 }
 
 export function isRedisConfigured(): boolean {

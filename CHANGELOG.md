@@ -7,6 +7,43 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-09-03 — The "after" score is measured, not guessed (extension 0.2.0)
+
+### Changed
+
+- **The right-hand match number is now the rewritten resume, scored by the
+  same call that produced the left-hand one.** It used to be the rewriting
+  model's opinion of its own work — a different prompt, in a call that could
+  not see the first number, so "60 → 60" never meant "no improvement" and
+  "72 → 84" was two guesses rather than a measurement. After a rewrite
+  finishes, career-path now re-runs the *analysis* on the new resume and shows
+  that. The improvement you read is one instrument measuring two documents.
+- **Both numbers are shown exactly**, no longer rounded to the nearest five.
+  Rounding existed to hide the disagreement between two uncalibrated scores;
+  with one scale it only hid real, small gains.
+- If the re-measurement fails or is slow, the panel keeps showing the previous
+  estimate and says nothing — a finished resume is never held up, and never
+  discarded, for a number.
+- **A re-measurement below where you started is shown as it is.** No flooring,
+  no massaging. Same rule as the rewrite itself: nothing invented.
+
+### Added
+
+- `POST /api/rescore`, which scores a tailored resume with the analyze
+  instrument. It costs no quota — a generate is still one run — and is bounded
+  instead by the existing per-IP limit, a per-run ceiling, and a check that the
+  run it names actually happened.
+
+### Notes
+
+- A generate now makes a fourth model call, so it costs about 40% more to
+  serve. Time to your finished resume is unchanged: the extra call starts only
+  after the result is on screen.
+- Results cached before this change still work — they simply keep showing the
+  old estimate.
+
+---
+
 ## 2026-08-22 — The extension signs in against production Clerk
 
 ### Changed

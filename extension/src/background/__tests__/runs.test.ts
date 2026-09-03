@@ -147,6 +147,47 @@ describe("startRun", () => {
     expect(await getLiveRun(JD.url)).toBeNull();
   });
 
+  // The rescore lands in a patch AFTER the `done` one (see run.ts), which is
+  // the whole reason startRun folds patches into `latest` instead of caching
+  // whatever the done patch carried. Caching without it means the number the
+  // user watched arrive is gone the moment they revisit the posting.
+  it("writes the rescored score into the cache", async () => {
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: { overall_match_score: 70 } as never,
+        tailored: { projected_match_score: 78 } as never,
+      });
+      onUpdate({ rescoredScore: 83 });
+    };
+
+    await startRun(msg());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect((await getCachedRun(JD.url, FP))?.rescoredScore).toBe(83);
+  });
+
+  // The rescore leg is allowed to fail silently, so a `done` run with no
+  // rescore is a normal outcome and must still be cached — as an entry with
+  // the field absent, indistinguishable from one written before the field
+  // existed. See cache.ts's own doc comment.
+  it("caches a run whose rescore never landed, with the field absent", async () => {
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: { overall_match_score: 70 } as never,
+        tailored: { projected_match_score: 78 } as never,
+      });
+    };
+
+    await startRun(msg());
+    await new Promise((r) => setTimeout(r, 0));
+
+    const hit = await getCachedRun(JD.url, FP);
+    expect(hit).not.toBeNull();
+    expect(hit?.rescoredScore).toBeUndefined();
+  });
+
   // A failure must PERSIST. If it did not, a background run that failed would
   // leave nothing behind, and returning to the posting would show a blank
   // panel — strictly worse than today, where the error is at least on screen.

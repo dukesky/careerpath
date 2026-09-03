@@ -23,6 +23,22 @@ describe("in-memory KV store", () => {
     expect(await getKV().getCount("a")).toBe(0);
   });
 
+  // The failure this exists for was found by the evaluator, not by a unit
+  // test: /api/rescore 403'd on a run marker /api/analyze had genuinely
+  // written, because `next dev` bundles each route separately and each bundle
+  // got its OWN module instance — and, before this, its own Map. Nothing
+  // looked broken from inside any single route; the counter simply never
+  // moved. `vi.resetModules()` reproduces exactly that: a second instance of
+  // this module, in the same process, whose module-level `store` is null.
+  it("shares one store across module instances in the same process", async () => {
+    await getKV().incr("shared-key", 60);
+
+    vi.resetModules();
+    const fresh = await import("@/lib/kv");
+
+    expect(await fresh.getKV().getCount("shared-key")).toBe(1);
+  });
+
   it("stores and deletes hash fields", async () => {
     const kv = getKV();
     await kv.hset("h", "f", "v");

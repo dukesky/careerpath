@@ -5,7 +5,6 @@ import { DownloadPdf } from "./DownloadPdf";
 import { SaveButton } from "./SaveButton";
 import { SupplementBox, type SupplementProps } from "./SupplementBox";
 import { supplementPlaceholder } from "./gapHint";
-import { roundToFive } from "./score";
 
 const STATUS_MARK: Record<ReqStatus, string> = {
   met: "✅",
@@ -66,7 +65,7 @@ export function Results({
   supplement: SupplementProps;
 }) {
   const progress = PHASE_COPY[state.phase];
-  const { analysis, tailored } = state;
+  const { analysis, tailored, rescoredScore } = state;
 
   return (
     <div>
@@ -78,15 +77,36 @@ export function Results({
 
       {analysis && (
         <section className="card">
+          {/* Raw integers, both sides. `roundToFive` used to sit on both of
+              these numbers because they came from two uncalibrated rulers —
+              analyze's score on the left, the tailor model's self-assessment
+              on the right — and a three-point difference between two such
+              numbers means nothing. The right-hand number is now the tailored
+              resume measured by analyze itself, at temperature 0, so the noise
+              source the rounding existed to hide is gone; what rounding does
+              instead is eat the real, small improvements this instrument
+              produces (an honest 87 → 88 both render as 85 → 90, which is
+              wrong twice over). If the right-hand number ever goes back to
+              being a different model's guess, bring the rounding back with
+              it. */}
           <div className="score">
             {/* The fallback matters only during the FIRST run: analyze lands
                 before tailor, so there is briefly no stored baseline, and the
                 value shown here is the one that is about to BECOME it — so
                 nothing jumps when the run completes and the real baseline is
                 set. */}
-            {roundToFive(baselineScore ?? analysis.overall_match_score)}
+            {baselineScore ?? analysis.overall_match_score}
             {tailored && (
-              <span className="after"> → {roundToFive(tailored.projected_match_score)}</span>
+              // `rescoredScore ?? projected` — the rescore arrives 20-30s
+              // after this card first paints, so the projection holds the slot
+              // until then and is simply replaced in place. No spinner and no
+              // transition: a number quietly becoming more accurate is not an
+              // event worth animating, and flagging it would invite the user
+              // to distrust the first value.
+              <span className="after">
+                {" "}
+                → {rescoredScore ?? tailored.projected_match_score}
+              </span>
             )}
             <span className="muted tiny"> match</span>
           </div>

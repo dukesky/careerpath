@@ -1,0 +1,13 @@
+{
+  "name": "career-path-evaluator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "End-to-end evaluator: loads the real extension into real Chromium and asserts the end-to-end observable outcome of a signed-in generate.",
+  "scripts": {
+    "eval": "node run-eval.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

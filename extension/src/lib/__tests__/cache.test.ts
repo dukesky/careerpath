@@ -195,6 +195,51 @@ describe("result cache", () => {
     expect(hit?.resumeFingerprint).toBe("beef1234");
   });
 
+  it("round-trips the rescored score", async () => {
+    await putCachedRun("https://acme.com/jobs/1", { ...run(62), rescoredScore: 71 });
+    expect((await getCachedRun("https://acme.com/jobs/1", FP))?.rescoredScore).toBe(71);
+  });
+
+  // BACKWARD COMPATIBILITY, and the reason `rescoredScore` is optional rather
+  // than part of the provenance rule. Every entry already sitting in a real
+  // user's browser lacks this field, as does every entry whose rescore leg
+  // failed. Rejecting those would delete results the user paid for, to
+  // enforce a field the panel has a working fallback for.
+  it("accepts an entry with no rescoredScore, and reports it as absent", async () => {
+    await putCachedRun("https://acme.com/jobs/1", run(62));
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
+    expect(hit).not.toBeNull();
+    expect(hit?.rescoredScore).toBeUndefined();
+    // Everything else still comes back, so the entry is genuinely usable and
+    // not merely non-null.
+    expect(hit?.baselineScore).toBe(62);
+    expect(hit?.tailored.projected_match_score).toBe(72);
+  });
+
+  // Same hand-edited-storage hazard the baseline check guards against, with
+  // the opposite remedy: a non-finite rescore is DROPPED (the panel falls
+  // back to the projection) rather than disqualifying the whole entry, which
+  // would throw away a result over a cosmetic field.
+  it("drops a non-finite rescoredScore but keeps the entry", async () => {
+    const entry = {
+      key: "https://acme.com/jobs/1",
+      analysis: run(62).analysis,
+      tailored: run(62).tailored,
+      generatedAt: "2026-08-14T10:00:00.000Z",
+      extraInfo: "",
+      runId: "rid",
+      baselineScore: 62,
+      resumeFingerprint: FP,
+      rescoredScore: 0,
+    };
+    const raw = JSON.stringify([entry]).replace('"rescoredScore":0', '"rescoredScore":1e999');
+    await chrome.storage.local.set({ cp_results: raw });
+
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
+    expect(hit).not.toBeNull();
+    expect(hit?.rescoredScore).toBeUndefined();
+  });
+
   // The point of the fingerprint: the user replaced their resume, so this
   // entry describes a document that no longer exists. Showing it would tell
   // them we analysed their current resume when we did not.

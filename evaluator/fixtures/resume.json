@@ -1,0 +1,57 @@
+{
+  "resume": {
+    "contact": {
+      "name": "Evaluator Fixture",
+      "email": "evaluator+clerk_test@example.com",
+      "phone": "+1 555 0100",
+      "location": "Remote",
+      "links": ["https://example.com/evaluator"]
+    },
+    "summary": "Backend engineer with six years on billing and metering services in TypeScript and Node.js.",
+    "experience": [
+      {
+        "company": "Contoso",
+        "title": "Senior Backend Engineer",
+        "dates": "2022 - present",
+        "bullets": [
+          "Built a Redis-backed quota service handling 40M calls a day.",
+          "Issued and verified short-lived HS256 JWTs for a multi-realm client.",
+          "Cut mis-attributed billing events from 3% to under 0.1%."
+        ]
+      },
+      {
+        "company": "Fabrikam",
+        "title": "Backend Engineer",
+        "dates": "2019 - 2022",
+        "bullets": [
+          "Owned the rate limiter and its per-IP ceilings.",
+          "Migrated a monolith billing path onto serverless functions."
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "name": "meterd",
+        "description": "Open-source metering daemon.",
+        "bullets": ["Atomic increment with TTL semantics over Redis."]
+      }
+    ],
+    "skills": [
+      "TypeScript",
+      "Node.js",
+      "Redis",
+      "JWT",
+      "Serverless",
+      "PostgreSQL"
+    ],
+    "education": [
+      {
+        "school": "State University",
+        "degree": "BS Computer Science",
+        "dates": "2015 - 2019"
+      }
+    ]
+  },
+  "parsedAt": "2026-09-03T00:00:00.000Z",
+  "name": "Evaluator Fixture"
+}

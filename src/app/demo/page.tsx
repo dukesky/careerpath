@@ -182,6 +182,11 @@ export default function DemoPage() {
         <ResultsView
           analysis={ANALYSIS}
           tailored={tailored}
+          // The demo makes no API calls, so there is no rescore to show. The
+          // fixture's `projected_match_score` is the after number, exactly as
+          // it was before this prop existed — the spec is explicit that the
+          // demo fixtures do not change.
+          rescoredScore={null}
           originalResume={ORIGINAL}
           generatedResume={TAILORED.resume}
           company="Adobe"

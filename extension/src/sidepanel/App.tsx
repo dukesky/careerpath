@@ -332,6 +332,12 @@ export default function App() {
           ...live.state,
           analysis: failedOverAResult.analysis,
           tailored: failedOverAResult.tailored,
+          // From the CACHED entry, not the failed run: the two numbers on
+          // screen belong to the result being restored. The failed run's own
+          // `rescoredScore` is null and would silently swap the right-hand
+          // number back to the tailor model's projection for a result that had
+          // already been measured properly.
+          rescoredScore: failedOverAResult.rescoredScore ?? null,
         });
         setGeneratedAt(failedOverAResult.generatedAt);
         setAppliedSupplement(failedOverAResult.extraInfo);
@@ -347,6 +353,11 @@ export default function App() {
           phase: "done",
           analysis: hit.analysis,
           tailored: hit.tailored,
+          // Absent on entries written before rescoring existed, and on runs
+          // whose rescore leg failed. Null puts the tailor model's own
+          // projection back on screen, which is exactly what those entries
+          // were displayed with when they were generated.
+          rescoredScore: hit.rescoredScore ?? null,
           // Not cached: it is a live server-side count, and a stale one must
           // never be presented as the current allowance. Null here means
           // "this read knows nothing about the count" — the display falls

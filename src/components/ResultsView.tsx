@@ -15,6 +15,7 @@ import { SignedIn, SignedOut, SignInButton } from "@/components/clerk-auth";
 export function ResultsView({
   analysis,
   tailored,
+  rescoredScore,
   originalResume,
   generatedResume,
   company,
@@ -25,6 +26,15 @@ export function ResultsView({
 }: {
   analysis: GapAnalysis;
   tailored: TailorResult;
+  /**
+   * The tailored resume as measured by /api/rescore — the same prompt, model
+   * and temperature that produced `analysis.overall_match_score`, so the delta
+   * below is one instrument's reading of two documents rather than two models
+   * guessing about one. Null until that call lands (about 30 seconds after
+   * this view first paints) and permanently if it failed; the "after" number
+   * falls back to the tailor model's own projection meanwhile.
+   */
+  rescoredScore: number | null;
   originalResume: ParsedResume;
   generatedResume: ParsedResume;
   company: string;
@@ -62,6 +72,7 @@ export function ResultsView({
       <StrengthsGaps analysis={analysis} />
       <TailoredResumeCard
         tailored={tailored}
+        rescoredScore={rescoredScore}
         originalResume={originalResume}
         generatedResume={generatedResume}
         company={company}
@@ -234,6 +245,7 @@ type ResumeTab = "preview" | "diff" | "changes" | "edit";
 
 function TailoredResumeCard({
   tailored,
+  rescoredScore,
   originalResume,
   generatedResume,
   company,
@@ -243,6 +255,8 @@ function TailoredResumeCard({
   onChange,
 }: {
   tailored: TailorResult;
+  /** See ResultsView's own prop doc — null means "not measured (yet)". */
+  rescoredScore: number | null;
   originalResume: ParsedResume;
   generatedResume: ParsedResume;
   company: string;
@@ -252,7 +266,10 @@ function TailoredResumeCard({
   onChange: (resume: ParsedResume) => void;
 }) {
   const resume = tailored.resume;
-  const afterScore = tailored.projected_match_score;
+  // The re-measured score when it exists, the tailor model's self-assessment
+  // until then. Everything downstream — the badge, its tone, the delta against
+  // `beforeScore` — reads this one value and needs no other change.
+  const afterScore = rescoredScore ?? tailored.projected_match_score;
   const [tab, setTab] = useState<ResumeTab>("preview");
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);

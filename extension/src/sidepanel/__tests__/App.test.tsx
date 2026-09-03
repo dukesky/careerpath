@@ -681,18 +681,19 @@ describe("App - cross-posting state", () => {
   // information made my resume worse". It was resampling, not a real change.
   //
   // The two assertions below check the WHOLE rendered string, not just the
-  // left half. `toContain("70")` alone is not enough to pin the freeze: the
-  // second run's right-hand (projected) number also rounds to 70 by
-  // coincidence when left unfrozen, so a `toContain` check on "70" passes
-  // whether or not the baseline actually held — it would even pass with
-  // `roundToFive` deleted from the right-hand number entirely. The exact
-  // strings below discriminate all three regressions: dropping the freeze
-  // gives "60 → …", dropping left rounding gives "72 → …", dropping right
-  // rounding gives "… → 88 match".
+  // left half. `toContain("72")` alone is not enough to pin the freeze — the
+  // exact strings discriminate a dropped freeze (which would render "62 → …"
+  // on the second run) from a working one.
+  //
+  // Both numbers are raw integers now. `roundToFive` was deleted with the
+  // rescore change: it existed because the two numbers came from two
+  // uncalibrated model calls, and the right-hand one is now measured by the
+  // same instrument as the left. Nothing about the FREEZE this test guards
+  // changed — only what the frozen value renders as.
   it("keeps the baseline fixed when the same posting is regenerated", async () => {
     // First run: analyze says 72. That becomes this posting's baseline.
     // Second run: analyze says 62 — the same drift the user hit. The panel
-    // must still show 70 on the left (72 rounded), not 60.
+    // must still show 72 on the left, not 62.
     await setResume(STORED_RESUME);
     // A has no cache entry — this is a fresh, unrefined generate.
 
@@ -714,12 +715,10 @@ describe("App - cross-posting state", () => {
     await flush();
 
     const score = () => container.querySelector(".score")?.textContent ?? "";
-    expect(score()).toBe("70 → 80 match");
+    expect(score()).toBe("72 → 82 match");
 
     // Second run, same posting: analyze drifts down to 62. The baseline must
-    // not move with it. The projected score is deliberately NOT 72 here —
-    // that would round to the same 70 as the frozen baseline and let this
-    // assertion pass whether or not the freeze actually happened.
+    // not move with it.
     runTailorImpl = async (_jd, _resume, onUpdate) => {
       onUpdate({
         phase: "done",
@@ -734,7 +733,106 @@ describe("App - cross-posting state", () => {
     });
     await flush();
 
-    expect(score()).toBe("70 → 90 match");
+    expect(score()).toBe("72 → 88 match");
+  });
+
+  // ------------------------------------------------------------- rescoring
+  //
+  // The right-hand number is the tailored resume measured by analyze's own
+  // instrument when that measurement exists, and the tailor model's
+  // self-assessment until it does. Both cases have to render; neither may
+  // wait on the other.
+
+  it("shows the projected score until the rescore lands, then replaces it", async () => {
+    await setResume(STORED_RESUME);
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    // Exactly the sequence run.ts produces: `done` first (first paint), the
+    // rescored score in a LATER patch that does not touch the phase.
+    let deliverRescore: (() => void) | null = null;
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(72),
+        tailored: tailoredFixture(82),
+        remaining: 3,
+      });
+      await new Promise<void>((resolve) => {
+        deliverRescore = () => {
+          onUpdate({ rescoredScore: 79 });
+          resolve();
+        };
+      });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    const score = () => container.querySelector(".score")?.textContent ?? "";
+    // The tailor model's own projection holds the slot. A blank or a spinner
+    // here would be a regression: the result is complete and downloadable.
+    expect(score()).toBe("72 → 82 match");
+
+    await act(async () => {
+      deliverRescore?.();
+    });
+    await flush();
+
+    expect(score()).toBe("72 → 79 match");
+  });
+
+  // The honesty rule, stated as a test so nobody "fixes" it with a max().
+  // A rescore below the baseline is displayed as it is. A number invented to
+  // look like progress is worse than one that shows none.
+  it("shows a rescored score that went DOWN, without flooring it at the baseline", async () => {
+    await setResume(STORED_RESUME);
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(72),
+        tailored: tailoredFixture(90),
+        remaining: 3,
+      });
+      onUpdate({ rescoredScore: 68 });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    expect(container.querySelector(".score")?.textContent).toBe("72 → 68 match");
+  });
+
+  it("prefers a cached entry's rescored score when restoring a result", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, { ...cachedRun(72, "", "run-a"), rescoredScore: 77 });
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+    await flush();
+
+    // cachedRun's tailored fixture projects 82; the stored measurement wins.
+    expect(container.querySelector(".score")?.textContent).toBe("72 → 77 match");
+  });
+
+  it("falls back to the projection for a cached entry written before rescoring existed", async () => {
+    await setResume(STORED_RESUME);
+    // No rescoredScore at all — the shape every entry already in a real
+    // user's browser has.
+    await putCachedRun(JD_A.url, cachedRun(72, "", "run-a"));
+
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+    await flush();
+
+    expect(container.querySelector(".score")?.textContent).toBe("72 → 82 match");
   });
 
   // Finding 2: `baselineForPosting` (React state) is null from the moment
@@ -1276,7 +1374,7 @@ describe("App - account bar, sign-out, and session handling", () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     await setResume(STORED_RESUME);
     await putLiveRun(JD_B.url, {
-      state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
       jdTitle: JD_B.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -1313,6 +1411,7 @@ describe("App - account bar, sign-out, and session handling", () => {
         analysis: ANALYSIS,
         tailored: TAILORED,
         remaining: null,
+        rescoredScore: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_B.title,
@@ -2207,7 +2306,7 @@ describe("App - quota-first account bar", () => {
     // A run is in flight for this posting, and the panel has read it.
     await act(async () => {
       await putLiveRun(JD_A.url, {
-        state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+        state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
         jdTitle: JD_A.title,
         updatedAt: Date.now(),
         resumeFingerprint: RESUME_FP,
@@ -2704,7 +2803,7 @@ describe("App - runs owned by the background", () => {
 
   it("shows a run already in flight when the panel opens", async () => {
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2723,7 +2822,7 @@ describe("App - runs owned by the background", () => {
     await renderApp();
 
     await putLiveRun(JD_A.url, {
-      state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, error: null },
+      state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, rescoredScore: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2748,7 +2847,7 @@ describe("App - runs owned by the background", () => {
     await setResume(STORED_RESUME);
     await renderApp();
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2770,6 +2869,7 @@ describe("App - runs owned by the background", () => {
         analysis: null,
         tailored: null,
         remaining: null,
+        rescoredScore: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: "Staff MLE",
@@ -2800,6 +2900,7 @@ describe("App - runs owned by the background", () => {
               analysis: null,
               tailored: null,
               remaining: null,
+              rescoredScore: null,
               error: null,
             },
             jdTitle: JD_A.title,
@@ -2850,6 +2951,7 @@ describe("App - runs owned by the background", () => {
         analysis: null,
         tailored: null,
         remaining: null,
+        rescoredScore: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_A.title,
@@ -2882,6 +2984,7 @@ describe("App - runs owned by the background", () => {
         analysis: ANALYSIS,
         tailored: TAILORED,
         remaining: null,
+        rescoredScore: null,
         error: { kind: "server", message: "That run stopped before it finished. Try again." },
       },
       jdTitle: JD_A.title,
@@ -3043,7 +3146,7 @@ describe("App - runs owned by the background", () => {
     // first read report the error and the test would pass with no poll at
     // all — the read on open is not the read this pins.
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
       jdTitle: JD_A.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -3082,7 +3185,7 @@ describe("App - runs owned by the background", () => {
     await setResume(STORED_RESUME);
     await putCachedRun(JD_A.url, cachedRun(60, "", "run-a-cached"));
     await putLiveRun(JD_B.url, {
-      state: { phase: "writing", analysis: null, tailored: null, remaining: null, error: null },
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, error: null },
       jdTitle: JD_B.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -3123,6 +3226,7 @@ describe("App - runs owned by the background", () => {
         analysis: ANALYSIS,
         tailored: TAILORED,
         remaining: null,
+        rescoredScore: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_B.title,

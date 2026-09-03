@@ -111,6 +111,13 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         { extraInfo: msg.supplement, runId, runToken: msg.runToken },
       );
 
+      // `runTailor` now returns one API call AFTER it publishes `done`: the
+      // rescore leg runs behind first paint (see run.ts). That gap is safe
+      // BECAUSE of the ordering below and nothing else — the panel reads the
+      // live run until `clearLiveRun`, so the `rescoredScore` patch published
+      // during that gap is on screen before this code writes the cache. Invert
+      // "publish, then cache, then clear" and the patch lands on a record the
+      // panel has already stopped reading.
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         // The baseline is READ, not re-measured. Recomputing it per run is
         // what made the panel show the "before" score dropping after a user
@@ -124,6 +131,14 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           runId,
           baselineScore: baseline,
           resumeFingerprint: msg.fingerprint,
+          // Whatever the rescore leg managed to deliver. `runTailor` only
+          // returns once that leg has settled, so by the time this line runs
+          // the answer is final: a number, or null because the rescore failed
+          // or the score was never measured. Null is written as absent so a
+          // cached entry looks exactly like one from before this field
+          // existed, and the panel's own `?? projected_match_score` fallback
+          // handles both identically.
+          ...(latest.rescoredScore === null ? {} : { rescoredScore: latest.rescoredScore }),
         });
         // Success moves the record from "in flight" to "cached"; a failure
         // deliberately stays put, so returning to the posting shows the error

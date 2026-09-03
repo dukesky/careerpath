@@ -41,6 +41,19 @@ export interface CachedRun {
    * fingerprint does not match the resume loaded now is treated as absent.
    */
   resumeFingerprint: string;
+  /**
+   * The tailored resume re-measured with analyze's own instrument, when that
+   * measurement landed.
+   *
+   * OPTIONAL, and it has to stay that way. Two different populations lack it:
+   * entries written before this field existed (already in real users'
+   * browsers) and entries from runs whose rescore leg simply failed. Neither
+   * is a reason to discard a paid-for result, so this is deliberately NOT part
+   * of the provenance rule in getCachedRun — the panel falls back to the
+   * tailor model's own projection and the user sees a slightly less precise
+   * number, which is the correct degradation.
+   */
+  rescoredScore?: number;
 }
 
 interface CacheEntry extends CachedRun {
@@ -153,6 +166,12 @@ export async function getCachedRun(
     // check above already ruled out both `undefined` and non-finite values.
     baselineScore: hit.baselineScore as number,
     resumeFingerprint: hit.resumeFingerprint,
+    // Same `Number.isFinite` screen the baseline gets, for the same reason: a
+    // hand-edited blob can carry `1e999`, which parses to Infinity and would
+    // render as "Infinity match". Unlike the baseline, a bad value here is
+    // dropped rather than disqualifying the entry — the panel has a real
+    // fallback for a missing rescore and none for a missing baseline.
+    ...(Number.isFinite(hit.rescoredScore) ? { rescoredScore: hit.rescoredScore } : {}),
   };
 }
 

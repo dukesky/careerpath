@@ -171,7 +171,10 @@ export async function POST(request: Request) {
       // resume" would present the same facts twice and score a document that
       // does not exist.
       messages: buildAnalyzeMessages(resume, jd, ""),
-      maxTokens: 4000,
+      // Same instrument, same ceiling: keep in lockstep with /api/analyze,
+      // whose bench-measured worst case (3992 natural tokens) truncated at
+      // 4000. A tailored long resume produces the same-sized matrix.
+      maxTokens: 8000,
     });
     // The full matrix is computed and thrown away. Only the score is returned:
     // the panel has nowhere to put a second requirements table, and shipping

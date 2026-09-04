@@ -92,7 +92,10 @@ export async function POST(request: Request) {
       json: true,
       quality,
       messages: buildTailorMessages(resume, jd, extraInfo, includeSummary, analysis),
-      maxTokens: 8000,
+      // The 2026-09-04 bench saw tailored resumes reach 5057 tokens with no
+      // truncation; a longer resume closes that gap the way analyze's did, so
+      // keep ~2x headroom over the worst case. Mirrored in evaluator/bench.
+      maxTokens: 12000,
     });
     tailored = normalizeTailorResult(parsed);
   } catch (err) {

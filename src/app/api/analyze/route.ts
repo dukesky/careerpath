@@ -79,7 +79,11 @@ export async function POST(request: Request) {
       json: true,
       quality,
       messages: buildAnalyzeMessages(resume, jd, extraInfo),
-      maxTokens: 4000,
+      // The 2026-09-04 model bench measured natural completions up to 3992
+      // tokens on a demanding JD x long resume; a 4000 ceiling truncated the
+      // JSON and left only callLLM's retry between the user and a 502. Keep
+      // ~2x headroom over that worst case. Mirrored in evaluator/bench.
+      maxTokens: 8000,
     });
     analysis = normalizeGapAnalysis(parsed);
   } catch (err) {

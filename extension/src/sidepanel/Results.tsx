@@ -4,6 +4,7 @@ import { relativeTime } from "@/lib/relativeTime";
 import { DownloadPdf } from "./DownloadPdf";
 import { SaveButton } from "./SaveButton";
 import { SupplementBox, type SupplementProps } from "./SupplementBox";
+import { QuestionCards } from "./QuestionCards";
 import { supplementPlaceholder } from "./gapHint";
 
 const STATUS_MARK: Record<ReqStatus, string> = {
@@ -37,6 +38,8 @@ export function Results({
   baselineScore,
   appliedSupplement,
   supplement,
+  onImprove,
+  canRun,
 }: {
   state: RunState;
   company: string;
@@ -63,6 +66,10 @@ export function Results({
   /** What the DISPLAYED result was generated with, not what is typed below. */
   appliedSupplement: string;
   supplement: SupplementProps;
+  /** Starts a refine from the question cards' answers — App composes them onto the applied supplement. */
+  onImprove: (answersText: string) => void;
+  /** App's own run gate; the question cards' button follows it. */
+  canRun: boolean;
 }) {
   const progress = PHASE_COPY[state.phase];
   const { analysis, tailored, rescoredScore } = state;
@@ -110,6 +117,12 @@ export function Results({
             )}
             <span className="muted tiny"> match</span>
           </div>
+          {/* Outside the `.score` div on purpose: that element's text is the
+              two numbers and nothing else, and the background auto-refine leg
+              is a fact ABOUT the right-hand number, not part of it. */}
+          {state.refining && (
+            <p className="muted tiny">Improving the rewrite against the gaps…</p>
+          )}
           {analysis.rationale && <p className="muted">{analysis.rationale}</p>}
 
           {/* The download cannot appear any earlier than this. It downloads the
@@ -231,6 +244,14 @@ export function Results({
             </button>
           )}
         </section>
+      )}
+
+      {/* Gated on `tailored` as well as `analysis`: answering these starts a
+          REFINE of an existing rewrite, so there has to be a rewrite to
+          refine. Between the two legs the matrix is on screen without the
+          cards, which is correct — the run is not finished yet. */}
+      {analysis && tailored && (
+        <QuestionCards analysis={analysis} disabled={!canRun} onImprove={onImprove} />
       )}
 
       {/* Outside the Details card on purpose. That card is gated on

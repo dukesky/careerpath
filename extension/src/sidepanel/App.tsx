@@ -817,6 +817,16 @@ export default function App() {
         generatedAt={generatedAt}
         baselineScore={baselineForPosting}
         appliedSupplement={appliedSupplement}
+        canRun={canRun}
+        // Composed onto what the DISPLAYED result was already generated with,
+        // not sent alone: a second round of answers must not drop the
+        // supplement the first round already applied, or the refine would
+        // rewrite against a narrower set of facts than the one on screen.
+        onImprove={(answersText) =>
+          void generate(
+            [appliedSupplement, answersText].filter((s) => s.trim().length > 0).join("\n"),
+          )
+        }
         supplement={{
           text: supplementDraft,
           onChange: onSupplementChange,

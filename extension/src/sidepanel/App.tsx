@@ -358,6 +358,9 @@ export default function App() {
           // projection back on screen, which is exactly what those entries
           // were displayed with when they were generated.
           rescoredScore: hit.rescoredScore ?? null,
+          // A restored result is finished by definition: whatever auto-refine
+          // it had ran to completion before it was cached.
+          refining: false,
           // Not cached: it is a live server-side count, and a stale one must
           // never be presented as the current allowance. Null here means
           // "this read knows nothing about the count" — the display falls

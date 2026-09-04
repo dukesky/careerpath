@@ -18,6 +18,13 @@ export interface RunState {
    * bottom of runTailor.
    */
   rescoredScore: number | null;
+  /**
+   * True only while the free auto-refine leg (tailor with the gap analysis,
+   * then a second rescore) is in flight, so the panel can hint that the
+   * right-hand number is still improving. Never blocks anything: the run is
+   * already `done` when this goes true.
+   */
+  refining: boolean;
   remaining: number | null;
   error: { kind: ApiErrorKind; message: string } | null;
 }
@@ -27,6 +34,7 @@ export const INITIAL_RUN_STATE: RunState = {
   analysis: null,
   tailored: null,
   rescoredScore: null,
+  refining: false,
   remaining: null,
   error: null,
 };
@@ -61,6 +69,14 @@ export interface RunOptions {
    * already correct.
    */
   runToken?: string;
+  /**
+   * The previous charged run's analysis, present only on a user-triggered
+   * refine run. Two effects: the tailor leg sends it so the rewrite targets
+   * the matrix, and the auto-refine tail is SKIPPED — a refine run is itself
+   * the second (and last) free leg, and its own rescore is the third and
+   * last allowed for the runId. Fresh charged runs omit it.
+   */
+  priorAnalysis?: GapAnalysis;
 }
 
 /**
@@ -75,13 +91,15 @@ export interface RunOptions {
  * so total latency is max(analyze, tailor), not their sum. The panel still
  * renders analysis first because it lands first.
  *
- * A fourth call, /api/rescore, runs AFTER the `done` patch — never before it,
- * never merged into it. The done patch is first paint for the completed
- * result: the download button, the change log, the score card. Latency to
- * that paint is this product's number one complaint, and the rescore is an
- * analyze-grade model call worth 20-30 seconds. Moving it in front of the
- * done patch, or awaiting it before publishing done, would spend that entire
- * budget on a number the panel can already show an approximation of.
+ * Every remaining call — /api/rescore, then the free auto-refine pair
+ * (/api/tailor again with the gap analysis, and a second /api/rescore to
+ * measure it) — runs AFTER the `done` patch, never before it, never merged
+ * into it. The done patch is first paint for the completed result: the
+ * download button, the change log, the score card. Latency to that paint is
+ * this product's number one complaint, and each of those is an analyze-grade
+ * model call worth 20-30 seconds. Moving any of them in front of the done
+ * patch, or awaiting one before publishing done, would spend that entire
+ * budget on a result the panel can already show an approximation of.
  */
 export async function runTailor(
   jd: ExtractedJD,
@@ -99,6 +117,7 @@ export async function runTailor(
     // Cleared alongside the other results: a regenerate must not leave the
     // PREVIOUS run's rescore on screen next to this run's fresh numbers.
     rescoredScore: null,
+    refining: false,
     error: null,
   });
 
@@ -125,9 +144,13 @@ export async function runTailor(
     payload,
     opts.runToken,
   );
+  // A refine run's rewrite is aimed at the matrix the PREVIOUS charged run
+  // produced; a fresh run's first tailor has no analysis to aim at yet (it is
+  // still in flight beside this call), and gets one on the auto-refine leg
+  // below instead.
   const tailorCall = apiPost<{ tailored: TailorResult; remaining: number | null }>(
     "/api/tailor",
-    payload,
+    opts.priorAnalysis ? { ...payload, analysis: opts.priorAnalysis } : payload,
     opts.runToken,
   );
 
@@ -160,6 +183,9 @@ export async function runTailor(
     // completed, charged run. Re-sending it here costs nothing.
     analysis: analyzed.data.analysis,
     tailored: tailored.data.tailored,
+    // Same principle: the auto-refine leg has not started, so say so rather
+    // than letting a reset leave a stale `true` beside a finished run.
+    refining: false,
     // Exactly one leg charges; the other's read may land before that charge
     // commits, so it can come back one too high. Show the lower of the two so
     // the count the user sees never jumps back up.
@@ -173,7 +199,8 @@ export async function runTailor(
 
   // The same ruler, applied to the rewritten resume. Everything above has
   // already been published, so from here on nothing this code does can delay
-  // what the user is looking at — it can only improve one number on it.
+  // what the user is looking at — it can only replace the number, and (on the
+  // auto-refine leg below) the document, with better versions of themselves.
   //
   // `payload.structuredResume` is deliberately NOT reused: the whole point is
   // to measure the TAILORED resume. Sending the original again would produce a
@@ -186,47 +213,104 @@ export async function runTailor(
   // completed, charged result over a cosmetic refinement, and is the single
   // most tempting wrong edit in this function.
   //
-  // The try/catch is that same rule against a THROW rather than a failure.
-  // `apiPost` does not reject, but building the body reads into a response
-  // this module does not validate, and background/runs.ts wraps runTailor in a
-  // catch that publishes `phase: "error"` — so an exception escaping from here
-  // would do exactly the damage the paragraph above forbids, by a route no
-  // reviewer of that catch block would connect to rescoring.
+  // The try/catch inside `measure`, and the one around the refine leg, are
+  // that same rule against a THROW rather than a failure. `apiPost` does not
+  // reject, but building the body reads into a response this module does not
+  // validate, and background/runs.ts wraps runTailor in a catch that publishes
+  // `phase: "error"` — so an exception escaping from here would do exactly the
+  // damage the paragraph above forbids, by a route no reviewer of that catch
+  // block would connect to rescoring. The resume is read with `?.` for the
+  // same reason: a tailor body with no result at all must warn, not throw.
+  const measure = async (resume: ParsedResume | undefined): Promise<number | null> => {
+    try {
+      const rescored = await apiPost<{ score: number }>(
+        "/api/rescore",
+        {
+          structuredResume: resume,
+          structuredJD: parsed.data.jd,
+          quality: "quality",
+          runId,
+        },
+        opts.runToken,
+      );
+      if (!rescored.ok) {
+        console.warn(
+          JSON.stringify({ evt: "rescore_failed", kind: rescored.kind, message: rescored.message }),
+        );
+        return null;
+      }
+      // `apiPost` casts the body to the declared type without checking it, so a
+      // 200 carrying the wrong shape would otherwise put `undefined` into
+      // `rescoredScore` — a value the type says cannot be there, which then
+      // renders as an empty right-hand number instead of falling back to the
+      // projection. Degrade to "not measured" instead.
+      if (typeof rescored.data.score !== "number") {
+        console.warn(JSON.stringify({ evt: "rescore_malformed" }));
+        return null;
+      }
+      return rescored.data.score;
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          evt: "rescore_threw",
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+      return null;
+    }
+  };
+
+  const firstScore = await measure(tailored.data.tailored?.resume);
+  // Phase stays "done" — it already was, and re-sending it would be the only
+  // way this patch could disturb anything.
+  if (firstScore !== null) onUpdate({ rescoredScore: firstScore });
+
+  // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
+  // so the server treats it as a refinement and does not charge), measure the
+  // rewrite, and adopt it only when it is not worse. A refine run
+  // (priorAnalysis present) skips this — it IS the second free leg, and its
+  // own rescore is the last one the runId is allowed.
+  //
+  // Same first-paint rule as above, one step further out: this leg is two more
+  // model calls, and every one of them happens after the `done` patch. It can
+  // only replace one number and one already-downloadable document with better
+  // versions of themselves; it can never delay what the user is looking at.
+  if (opts.priorAnalysis) return;
+  // Adoption is published together with the closing `refining: false` rather
+  // than in its own patch, so the leg ends in ONE terminal patch that
+  // describes its outcome completely — the same reason the `done` patch
+  // re-sends the analysis.
+  let adopted: Partial<RunState> = {};
   try {
-    const rescored = await apiPost<{ score: number }>(
-      "/api/rescore",
-      {
-        structuredResume: tailored.data.tailored.resume,
-        structuredJD: parsed.data.jd,
-        quality: "quality",
-        runId,
-      },
+    onUpdate({ refining: true });
+    const refined = await apiPost<{ tailored: TailorResult; remaining: number | null }>(
+      "/api/tailor",
+      { ...payload, analysis: analyzed.data.analysis },
       opts.runToken,
     );
-    if (!rescored.ok) {
-      console.warn(
-        JSON.stringify({ evt: "rescore_failed", kind: rescored.kind, message: rescored.message }),
-      );
+    if (!refined.ok || !refined.data.tailored) {
+      console.warn(JSON.stringify({ evt: "refine_failed" }));
       return;
     }
-    // `apiPost` casts the body to the declared type without checking it, so a
-    // 200 carrying the wrong shape would otherwise put `undefined` into
-    // `rescoredScore` — a value the type says cannot be there, which then
-    // renders as an empty right-hand number instead of falling back to the
-    // projection. Degrade to "not measured" instead.
-    if (typeof rescored.data.score !== "number") {
-      console.warn(JSON.stringify({ evt: "rescore_malformed" }));
-      return;
+    const refinedScore = await measure(refined.data.tailored.resume);
+    // Adopt only a measured, not-worse rewrite: the right-hand number must
+    // never go DOWN because of a leg the user did not ask for. `?? -1` adopts
+    // when the first measurement itself failed — any measured number beats an
+    // unmeasured projection.
+    if (refinedScore !== null && refinedScore >= (firstScore ?? -1)) {
+      adopted = { tailored: refined.data.tailored, rescoredScore: refinedScore };
     }
-    // Phase stays "done" — it already was, and re-sending it would be the only
-    // way this patch could disturb anything.
-    onUpdate({ rescoredScore: rescored.data.score });
   } catch (err) {
     console.warn(
       JSON.stringify({
-        evt: "rescore_threw",
+        evt: "refine_threw",
         message: err instanceof Error ? err.message : String(err),
       }),
     );
+  } finally {
+    // Unconditional: every path out of the block above — adopted, discarded,
+    // failed, or thrown — has to clear the hint it turned on. The
+    // `priorAnalysis` early return is before the `true`, so it needs nothing.
+    onUpdate({ ...adopted, refining: false });
   }
 }

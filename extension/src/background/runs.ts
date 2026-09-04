@@ -111,13 +111,17 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         { extraInfo: msg.supplement, runId, runToken: msg.runToken },
       );
 
-      // `runTailor` now returns one API call AFTER it publishes `done`: the
-      // rescore leg runs behind first paint (see run.ts). That gap is safe
-      // BECAUSE of the ordering below and nothing else — the panel reads the
-      // live run until `clearLiveRun`, so the `rescoredScore` patch published
-      // during that gap is on screen before this code writes the cache. Invert
-      // "publish, then cache, then clear" and the patch lands on a record the
-      // panel has already stopped reading.
+      // `runTailor` now returns several API calls AFTER it publishes `done`:
+      // the rescore leg and the free auto-refine leg both run behind first
+      // paint (see run.ts). That gap is safe BECAUSE of the ordering below and
+      // nothing else — the panel reads the live run until `clearLiveRun`, so
+      // the `rescoredScore` and adopted-rewrite patches published during that
+      // gap are on screen before this code writes the cache. Invert "publish,
+      // then cache, then clear" and they land on a record the panel has
+      // already stopped reading.
+      //
+      // `latest` accumulates those patches, so the entry cached below is the
+      // ADOPTED rewrite and its measured score, not the pre-refine pair.
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         // The baseline is READ, not re-measured. Recomputing it per run is
         // what made the panel show the "before" score dropping after a user

@@ -2,16 +2,25 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { RunState } from "@/lib/run";
 import { getLiveRun, MAX_CONCURRENT_RUNS } from "@/lib/liveRuns";
 import { getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
+import type { GapAnalysis } from "@shared/contract";
 import type { AuthToken } from "@/lib/session";
 import { startRun } from "../runs";
+
+interface CapturedOpts {
+  extraInfo?: string;
+  runId?: string;
+  runToken?: string;
+  priorAnalysis?: GapAnalysis;
+  isRefinement?: boolean;
+}
 
 let runTailorImpl: (
   jd: unknown,
   resume: unknown,
   onUpdate: (patch: Partial<RunState>) => void,
-  opts: { extraInfo?: string; runId?: string; runToken?: string },
+  opts: CapturedOpts,
 ) => Promise<void> = async () => {};
-let runTailorOpts: Array<{ extraInfo?: string; runId?: string; runToken?: string }> = [];
+let runTailorOpts: Array<CapturedOpts> = [];
 
 vi.mock("@/lib/run", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/run")>();
@@ -21,7 +30,7 @@ vi.mock("@/lib/run", async (importOriginal) => {
       jd: unknown,
       resume: unknown,
       onUpdate: (p: Partial<RunState>) => void,
-      opts: { extraInfo?: string; runId?: string; runToken?: string },
+      opts: CapturedOpts,
     ) => {
       runTailorOpts.push(opts);
       return runTailorImpl(jd, resume, onUpdate, opts);
@@ -229,6 +238,47 @@ describe("startRun", () => {
     await startRun({ ...msg(), supplement: "I also led migrations." });
 
     expect(runTailorOpts.at(-1)?.runId).toBe("run-abc");
+  });
+
+  // A refine run's own analyze fires in PARALLEL with its tailor, so the only
+  // gap analysis the tailor leg can possibly see is the previous charged run's
+  // — the one already sitting in the cache. Without it the refine rewrite is
+  // aimed at nothing and the "add experience, score goes up" loop stops
+  // working. A fresh run has no prior matrix and must not be handed one.
+  it("passes the cached analysis as priorAnalysis on a refine, and nothing on a fresh run", async () => {
+    await putCachedRunFixture(JD.url, { runId: "run-abc", baselineScore: 61, fingerprint: FP });
+    const cached = await getCachedRun(JD.url, FP);
+    runTailorImpl = async () => {};
+
+    await startRun({ ...msg(), supplement: "I also led migrations." });
+
+    expect(runTailorOpts.at(-1)?.priorAnalysis).toEqual(cached?.analysis);
+    expect(runTailorOpts.at(-1)?.runId).toBe("run-abc");
+
+    // A fresh run on a different posting: no prior entry, so nothing to pass.
+    await startRun({ ...msg(), jd: { ...JD, url: "https://example.com/jobs/fresh" } });
+
+    expect(runTailorOpts.at(-1)?.priorAnalysis).toBeUndefined();
+  });
+
+  // The quota half of the same wiring. A refine run reuses the runId and IS
+  // itself the second free leg, so runTailor's auto-refine tail must never
+  // fire on it: that tail's rescore would be the runId's fourth call (429),
+  // its tailor output could never be adopted, and it would burn the sixth free
+  // leg so the NEXT refine gets charged. The flag says so independently of
+  // whether a cached analysis happened to exist.
+  it("marks a refine run as a refinement so the auto-refine tail cannot fire", async () => {
+    await putCachedRunFixture(JD.url, { runId: "run-abc", baselineScore: 61, fingerprint: FP });
+    runTailorImpl = async () => {};
+
+    await startRun({ ...msg(), supplement: "I also led migrations." });
+
+    expect(runTailorOpts.at(-1)?.isRefinement).toBe(true);
+
+    // A fresh run is the charged first leg and DOES want the free tail.
+    await startRun({ ...msg(), jd: { ...JD, url: "https://example.com/jobs/fresh" } });
+
+    expect(runTailorOpts.at(-1)?.isRefinement).toBe(false);
   });
 
   // Re-measuring the baseline is what made the panel show the score DROPPING

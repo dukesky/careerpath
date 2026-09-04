@@ -77,6 +77,17 @@ export interface RunOptions {
    * last allowed for the runId. Fresh charged runs omit it.
    */
   priorAnalysis?: GapAnalysis;
+  /**
+   * True when this run is a user-triggered refinement of an existing runId.
+   *
+   * A refinement run is ITSELF the second free leg, so the auto-refine tail
+   * must never fire on it — even when no cached analysis was available to pass
+   * as `priorAnalysis`, which is why this is a separate flag rather than an
+   * inference from that field. Letting the tail run here sends the runId's
+   * fourth rescore (refused), produces a rewrite that can never be adopted,
+   * and burns the last free leg so the NEXT refinement gets charged.
+   */
+  isRefinement?: boolean;
 }
 
 /**
@@ -267,15 +278,18 @@ export async function runTailor(
 
   // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
   // so the server treats it as a refinement and does not charge), measure the
-  // rewrite, and adopt it only when it is not worse. A refine run
-  // (priorAnalysis present) skips this — it IS the second free leg, and its
-  // own rescore is the last one the runId is allowed.
+  // rewrite, and adopt it only when it is not worse. A refine run skips this —
+  // it IS the second free leg, and its own rescore is the last one the runId
+  // is allowed. `isRefinement` is checked as well as `priorAnalysis` because a
+  // refine run whose previous entry carried no usable analysis is still a
+  // refine run: gating on the analysis alone would let the tail fire there and
+  // spend the runId's remaining legs on a rewrite it can never adopt.
   //
   // Same first-paint rule as above, one step further out: this leg is two more
   // model calls, and every one of them happens after the `done` patch. It can
   // only replace one number and one already-downloadable document with better
   // versions of themselves; it can never delay what the user is looking at.
-  if (opts.priorAnalysis) return;
+  if (opts.priorAnalysis || opts.isRefinement) return;
   // Adoption is published together with the closing `refining: false` rather
   // than in its own patch, so the leg ends in ONE terminal patch that
   // describes its outcome completely — the same reason the `done` patch

@@ -518,4 +518,34 @@ describe("runTailor", () => {
     const rescoreHits = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/rescore"));
     expect(rescoreHits).toHaveLength(1);
   });
+
+  // `priorAnalysis` alone cannot carry the skip: a refine run whose previous
+  // entry has no usable analysis still reuses the runId, and is still itself
+  // the second free leg. Letting the tail fire there sends the runId's FOURTH
+  // rescore (429), produces a rewrite that can never be adopted, and burns the
+  // sixth free leg so the NEXT refine is charged. The flag says "this run is a
+  // refinement" independently of what it had to aim at.
+  it("skips the auto-refine on a refinement even with no priorAnalysis to send", async () => {
+    const tailorBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
+      if (u.endsWith("/api/analyze"))
+        return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+      if (u.endsWith("/api/tailor")) {
+        tailorBodies.push(JSON.parse(String(init?.body)));
+        return json({ tailored: { projected_match_score: 70 }, remaining: 4 });
+      }
+      return json({ score: 66 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {}, { runId: "reused-id", isRefinement: true });
+
+    expect(tailorBodies).toHaveLength(1);
+    // Nothing to aim at, so nothing is sent — but the tail is still skipped.
+    expect(tailorBodies[0].analysis).toBeUndefined();
+    const rescoreHits = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/rescore"));
+    expect(rescoreHits).toHaveLength(1);
+  });
 });

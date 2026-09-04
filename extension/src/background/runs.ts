@@ -83,7 +83,8 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   // first run — or one after an entry too old to carry an id — mints a new
   // one and is charged.
   const prior = await getCachedRun(forUrl, msg.fingerprint);
-  const runId = msg.supplement.trim().length > 0 && prior?.runId ? prior.runId : newRunId();
+  const isRefine = msg.supplement.trim().length > 0 && !!prior?.runId;
+  const runId = isRefine ? prior!.runId! : newRunId();
 
   await publish({ ...INITIAL_RUN_STATE, phase: "reading" });
   void logRun("start", `${forUrl} runId=${runId}`);
@@ -108,7 +109,21 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
             console.warn("failed to publish run progress", err),
           );
         },
-        { extraInfo: msg.supplement, runId, runToken: msg.runToken },
+        {
+          extraInfo: msg.supplement,
+          runId,
+          runToken: msg.runToken,
+          // A refine run rewrites against the PREVIOUS run's matrix: its own
+          // analyze fires in parallel, so this is the only analysis the tailor
+          // leg can see. Fresh runs omit it and get the auto-refine tail
+          // instead.
+          ...(isRefine && prior?.analysis ? { priorAnalysis: prior.analysis } : {}),
+          // Carried separately from `priorAnalysis` on purpose: a refine run
+          // is the second free leg whether or not the cached entry had an
+          // analysis to hand over, and the auto-refine tail must be off in
+          // both cases.
+          isRefinement: isRefine,
+        },
       );
 
       // `runTailor` now returns several API calls AFTER it publishes `done`:

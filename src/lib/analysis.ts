@@ -228,9 +228,18 @@ export function buildTailorMessages(
       ? "SUMMARY: Include a concise professional summary (2–3 lines) centered on the job's top themes, drawing only on the candidate's real experience. The summary is where fabrication most often creeps in: every claim in it must pass the traceability test — no computed year totals, no seniority spans, no role characterizations beyond the literal titles and statements in the source."
       : 'SUMMARY: Do NOT include a summary. Set the resume "summary" field to an empty string "".',
   ];
-  // Optional: fold in the gap analysis for extra guidance when available.
-  // Omitting it lets tailor run in parallel with analyze.
-  if (analysis) blocks.push(jsonBlock("GAP ANALYSIS (for guidance)", analysis));
+  // Optional: present on the refine legs only — the first run fires analyze
+  // and tailor in parallel, so tailor cannot see the analysis there.
+  if (analysis) {
+    blocks.push(jsonBlock("GAP ANALYSIS (target the uplift honestly)", analysis));
+    blocks.push(
+      [
+        "TARGETED UPLIFT (subordinate to the traceability test above — it never licenses adding a fact):",
+        "For each requirements_matrix row with status \"partially_met\" or \"missing\", check whether the resume or extra info ALREADY contains supporting evidence the row's status failed to credit. If it does, rewrite that real evidence to be explicit and prominent, using the requirement's own vocabulary, so a recruiter re-reading the resume against that requirement would mark it met.",
+        "If the resume and extra info genuinely contain no supporting evidence for a row, do NOT touch it — no bullet, no keyword, no summary clause. The gap stays in the analysis, not in the resume.",
+      ].join("\n"),
+    );
+  }
 
   return [
     { role: "system", content: TAILOR_SYSTEM },

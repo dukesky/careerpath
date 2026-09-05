@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import type { RunState } from "@/lib/run";
 import { getLiveRun, MAX_CONCURRENT_RUNS } from "@/lib/liveRuns";
 import { getCachedRun, putCachedRun, type CachedRun } from "@/lib/cache";
@@ -95,13 +95,23 @@ async function putCachedRunFixture(
   await putCachedRun(url, fixture);
 }
 
+/**
+ * The keepalive's ping target. Stubbed for EVERY test, not just the keepalive
+ * ones: startRun now retains the worker on every run, so any test whose
+ * runTailor mock never settles leaves the interval armed, and an interval
+ * whose callback throws would fail an unrelated test 20 seconds in.
+ */
+let getPlatformInfo: ReturnType<typeof vi.fn>;
+
 beforeEach(() => {
   runTailorImpl = async () => {};
   runTailorOpts = [];
   authImpl = async () => ({ kind: "device", token: "device-token" });
+  getPlatformInfo = vi.fn();
 
   const data: Record<string, unknown> = {};
   vi.stubGlobal("chrome", {
+    runtime: { getPlatformInfo, lastError: undefined },
     storage: {
       local: {
         get: vi.fn(async (keys: string[]) => {
@@ -372,5 +382,118 @@ describe("startRun", () => {
   it("starts without a run token for an anonymous caller", async () => {
     await startRun(msg());
     expect(runTailorOpts.at(-1)?.runToken).toBeUndefined();
+  });
+});
+
+/**
+ * THE EVICTION BUG. During a run the worker awaits /api/analyze and
+ * /api/tailor for 30-120s with no extension-API activity in between, and
+ * Chrome's ~30s MV3 idle timer evicts it mid-await — a pending fetch does not
+ * reliably reset that timer. The breadcrumb trail stops right after "phase
+ * comparing", nothing publishes an error, and five minutes later the panel's
+ * stale rule reports "That run stopped before it finished."
+ *
+ * These tests use a FRESH copy of ../runs each time (vi.resetModules), because
+ * the keepalive's reference count is module-level state and several tests
+ * above deliberately leave a run pending forever — inheriting their count
+ * would make "the interval stops" unprovable.
+ */
+describe("startRun keepalive", () => {
+  let startRunFresh: typeof startRun;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    ({ startRun: startRunFresh } = await import("../runs"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drains the fire-and-forget publish/log chains the IIFE leaves behind. */
+  const flush = async () => {
+    for (let i = 0; i < 25; i++) await Promise.resolve();
+  };
+
+  /** A run held open until the returned function is called. */
+  function heldRun(): { settle: (err?: Error) => void } {
+    let settle!: (err?: Error) => void;
+    runTailorImpl = () =>
+      new Promise<void>((resolve, reject) => {
+        settle = (err) => (err ? reject(err) : resolve());
+      });
+    return {
+      settle: (err) => {
+        settle(err);
+      },
+    };
+  }
+
+  it("pings an extension API while a run is in flight", async () => {
+    const run = heldRun();
+    await startRunFresh(msg());
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // Three ticks at 20s; two is the floor that proves the timer is armed and
+    // repeating rather than fired once.
+    expect(getPlatformInfo.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    run.settle();
+    await flush();
+  });
+
+  it("stops pinging once the run finishes", async () => {
+    const run = heldRun();
+    await startRunFresh(msg());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    run.settle();
+    await flush();
+    const atFinish = getPlatformInfo.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    // Not merely "fewer": the interval must be CLEARED, or the keepalive
+    // itself pins the worker alive forever.
+    expect(getPlatformInfo.mock.calls.length).toBe(atFinish);
+  });
+
+  // MAX_CONCURRENT_RUNS > 1, so runs overlap. A count, not a boolean: the
+  // first run finishing must not strand the second one mid-fetch.
+  it("keeps pinging until the last of two overlapping runs finishes", async () => {
+    const first = heldRun();
+    await startRunFresh(msg());
+    const second = heldRun();
+    await startRunFresh({ ...msg(), jd: { ...JD, url: "https://example.com/jobs/2" } });
+
+    first.settle();
+    await flush();
+    const atFirstFinish = getPlatformInfo.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getPlatformInfo.mock.calls.length).toBeGreaterThan(atFirstFinish);
+
+    second.settle();
+    await flush();
+    const atSecondFinish = getPlatformInfo.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(getPlatformInfo.mock.calls.length).toBe(atSecondFinish);
+  });
+
+  it("clears the heartbeat when the run throws", async () => {
+    const run = heldRun();
+    await startRunFresh(msg());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    run.settle(new Error("network died"));
+    await flush();
+    const atFinish = getPlatformInfo.mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(getPlatformInfo.mock.calls.length).toBe(atFinish);
   });
 });

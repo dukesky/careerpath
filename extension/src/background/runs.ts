@@ -15,6 +15,39 @@ import { INITIAL_RUN_STATE, newRunId, runTailor, type RunState } from "@/lib/run
 import { logRun } from "@/lib/runLog";
 
 /**
+ * MV3 keepalive. While at least one run is in flight, ping a zero-cost
+ * extension API every 20s so Chrome's ~30s service-worker idle timer never
+ * fires mid-run. Without this, the worker is evicted while awaiting the
+ * 30-120s analyze/tailor fetches (a pending fetch does not reliably reset
+ * the timer), the run dies silently, and the panel's stale rule reports
+ * "stopped before it finished" five minutes later — the cp_run_log
+ * breadcrumb trail stops right after "phase comparing", which is this
+ * failure's signature. Reference-counted because runs can overlap
+ * (MAX_CONCURRENT_RUNS > 1); the interval must survive until the LAST run
+ * finishes and must always be cleared, or the keepalive itself would pin
+ * the worker forever.
+ */
+let activeRuns = 0;
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+function retainWorker(): void {
+  activeRuns += 1;
+  if (heartbeat !== null) return;
+  heartbeat = setInterval(() => {
+    // The call's result is irrelevant; the API call itself resets the timer.
+    chrome.runtime.getPlatformInfo(() => void chrome.runtime.lastError);
+  }, 20_000);
+}
+
+function releaseWorker(): void {
+  activeRuns = Math.max(0, activeRuns - 1);
+  if (activeRuns === 0 && heartbeat !== null) {
+    clearInterval(heartbeat);
+    heartbeat = null;
+  }
+}
+
+/**
  * Runs live here, not in the panel, so that closing the panel or switching
  * tabs cannot kill one. The panel starts a run with this message and then
  * only ever READS state back out of lib/liveRuns.
@@ -94,6 +127,9 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
   void (async () => {
     let latest: RunState = INITIAL_RUN_STATE;
     try {
+      // First statement in the try, released in the finally below, so every
+      // exit — done, ended-not-done, thrown — releases exactly once.
+      retainWorker();
       await runTailor(
         msg.jd,
         msg.resume,
@@ -190,6 +226,8 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           message: err instanceof Error ? err.message : "Something went wrong.",
         },
       }).catch((publishErr) => console.warn("failed to publish run failure", publishErr));
+    } finally {
+      releaseWorker();
     }
   })();
 

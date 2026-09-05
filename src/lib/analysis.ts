@@ -222,7 +222,7 @@ Rules for "resume":
 
 Rules for "change_log":
 - One entry per meaningful change. "section" e.g. "Summary", "Experience — <Company>", "Skills".
-- "original" and "revised" are short before/after snippets. "reason" ties the change to the job.
+- "original" and "revised" are snippets of 10 words or fewer; "reason" is one short sentence tying the change to the job.
 
 Rules for "projected_match_score":
 - Integer 0-100. Judge the TAILORED resume against the job's must-have and nice-to-have requirements exactly as a recruiter would score a gap analysis.

@@ -105,6 +105,38 @@ describe("raw-JD input", () => {
   });
 });
 
+describe("TAILOR_SYSTEM change_log slimming", () => {
+  const sys = () => buildTailorMessages(RESUME, JD, "", true, null)[0].content;
+
+  it("bounds change_log entries to one line", () => {
+    expect(sys()).toContain(
+      '"original" and "revised" are snippets of 10 words or fewer; "reason" is one short sentence',
+    );
+  });
+
+  // The change_log is a display artifact; the anti-fabrication machinery is
+  // the product. Trimming the former must not touch the latter, so pin the
+  // traceability test and the failure modes it enumerates word for word.
+  it("leaves the traceability test and the failure modes untouched", () => {
+    const s = sys();
+    expect(s).toContain(
+      "THE TRACEABILITY TEST — apply it to every sentence you write:",
+    );
+    expect(s).toContain(
+      "A rewrite may compress, reorder, or sharpen its source; it must never say MORE than the source",
+    );
+    expect(s).toContain("DERIVED AGGREGATES: never do arithmetic over the resume.");
+    // The anti-relabel clause: the bench caught the model upgrading a tool it
+    // was never given, and this is the line that forbids it.
+    expect(s).toContain(
+      "UPGRADED TOOLS AND LABELS: never name a tool, technology, ecosystem, or affiliation the source does not name for that same piece of work.",
+    );
+    expect(s).toContain("IMPORTED JOB-DESCRIPTION LANGUAGE");
+    expect(s).toContain("INVENTED MECHANISMS");
+    expect(s).toContain("INFLATED SCOPE OR SPECIFICITY");
+  });
+});
+
 describe("buildTailorMessages targeted uplift", () => {
   it("adds the targeted-uplift directive only when an analysis is provided", () => {
     const withA = buildTailorMessages(RESUME, JD, "", true, ANALYSIS);

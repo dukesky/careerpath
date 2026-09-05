@@ -26,6 +26,19 @@ const ANALYSIS: GapAnalysis = {
   ],
 };
 
+/** The honest-ceiling shape: every must_have already met. */
+const ALL_MET: GapAnalysis = {
+  ...ANALYSIS,
+  requirements_matrix: [
+    { requirement: "Kubernetes", kind: "must_have", status: "met", evidence: "", suggestion: "" },
+    { requirement: "Go", kind: "must_have", status: "met", evidence: "", suggestion: "" },
+    { requirement: "Terraform", kind: "nice_to_have", status: "missing", evidence: "", suggestion: "" },
+  ],
+};
+
+const CEILING_NOTE =
+  "All 2 must-have requirements are already met — the score is near its honest ceiling for this role.";
+
 const TAILORED: TailorResult = { resume: RESUME, change_log: [], projected_match_score: 70 };
 
 /**
@@ -83,9 +96,10 @@ describe("Results - uplift wiring", () => {
   it("mounts the question cards on a finished run and forwards their answers", async () => {
     const onImprove = await renderResults();
     expect(container.textContent).toContain("Raise your score with real experience");
-    const ta = Array.from(container.querySelectorAll("textarea")).find(
-      (t) => !t.classList.contains("paste"),
-    )!;
+    // Addressed by the requirement it belongs to. The panel's textareas all
+    // share the `paste` class, so "the one that isn't the supplement box" is
+    // not a durable way to find this one.
+    const ta = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Kubernetes"]')!;
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLTextAreaElement.prototype,
       "value",
@@ -118,6 +132,65 @@ describe("Results - uplift wiring", () => {
     });
     expect(container.textContent).toContain("Improving the rewrite against the gaps…");
     expect(container.querySelector(".score")?.textContent).toBe("60 → 70 match");
+  });
+
+  // The right-hand number legitimately does not move when every must-have is
+  // already met — there is no truthful rewrite left that would raise it. Said
+  // out loud, that is an honest ceiling; left unsaid, it reads as a broken
+  // feature, so the card explains itself.
+  it("explains the honest ceiling when every must-have is met", async () => {
+    await renderResults({
+      state: { ...INITIAL_RUN_STATE, phase: "done", analysis: ALL_MET, tailored: TAILORED },
+    });
+    expect(container.textContent).toContain(CEILING_NOTE);
+  });
+
+  it("stays silent when a must-have is still short, or when there are none at all", async () => {
+    // ANALYSIS's single must_have is `missing` — the ordinary case.
+    await renderResults();
+    expect(container.textContent).not.toContain("honest ceiling");
+
+    await renderResults({
+      state: {
+        ...INITIAL_RUN_STATE,
+        phase: "done",
+        analysis: {
+          ...ALL_MET,
+          requirements_matrix: [
+            { ...ALL_MET.requirements_matrix[0], status: "partially_met" },
+            ALL_MET.requirements_matrix[1],
+          ],
+        },
+        tailored: TAILORED,
+      },
+    });
+    expect(container.textContent).not.toContain("honest ceiling");
+
+    // No must_have rows at all: "All 0 must-have requirements are already met"
+    // would be a claim about nothing.
+    await renderResults({
+      state: {
+        ...INITIAL_RUN_STATE,
+        phase: "done",
+        analysis: { ...ALL_MET, requirements_matrix: [ALL_MET.requirements_matrix[2]] },
+        tailored: TAILORED,
+      },
+    });
+    expect(container.textContent).not.toContain("honest ceiling");
+  });
+
+  it("stays silent while the refine leg is still running", async () => {
+    await renderResults({
+      state: {
+        ...INITIAL_RUN_STATE,
+        phase: "done",
+        analysis: ALL_MET,
+        tailored: TAILORED,
+        refining: true,
+      },
+    });
+    expect(container.textContent).not.toContain("honest ceiling");
+    expect(container.textContent).toContain("Improving the rewrite against the gaps…");
   });
 
   it("hides the cards before the rewrite exists", async () => {

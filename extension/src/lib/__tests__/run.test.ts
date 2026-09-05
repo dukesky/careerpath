@@ -387,6 +387,9 @@ describe("runTailor", () => {
     // Last patch is the auto-refine leg's phase-free `refining:false`, so read
     // the last patch that reports a phase.
     expect(patches.filter((p) => p.phase).at(-1)?.phase).toBe("done");
+    // An unreadable rescore body is cosmetic: the run the user was charged for
+    // must never be reported as failed on the way to `done` either.
+    expect(patches.some((p) => p.phase === "error")).toBe(false);
   });
 
   it("clears a previous run's rescored score when a new run starts", async () => {

@@ -45,10 +45,18 @@ export function QuestionCards({
             <strong>{r.requirement}</strong>
             {r.suggestion && <div className="muted tiny">{r.suggestion}</div>}
             <textarea
+              className="paste"
               rows={2}
               value={answers[i] ?? ""}
+              // The visible <strong> above names the requirement, but it is not
+              // a <label>, so a screen reader reaching this box would announce
+              // only the placeholder — identical on every card.
+              aria-label={r.requirement}
               placeholder="What did you actually do? Tools, scale, numbers."
-              onChange={(e) => setAnswers({ ...answers, [i]: e.target.value })}
+              // Functional form: several of these boxes can be edited in quick
+              // succession, and closing over `answers` would let one keystroke's
+              // stale snapshot drop a sibling card's answer.
+              onChange={(e) => setAnswers((a) => ({ ...a, [i]: e.target.value }))}
               disabled={disabled}
             />
           </li>

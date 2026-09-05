@@ -74,6 +74,18 @@ export function Results({
   const progress = PHASE_COPY[state.phase];
   const { analysis, tailored, rescoredScore } = state;
 
+  /**
+   * How many must-haves this role has, and whether every one is already met.
+   *
+   * When they all are, the right-hand number genuinely has nowhere left to go:
+   * no truthful rewrite can add evidence the resume already carries, and the
+   * bench runs confirmed such candidates sit at a real ceiling. An unmoving
+   * number with no explanation reads as a broken feature, so the card says
+   * which state it is in rather than leaving the user to guess.
+   */
+  const mustHaves = analysis?.requirements_matrix.filter((r) => r.kind === "must_have") ?? [];
+  const atCeiling = mustHaves.length > 0 && mustHaves.every((r) => r.status === "met");
+
   return (
     <div>
       {state.phase === "error" && state.error && (
@@ -122,6 +134,17 @@ export function Results({
               is a fact ABOUT the right-hand number, not part of it. */}
           {state.refining && (
             <p className="muted tiny">Improving the rewrite against the gaps…</p>
+          )}
+          {/* Mutually exclusive with the hint above by the `!state.refining`
+              gate: while the refine leg is still running the number may yet
+              move, so claiming a ceiling then would be a guess. Gated on
+              `tailored` too — there is no right-hand number to explain until
+              the rewrite exists. */}
+          {state.phase === "done" && tailored && !state.refining && atCeiling && (
+            <p className="muted tiny">
+              All {mustHaves.length} must-have requirements are already met — the
+              score is near its honest ceiling for this role.
+            </p>
           )}
           {analysis.rationale && <p className="muted">{analysis.rationale}</p>}
 

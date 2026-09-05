@@ -111,6 +111,7 @@ function jsonBlock(label: string, value: unknown): string {
 const ANALYZE_SYSTEM = `You are a rigorous, honest technical recruiter and career coach. You compare a candidate against a specific role and produce an evidence-based gap analysis. You never flatter and never invent evidence — every claim must be grounded in the provided resume or extra info.
 
 Output a SINGLE JSON object with EXACTLY this schema:
+Output fields in EXACTLY this order — overall_match_score first.
 
 {
   "overall_match_score": 0,
@@ -124,14 +125,14 @@ Output a SINGLE JSON object with EXACTLY this schema:
 
 Rules:
 - "overall_match_score": integer 0-100. Calibrate honestly — missing several must-haves should score low.
-- "rationale": one paragraph explaining the score.
+- "rationale": at most 2 sentences explaining the score.
 - "requirements_matrix": one row for EACH must-have and each nice-to-have requirement in the job description.
   - "kind": "must_have" or "nice_to_have".
   - "status": "met", "partially_met", or "missing".
-  - "evidence": quote or paraphrase the specific resume/extra-info fact that supports the status. If missing, say what is absent — do not fabricate.
-  - "suggestion": concrete, honest advice for how to address or present this requirement.
-- "strengths": the top 5 strengths (most relevant to THIS role) to emphasize.
-- "gaps": the most important gaps, each with honest, realistic mitigation advice (never advise fabrication).
+  - "evidence": quote or paraphrase the specific resume/extra-info fact that supports the status. If missing, say what is absent — do not fabricate. Keep it to 15 words or fewer.
+  - "suggestion": concrete, honest advice for how to address or present this requirement. Keep it to 15 words or fewer.
+- "strengths": the top 3 strengths (most relevant to THIS role) to emphasize.
+- "gaps": at most 3 gaps, the most important ones, each with one short, honest, realistic mitigation sentence (never advise fabrication).
 - Respond with ONLY the JSON object. No markdown, no code fences, no commentary.`;
 
 export function buildAnalyzeMessages(

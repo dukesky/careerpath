@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildTailorMessages } from "@/lib/analysis";
+import { buildAnalyzeMessages, buildTailorMessages } from "@/lib/analysis";
 import type { ParsedResume } from "@/lib/resume";
 import type { ParsedJD } from "@/lib/jd";
 import type { GapAnalysis } from "@shared/contract";
@@ -17,6 +17,39 @@ const ANALYSIS: GapAnalysis = {
   }],
   strengths: [], gaps: [],
 };
+
+describe("ANALYZE_SYSTEM slimming", () => {
+  // The system prompt is not exported; assert through the built messages.
+  it("carries the brevity caps and keeps the schema order", () => {
+    const msgs = buildAnalyzeMessages(RESUME, JD, "");
+    const sys = msgs[0].content;
+    expect(sys).toContain("at most 2 sentences"); // rationale cap
+    expect(sys).toContain("15 words or fewer"); // evidence/suggestion cap
+    expect(sys).toContain("top 3 strengths");
+    expect(sys).toContain("at most 3 gaps");
+    // Field order is the streaming contract: the score must stream first.
+    expect(sys.indexOf('"overall_match_score"')).toBeLessThan(sys.indexOf('"rationale"'));
+    expect(sys.indexOf('"rationale"')).toBeLessThan(sys.indexOf('"requirements_matrix"'));
+  });
+
+  // The slimming is a budget change, not a calibration change: the persona and
+  // the honest-scoring clauses are what make the score mean anything, and they
+  // are shared with /api/rescore, whose whole premise is "same instrument".
+  it("keeps the scoring persona and the honest-calibration clauses word for word", () => {
+    const sys = buildAnalyzeMessages(RESUME, JD, "")[0].content;
+    expect(sys).toContain(
+      "You are a rigorous, honest technical recruiter and career coach.",
+    );
+    expect(sys).toContain(
+      "You never flatter and never invent evidence — every claim must be grounded in the provided resume or extra info.",
+    );
+    expect(sys).toContain(
+      '"overall_match_score": integer 0-100. Calibrate honestly — missing several must-haves should score low.',
+    );
+    expect(sys).toContain("do not fabricate");
+    expect(sys).toContain("never advise fabrication");
+  });
+});
 
 describe("buildTailorMessages targeted uplift", () => {
   it("adds the targeted-uplift directive only when an analysis is provided", () => {

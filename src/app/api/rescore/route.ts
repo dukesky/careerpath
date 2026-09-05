@@ -9,6 +9,7 @@ import { rateLimitResponse } from "@/lib/rate-limit";
 import { callerKey } from "@/lib/auth";
 import { getKV } from "@/lib/kv";
 import { RUN_TTL_SECONDS } from "@/lib/quota";
+import { capText, MAX_JD_CHARS } from "@/lib/limits";
 
 /**
  * Re-score a TAILORED resume with the exact instrument analyze uses.
@@ -75,6 +76,7 @@ export async function POST(request: Request) {
   let body: {
     structuredResume?: unknown;
     structuredJD?: unknown;
+    jdText?: unknown;
     quality?: unknown;
     runId?: unknown;
   };
@@ -85,7 +87,16 @@ export async function POST(request: Request) {
   }
 
   if (!body.structuredResume) return bad("Missing structuredResume.");
-  if (!body.structuredJD) return bad("Missing structuredJD.");
+  // Either JD shape is accepted, byte-for-byte as analyze and tailor accept
+  // them — same precedence, same cap. This is INPUT PLUMBING, not the
+  // instrument: the client stopped parsing the JD, so the only JD it has to
+  // measure against is the raw posting, and a rescore that could not take it
+  // would have nothing to compare the rewrite to. Everything below —
+  // buildAnalyzeMessages, the empty extraInfo, the task, the temperature —
+  // stays exactly as it was, which is what "the same ruler" means.
+  if (!body.structuredJD && !(typeof body.jdText === "string" && body.jdText.trim())) {
+    return bad("Missing structuredJD or jdText.");
+  }
 
   const runId = readRunId(body);
   // Unlike analyze/tailor, an absent runId cannot be waved through with a
@@ -155,7 +166,12 @@ export async function POST(request: Request) {
   }
 
   const resume = normalizeResume(body.structuredResume);
-  const jd = normalizeJD(body.structuredJD);
+  // structuredJD wins when both are present, exactly as on analyze and tailor:
+  // a parse that already ran is the better input, and the precedence must not
+  // differ between the ruler and the thing it is calibrated against.
+  const jd = body.structuredJD
+    ? normalizeJD(body.structuredJD)
+    : { rawText: capText(typeof body.jdText === "string" ? body.jdText : "", MAX_JD_CHARS) };
   const quality = body.quality === "fast" ? "fast" : "quality";
 
   let score: number;

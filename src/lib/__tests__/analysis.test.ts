@@ -51,6 +51,60 @@ describe("ANALYZE_SYSTEM slimming", () => {
   });
 });
 
+describe("raw-JD input", () => {
+  it("renders a raw-text JD block when given { rawText }", () => {
+    const msgs = buildAnalyzeMessages(RESUME, { rawText: "We need Kubernetes and Go." }, "");
+    expect(msgs[1].content).toContain("JOB DESCRIPTION (raw text)");
+    expect(msgs[1].content).toContain("We need Kubernetes and Go.");
+    expect(msgs[1].content).not.toContain("JOB DESCRIPTION (JSON)");
+    const t = buildTailorMessages(RESUME, { rawText: "We need Kubernetes." }, "", true, null);
+    expect(t[1].content).toContain("JOB DESCRIPTION (raw text)");
+    expect(t[1].content).not.toContain("JOB DESCRIPTION (JSON)");
+  });
+
+  // The raw text goes in verbatim — no JSON.stringify, so no escaped newlines
+  // or wrapping quotes between the model and the posting it must read.
+  it("does not JSON-encode the raw text", () => {
+    const msgs = buildAnalyzeMessages(RESUME, { rawText: 'Line 1\n"quoted"' }, "");
+    expect(msgs[1].content).toContain('--- JOB DESCRIPTION (raw text) ---\nLine 1\n"quoted"');
+  });
+
+  // The ParsedJD path must stay byte-identical: the inline snapshot below is
+  // the guard for tailor, and this is the guard for analyze. A raw-JD change
+  // that leaks into this branch changes what /api/rescore measures with.
+  it("keeps the ParsedJD path byte-identical", () => {
+    const msgs = buildAnalyzeMessages(RESUME, JD, "extra");
+    expect(msgs[1].content).toMatchInlineSnapshot(`
+      "Analyze this candidate's fit for the role.
+
+      --- CANDIDATE RESUME (JSON) ---
+      {
+        "contact": {
+          "name": "Ada",
+          "email": "",
+          "phone": "",
+          "location": "",
+          "links": []
+        },
+        "summary": "",
+        "experience": [],
+        "projects": [],
+        "skills": [],
+        "education": []
+      }
+
+      --- EXTRA INFO FROM CANDIDATE (not on resume) ---
+      "extra"
+
+      --- JOB DESCRIPTION (JSON) ---
+      {
+        "company": "Acme",
+        "role_title": "SRE"
+      }"
+    `);
+  });
+});
+
 describe("buildTailorMessages targeted uplift", () => {
   it("adds the targeted-uplift directive only when an analysis is provided", () => {
     const withA = buildTailorMessages(RESUME, JD, "", true, ANALYSIS);

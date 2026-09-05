@@ -11,7 +11,7 @@ import { getIdentity, hasBetaAccess } from "@/lib/identity";
 import { getCaller, readRunId, unauthorized } from "@/lib/api-auth";
 import { rateLimitResponse } from "@/lib/rate-limit";
 import { getQuota, consumeRun } from "@/lib/quota";
-import { capText, MAX_EXTRA_INFO_CHARS } from "@/lib/limits";
+import { capText, MAX_EXTRA_INFO_CHARS, MAX_JD_CHARS } from "@/lib/limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -58,6 +58,7 @@ export async function POST(request: Request) {
   let body: {
     structuredResume?: unknown;
     structuredJD?: unknown;
+    jdText?: unknown;
     extraInfo?: unknown;
     analysis?: unknown;
     quality?: unknown;
@@ -71,10 +72,17 @@ export async function POST(request: Request) {
   }
 
   if (!body.structuredResume) return bad("Missing structuredResume.");
-  if (!body.structuredJD) return bad("Missing structuredJD.");
 
   const resume = normalizeResume(body.structuredResume);
-  const jd = normalizeJD(body.structuredJD);
+  // Either JD shape is accepted. structuredJD wins when both are present: if a
+  // parse already ran, its output is the better input. jdText is the fast path
+  // that lets the client skip that serial hop entirely.
+  const jd = body.structuredJD
+    ? normalizeJD(body.structuredJD)
+    : typeof body.jdText === "string" && body.jdText.trim()
+      ? { rawText: capText(body.jdText, MAX_JD_CHARS) }
+      : null;
+  if (!jd) return bad("Missing structuredJD or jdText.");
   // Optional — omitted when analyze runs in parallel with tailor.
   const analysis = body.analysis ? normalizeGapAnalysis(body.analysis) : null;
   const extraInfo = capText(

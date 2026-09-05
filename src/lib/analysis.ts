@@ -108,6 +108,26 @@ function jsonBlock(label: string, value: unknown): string {
   return `--- ${label} ---\n${JSON.stringify(value, null, 2)}`;
 }
 
+/**
+ * A job description as either input shape.
+ *
+ * The structured form is what a parse pass produces; the raw form lets a
+ * caller skip that serial hop and hand us the posting it already has. Models
+ * read the raw posting perfectly well — the parse existed for the UI, not for
+ * these prompts.
+ */
+export type JDInput = ParsedJD | { rawText: string };
+
+/**
+ * Raw text goes in verbatim, not JSON-encoded: escaped newlines and wrapping
+ * quotes would only make the posting harder to read.
+ */
+function jdBlock(jd: JDInput): string {
+  return "rawText" in jd
+    ? `--- JOB DESCRIPTION (raw text) ---\n${jd.rawText}`
+    : jsonBlock("JOB DESCRIPTION (JSON)", jd);
+}
+
 const ANALYZE_SYSTEM = `You are a rigorous, honest technical recruiter and career coach. You compare a candidate against a specific role and produce an evidence-based gap analysis. You never flatter and never invent evidence — every claim must be grounded in the provided resume or extra info.
 
 Output a SINGLE JSON object with EXACTLY this schema:
@@ -137,7 +157,7 @@ Rules:
 
 export function buildAnalyzeMessages(
   resume: ParsedResume,
-  jd: ParsedJD,
+  jd: JDInput,
   extraInfo: string,
 ): ChatMessage[] {
   return [
@@ -151,7 +171,7 @@ export function buildAnalyzeMessages(
           "EXTRA INFO FROM CANDIDATE (not on resume)",
           extraInfo.trim() || "(none provided)",
         ),
-        jsonBlock("JOB DESCRIPTION (JSON)", jd),
+        jdBlock(jd),
       ].join("\n\n"),
     },
   ];
@@ -212,7 +232,7 @@ Rules for "projected_match_score":
 
 export function buildTailorMessages(
   resume: ParsedResume,
-  jd: ParsedJD,
+  jd: JDInput,
   extraInfo: string,
   includeSummary: boolean,
   analysis?: GapAnalysis | null,
@@ -224,7 +244,7 @@ export function buildTailorMessages(
       "EXTRA INFO FROM CANDIDATE (real facts to use)",
       extraInfo.trim() || "(none provided)",
     ),
-    jsonBlock("JOB DESCRIPTION (JSON)", jd),
+    jdBlock(jd),
     includeSummary
       ? "SUMMARY: Include a concise professional summary (2–3 lines) centered on the job's top themes, drawing only on the candidate's real experience. The summary is where fabrication most often creeps in: every claim in it must pass the traceability test — no computed year totals, no seniority spans, no role characterizations beyond the literal titles and statements in the source."
       : 'SUMMARY: Do NOT include a summary. Set the resume "summary" field to an empty string "".',

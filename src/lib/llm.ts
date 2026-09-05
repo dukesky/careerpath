@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { withStats } from "./llm-stats";
+import { recordLLMCall, withStats } from "./llm-stats";
 
 /**
  * Thin wrapper around OpenRouter (OpenAI-compatible API).
@@ -254,44 +254,65 @@ export async function* streamLLM(
   const model = resolveModel(task, quality);
   const temp = temperature ?? DEFAULT_TEMPERATURE[task];
 
-  const stream = await getClient().chat.completions.create({
-    model,
-    messages: toOpenAIMessages(messages),
-    temperature: temp,
-    ...(maxTokens ? { max_tokens: maxTokens } : {}),
-    stream: true,
-    // OpenRouter only sends the usage chunk when this is asked for; without it
-    // the stats below would record every streamed call as zero tokens.
-    stream_options: { include_usage: true },
-  });
-
+  // Timed by hand rather than through `withStats`, which wants one awaitable to
+  // wrap. A stream's wall time spans the whole drain, so the clock starts
+  // before the request and stops when the last chunk lands — wrapping the
+  // already-resolved totals would record ~0ms into the same
+  // `stats:{task}:{model}` aggregate the buffered calls feed.
+  const started = Date.now();
   let full = "";
   let promptTokens = 0;
   let completionTokens = 0;
 
-  for await (const chunk of stream) {
-    // The usage-bearing chunk arrives last and carries no content of its own.
-    if (chunk.usage) {
-      promptTokens = chunk.usage.prompt_tokens ?? 0;
-      completionTokens = chunk.usage.completion_tokens ?? 0;
+  try {
+    const stream = await getClient().chat.completions.create({
+      model,
+      messages: toOpenAIMessages(messages),
+      temperature: temp,
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
+      stream: true,
+      // OpenRouter only sends the usage chunk when this is asked for; without
+      // it the stats below would record every streamed call as zero tokens.
+      stream_options: { include_usage: true },
+    });
+
+    for await (const chunk of stream) {
+      // The usage-bearing chunk arrives last and carries no content of its own.
+      if (chunk.usage) {
+        promptTokens = chunk.usage.prompt_tokens ?? 0;
+        completionTokens = chunk.usage.completion_tokens ?? 0;
+      }
+      const delta = chunk.choices?.[0]?.delta?.content ?? "";
+      if (delta) {
+        full += delta;
+        yield delta;
+      }
     }
-    const delta = chunk.choices?.[0]?.delta?.content ?? "";
-    if (delta) {
-      full += delta;
-      yield delta;
-    }
+  } catch (err) {
+    // openai-node raises an APIError from inside the iterator whenever
+    // OpenRouter surfaces an upstream error, so a mid-stream throw is a normal
+    // path — count it, or streamed failures never reach the failure tally.
+    await recordLLMCall({
+      task,
+      model,
+      quality,
+      durationMs: Date.now() - started,
+      promptTokens: 0,
+      completionTokens: 0,
+      ok: false,
+    });
+    throw err;
   }
 
-  // Record after the stream settles. `withStats` wants a promise-returning fn
-  // it can time, so the already-resolved values get wrapped in one — the
-  // duration it measures is therefore ~0 rather than the stream's wall time.
-  // Tokens and the per-call log line, which is what the stats are for, are
-  // exact; a streamed call's latency is measured at the route instead.
-  await withStats({ task, model, quality }, async () => ({
-    result: full,
+  await recordLLMCall({
+    task,
+    model,
+    quality,
+    durationMs: Date.now() - started,
     promptTokens,
     completionTokens,
-  }));
+    ok: true,
+  });
 
   return full;
 }

@@ -8,12 +8,19 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
  * the final chunk), not about the network or Redis.
  */
 
+interface RecordedCall {
+  task: string;
+  model: string;
+  quality?: string;
+  durationMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  ok: boolean;
+}
+
 const { createMock, statsCalls } = vi.hoisted(() => ({
   createMock: vi.fn(),
-  statsCalls: [] as Array<{
-    meta: { task: string; model: string; quality?: string };
-    payload: { result: string; promptTokens: number; completionTokens: number };
-  }>,
+  statsCalls: [] as unknown[],
 }));
 
 vi.mock("openai", () => ({
@@ -23,23 +30,14 @@ vi.mock("openai", () => ({
 }));
 
 vi.mock("@/lib/llm-stats", () => ({
-  withStats: vi.fn(
-    async (
-      meta: { task: string; model: string; quality?: string },
-      fn: () => Promise<{
-        result: string;
-        promptTokens: number;
-        completionTokens: number;
-      }>,
-    ) => {
-      const payload = await fn();
-      statsCalls.push({ meta, payload });
-      return payload.result;
-    },
-  ),
+  recordLLMCall: vi.fn(async (stats: unknown) => {
+    statsCalls.push(stats);
+  }),
 }));
 
 import { streamLLM } from "@/lib/llm";
+
+const recorded = () => statsCalls as RecordedCall[];
 
 type Chunk = {
   choices?: Array<{ delta?: { content?: string } }>;
@@ -51,6 +49,20 @@ function fakeStream(chunks: Chunk[]) {
   return {
     async *[Symbol.asyncIterator]() {
       for (const c of chunks) yield c;
+    },
+  };
+}
+
+/**
+ * A stream that yields `chunks` and then throws — openai-node surfaces an
+ * upstream OpenRouter error as an APIError raised from inside the iterator,
+ * so this is a normal path, not an exotic one.
+ */
+function throwingStream(chunks: Chunk[], err: Error) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield c;
+      throw err;
     },
   };
 }
@@ -130,7 +142,7 @@ describe("streamLLM", () => {
     ]);
   });
 
-  it("records the call's usage through withStats once the stream ends", async () => {
+  it("records usage and a real duration exactly once, after the stream settles", async () => {
     createMock.mockResolvedValue(
       fakeStream([
         deltaChunk("abc"),
@@ -138,25 +150,57 @@ describe("streamLLM", () => {
       ]),
     );
 
-    await drain(
-      streamLLM({
-        task: "analyze",
-        messages: [{ role: "user", content: "hi" }],
-        quality: "quality",
-      }),
-    );
+    const gen = streamLLM({
+      task: "analyze",
+      messages: [{ role: "user", content: "hi" }],
+      quality: "quality",
+    });
 
-    expect(statsCalls).toHaveLength(1);
-    expect(statsCalls[0].meta).toEqual({
+    // Nothing may be recorded until the generator actually settles: a record
+    // written mid-stream would be the ~0ms duration this test exists to catch.
+    let step = await gen.next();
+    while (!step.done) {
+      expect(statsCalls).toHaveLength(0);
+      step = await gen.next();
+    }
+
+    expect(recorded()).toHaveLength(1);
+    const call = recorded()[0];
+    expect(call).toMatchObject({
       task: "analyze",
       model: "anthropic/claude-sonnet-4.6",
       quality: "quality",
-    });
-    expect(statsCalls[0].payload).toEqual({
-      result: "abc",
       promptTokens: 120,
       completionTokens: 34,
+      ok: true,
     });
+    expect(typeof call.durationMs).toBe("number");
+    expect(call.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("records one failure and rethrows when the stream throws mid-iteration", async () => {
+    const boom = new Error("upstream provider returned an error");
+    createMock.mockResolvedValue(throwingStream([deltaChunk("partial")], boom));
+
+    const gen = streamLLM({
+      task: "tailor",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    await expect(drain(gen)).rejects.toThrow(
+      "upstream provider returned an error",
+    );
+
+    expect(recorded()).toHaveLength(1);
+    const call = recorded()[0];
+    expect(call).toMatchObject({
+      task: "tailor",
+      model: "anthropic/claude-sonnet-4.6",
+      promptTokens: 0,
+      completionTokens: 0,
+      ok: false,
+    });
+    expect(call.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("falls back to the task default temperature and omits max_tokens", async () => {

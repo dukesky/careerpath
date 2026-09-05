@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 /**
  * The opt-in `stream: true` branch of /api/analyze and /api/tailor.
@@ -28,6 +28,7 @@ import { getQuota } from "@/lib/quota";
 import type { Caller } from "@/lib/auth";
 import { POST as analyze } from "@/app/api/analyze/route";
 import { POST as tailor } from "@/app/api/tailor/route";
+import { sseResponse, drainDeltas } from "@/lib/sse";
 
 const IP = "8.8.8.8";
 const ANON = "streaming-test-anon";
@@ -155,7 +156,11 @@ describe("POST /api/analyze with stream: true", () => {
   it("returns the buffered 402 JSON without opening a stream once exhausted", async () => {
     yields(ANALYZE_JSON);
     for (let i = 0; i < 5; i++) {
-      await analyze(post("https://x/api/analyze", inputs({ stream: true, runId: `f${i}` })));
+      // Read each body to completion: the charge happens in the last frame, so
+      // an unread stream would leave the quota state up to scheduling luck.
+      await frames(
+        await analyze(post("https://x/api/analyze", inputs({ stream: true, runId: `f${i}` }))),
+      );
     }
     vi.mocked(streamLLM).mockClear();
 
@@ -281,7 +286,11 @@ describe("POST /api/tailor with stream: true", () => {
   it("returns the buffered 402 JSON without opening a stream once exhausted", async () => {
     yields(TAILOR_JSON);
     for (let i = 0; i < 5; i++) {
-      await tailor(post("https://x/api/tailor", inputs({ stream: true, runId: `t${i}` })));
+      // Read each body to completion: the charge happens in the last frame, so
+      // an unread stream would leave the quota state up to scheduling luck.
+      await frames(
+        await tailor(post("https://x/api/tailor", inputs({ stream: true, runId: `t${i}` }))),
+      );
     }
     vi.mocked(streamLLM).mockClear();
 
@@ -289,5 +298,144 @@ describe("POST /api/tailor with stream: true", () => {
 
     expect(res.status).toBe(402);
     expect(vi.mocked(streamLLM)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A cancelled stream swallows whatever the producer does next — the rejection
+ * of an already-closed stream's `start` goes nowhere — so what the helper does
+ * to its controller after a disconnect is invisible from the Response. These
+ * tests watch the controller itself.
+ */
+function recordController() {
+  const rec = { enqueues: 0, closes: 0, throws: [] as unknown[] };
+  const Real = globalThis.ReadableStream;
+
+  const spy = <R,>(c: ReadableStreamDefaultController<R>) => ({
+    get desiredSize() {
+      return c.desiredSize;
+    },
+    enqueue(chunk: R) {
+      rec.enqueues++;
+      try {
+        c.enqueue(chunk);
+      } catch (err) {
+        rec.throws.push(err);
+        throw err;
+      }
+    },
+    close() {
+      rec.closes++;
+      try {
+        c.close();
+      } catch (err) {
+        rec.throws.push(err);
+        throw err;
+      }
+    },
+    error(err?: unknown) {
+      c.error(err);
+    },
+  });
+
+  class Recording<R> extends Real<R> {
+    constructor(source?: UnderlyingSource<R>, strategy?: QueuingStrategy<R>) {
+      const start = source?.start;
+      super(
+        source &&
+          ({
+            ...source,
+            start:
+              start &&
+              ((c: ReadableStreamDefaultController<R>) =>
+                start.call(
+                  source,
+                  spy(c) as unknown as ReadableStreamDefaultController<R>,
+                )),
+          } as unknown as UnderlyingSource<R>),
+        strategy,
+      );
+    }
+  }
+
+  vi.stubGlobal("ReadableStream", Recording);
+  return rec;
+}
+
+describe("sseResponse when the client disconnects", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Lets every pending microtask chain settle. */
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("closes the delta generator and stops writing once cancelled", async () => {
+    const rec = recordController();
+
+    let released!: () => void;
+    const gate = new Promise<void>((r) => (released = r));
+    let finalized = false;
+
+    // The finalizer is the whole point: it is what aborts the upstream fetch
+    // inside streamLLM's own `for await`, so billing stops with the client.
+    const gen = (async function* (): AsyncGenerator<string, string> {
+      try {
+        yield "first";
+        await gate;
+        yield "second";
+        return "firstsecond";
+      } finally {
+        finalized = true;
+      }
+    })();
+
+    const seen: string[] = [];
+    const res = sseResponse(async (send) => {
+      const full = await drainDeltas(gen, (delta) => {
+        send({ d: delta });
+        seen.push(delta);
+      });
+      send({ final: full });
+    });
+
+    const reader = res.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe('data: {"d":"first"}\n\n');
+
+    await reader.cancel();
+    released();
+    await flush();
+
+    expect(finalized).toBe(true);
+    expect(seen).toEqual(["first"]);
+    expect(rec.enqueues).toBe(1);
+    expect(rec.closes).toBe(0);
+    expect(rec.throws).toEqual([]);
+  });
+
+  it("does not fault a second time when the producer fails after cancellation", async () => {
+    const rec = recordController();
+
+    let released!: () => void;
+    const gate = new Promise<void>((r) => (released = r));
+
+    const res = sseResponse(async (send) => {
+      send({ d: "first" });
+      await gate;
+      throw new Error("upstream down");
+    });
+
+    const reader = res.body!.getReader();
+    await reader.read();
+    await reader.cancel();
+    released();
+    await flush();
+
+    // The error frame has nowhere to go, and closing a cancelled controller is
+    // the second TypeError; neither may be attempted.
+    expect(rec.enqueues).toBe(1);
+    expect(rec.closes).toBe(0);
+    expect(rec.throws).toEqual([]);
   });
 });

@@ -235,7 +235,8 @@ export function buildTailorMessages(
     blocks.push(
       [
         "TARGETED UPLIFT (subordinate to the traceability test above — it never licenses adding a fact):",
-        "For each requirements_matrix row with status \"partially_met\" or \"missing\", check whether the resume or extra info ALREADY contains supporting evidence the row's status failed to credit. If it does, rewrite that real evidence to be explicit and prominent, using the requirement's own vocabulary, so a recruiter re-reading the resume against that requirement would mark it met.",
+        "For each requirements_matrix row with status \"partially_met\" or \"missing\", check whether the resume or extra info ALREADY contains supporting evidence the row's status failed to credit. If it does, rewrite that real evidence to be explicit and prominent, so a recruiter re-reading the resume against that requirement would recognize the match.",
+        "Echo a requirement's terms ONLY where the source already says the same thing in equivalent words. Never relabel the candidate's work with a more formal, more standard, or more advanced term than the source itself uses — describing ad-hoc snapshotting as \"slowly changing dimensions\" is fabrication, not vocabulary alignment. And keep the rewrite readable: full prose bullets, no keyword lists bolted into parentheses, no label prefixes.",
         "If the resume and extra info genuinely contain no supporting evidence for a row, do NOT touch it — no bullet, no keyword, no summary clause. The gap stays in the analysis, not in the resume.",
       ].join("\n"),
     );

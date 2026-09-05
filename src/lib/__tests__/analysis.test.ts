@@ -33,6 +33,9 @@ describe("buildTailorMessages targeted uplift", () => {
     );
     // The directive names the hard boundary so the model sees it next to the data.
     expect(userWith).toContain("do NOT touch");
+    // Vocabulary alignment must not become relabelling: the bench caught the model
+    // upgrading ad-hoc snapshotting into "slowly changing dimensions" to reach a JD term.
+    expect(userWith).toContain("Never relabel the candidate's work");
     expect(userWithout).not.toContain("GAP ANALYSIS");
   });
 

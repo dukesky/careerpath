@@ -134,15 +134,32 @@ function throttle(
  *
  * Exactly one retry, and only here — apiStream itself never retries, and
  * `send` inside it retries only the device-token 401 it always has.
+ *
+ * Two things are NOT worth that retry, and both are checked before it:
+ * a failure the server MEANT, and a run that is already over. See below.
+ *
+ * `isLive` is what the second check reads. It is a callback rather than a
+ * boolean because the answer changes WHILE this function is awaiting its
+ * stream: the sibling leg is running in parallel and may end the run at any
+ * point between the call and the fallback.
  */
 async function streamThenBuffer<T>(
   path: string,
   body: Record<string, unknown>,
   onDelta: (chunk: string) => void,
   runToken?: string,
+  isLive: () => boolean = () => true,
 ): Promise<ApiResult<T>> {
   const streamed = await apiStream<T>(path, { ...body, stream: true }, onDelta, runToken);
   if (streamed.ok) return streamed;
+  // A refusal is not a transport failure. Re-sending it buys nothing and
+  // spends another rate-limit token on a client that is already blocked.
+  if (streamed.kind !== "server" && streamed.kind !== "network") return streamed;
+  // Nor is a leg of a run that has already ended worth re-sending. The other
+  // leg failed terminally while this stream was open, the panel has been told,
+  // and nothing will ever read this result — but the server would still charge
+  // for producing it. Hand back the streamed failure as-is.
+  if (!isLive()) return streamed;
   console.warn(
     JSON.stringify({
       evt: "stream_fell_back",
@@ -251,8 +268,27 @@ export async function runTailor(
   onUpdate: (patch: Partial<RunState>) => void,
   opts: RunOptions = {},
 ): Promise<void> {
-  const fail = (kind: ApiErrorKind, message: string) =>
+  /**
+   * False from the moment this run publishes a terminal failure.
+   *
+   * The two model legs stream in PARALLEL, so the leg that did not fail is
+   * still open when the other one ends the run — its onDelta closure still
+   * holds `onUpdate`, and background/runs.ts merges whatever it publishes into
+   * the stored live run. Without this, a dead run keeps painting a preview
+   * over the error (and, once App.tsx restores that entry from cache, its
+   * spread can carry the stale preview onto a finished result), and the
+   * orphaned leg still buys itself a buffered fallback — a second charged
+   * request for a run that already ended.
+   *
+   * Checked in three places, all of them below: the top of each delta closure,
+   * and streamThenBuffer's fallback. The `done` path does not need it — both
+   * legs have landed by then, so there is nothing left to silence.
+   */
+  let live = true;
+  const fail = (kind: ApiErrorKind, message: string) => {
+    live = false;
     onUpdate({ phase: "error", error: { kind, message }, ...NO_STREAM });
+  };
 
   onUpdate({
     phase: "reading",
@@ -294,6 +330,7 @@ export async function runTailor(
   let paintedScore: number | null = null;
   let paintedRows = 0;
   const onAnalyzeDelta = (chunk: string) => {
+    if (!live) return;
     analyzeBuffer += chunk;
     publishAnalyzePaint(() => {
       const patch: Partial<RunState> = {};
@@ -315,6 +352,7 @@ export async function runTailor(
   let paintedSummary: string | null = null;
   let paintedEntries = 0;
   const onTailorDelta = (chunk: string) => {
+    if (!live) return;
     tailorBuffer += chunk;
     publishTailorPaint(() => {
       const summary = extractString(tailorBuffer, "summary");
@@ -331,6 +369,7 @@ export async function runTailor(
     payload,
     onAnalyzeDelta,
     opts.runToken,
+    () => live,
   );
   // A refine run's rewrite is aimed at the matrix the PREVIOUS charged run
   // produced; a fresh run's first tailor has no analysis to aim at yet (it is
@@ -341,6 +380,7 @@ export async function runTailor(
     opts.priorAnalysis ? { ...payload, analysis: opts.priorAnalysis } : payload,
     onTailorDelta,
     opts.runToken,
+    () => live,
   );
 
   const analyzed = await analyzeCall;

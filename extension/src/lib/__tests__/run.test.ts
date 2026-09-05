@@ -51,6 +51,39 @@ const sse = (final: unknown, deltas: string[] = []) =>
 const brokenSse = (deltas: string[]) =>
   stream(deltas.map((d) => `data: ${JSON.stringify({ d })}\n\n`));
 
+/**
+ * A broken stream held shut until `gate` resolves.
+ *
+ * The two model legs run in parallel, so one of them is always still writing
+ * when the other ends the run. This is how a test puts that leg's deltas
+ * strictly AFTER the terminal patch instead of racing them.
+ */
+const gatedSse = (gate: Promise<void>, deltas: string[]) =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      async start(controller) {
+        await gate;
+        for (const d of deltas) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ d })}\n\n`));
+        }
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+
+/**
+ * Let the work runTailor left floating finish.
+ *
+ * A run that fails at analyze RETURNS while the tailor leg is still in flight
+ * — deliberately, since awaiting it would delay the error the user is waiting
+ * for. Anything that leg still does happens after `await runTailor` resolves,
+ * so a test about it has to drain the queue first.
+ */
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+};
+
 function collect() {
   const patches: Partial<RunState>[] = [];
   return { patches, onUpdate: (p: Partial<RunState>) => patches.push(p) };
@@ -525,6 +558,108 @@ describe("runTailor", () => {
     await runTailor(JD, RESUME, () => {});
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // A terminal patch ends the run for everyone, including the leg that did not
+  // fail. That leg is still streaming — its onDelta closure still holds
+  // `onUpdate`, and background/runs.ts merges whatever it publishes into the
+  // stored live run — so without a liveness check a dead run keeps painting a
+  // preview over a failed (or, after App.tsx's cache restore, a finished)
+  // result, and then pays for a buffered retry of a leg nothing will read.
+  it("stops painting, and stops spending, once the sibling leg has failed the run", async () => {
+    everyDeltaPaints();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    let openTailor!: () => void;
+    const tailorGate = new Promise<void>((resolve) => {
+      openTailor = resolve;
+    });
+
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const streamed = JSON.parse(String(init?.body)).stream === true;
+      if (String(url).endsWith("/api/analyze")) {
+        // Stream dies, buffered fallback fails: the run really ends here.
+        return streamed
+          ? brokenSse(['{"overall_match_score": 44,'])
+          : json({ error: "Analysis failed: upstream down" }, 502);
+      }
+      if (String(url).endsWith("/api/tailor")) {
+        // Every one of these deltas — the same shape that paints a preview in
+        // the tests above — arrives at a run that is already over.
+        return gatedSse(tailorGate, ['{"resume":{"summary":"still writing",', ' "experience": []']);
+      }
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // The analyze leg did paint before it died, so "nothing paints after this"
+    // is a claim about the guard, not about a stream that never ran.
+    expect(patches.some((p) => p.streamingScore === 44)).toBe(true);
+    const terminalAt = patches.length - 1;
+    expect(patches[terminalAt].phase).toBe("error");
+
+    openTailor();
+    await flush();
+
+    // Nothing at all follows the terminal patch.
+    expect(patches).toHaveLength(terminalAt + 1);
+    expect(patches.slice(terminalAt + 1).some((p) => p.streamingResume)).toBe(false);
+    // ...and the dead run's tailor leg does not buy itself a buffered retry.
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/tailor"))).toHaveLength(1);
+  });
+
+  // The buffered fallback exists for a stream that BROKE. A refusal — no quota
+  // left, session gone, rate limited — is the server's considered answer, and
+  // re-sending it turns one refused run into four requests while each 429
+  // retry digs the rate-limit hole deeper.
+  it("does not re-send a refusal: a 402 costs one request per leg, not two", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      json({ error: "You've used all your free runs." }, 402),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+    await flush();
+
+    expect(
+      fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/analyze")),
+    ).toHaveLength(1);
+    // Two legs, one request each, and nothing after them.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(patches.at(-1)?.phase).toBe("error");
+    expect(patches.at(-1)?.error?.kind).toBe("quota");
+  });
+
+  // A run that dies at analyze must not go on to spend the legs that follow
+  // it. The rescore in particular is an analyze-grade model call, and there is
+  // no tailored resume to measure.
+  it("issues no further LLM legs after the first one fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/analyze")) return json({ error: "Upstream down" }, 500);
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: { resume: {} }, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+    await flush();
+
+    const hits = (path: string) =>
+      fetchMock.mock.calls.filter((c) => String(c[0]).endsWith(path)).length;
+    // A 500 IS a transport failure, so analyze gets its one buffered retry.
+    expect(hits("/api/analyze")).toBe(2);
+    // The tailor stream succeeded on its own, so it is never re-sent...
+    expect(hits("/api/tailor")).toBe(1);
+    // ...and nothing downstream of the failure runs at all.
+    expect(hits("/api/rescore")).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(patches.at(-1)?.phase).toBe("error");
   });
 
   // Each patch is a chrome.storage write in the service worker (see

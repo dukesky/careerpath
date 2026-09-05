@@ -137,6 +137,14 @@ describe("TAILOR_SYSTEM change_log slimming", () => {
   });
 });
 
+describe("TAILOR_SYSTEM shape neutrality", () => {
+  it("APPROACH step 1 names no ParsedJD field — it must work for raw-text JDs", () => {
+    const sys = buildTailorMessages(RESUME, { rawText: "Some posting" }, "", true, null)[0].content;
+    expect(sys).toContain("hard requirements and its concrete technology and domain terms");
+    expect(sys).not.toContain("must_have_requirements and keywords");
+  });
+});
+
 describe("buildTailorMessages targeted uplift", () => {
   it("adds the targeted-uplift directive only when an analysis is provided", () => {
     const withA = buildTailorMessages(RESUME, JD, "", true, ANALYSIS);

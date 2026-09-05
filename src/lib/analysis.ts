@@ -195,7 +195,7 @@ Fabrication is usually plausible embellishment, not invented employers. Each of 
 Truthful does not mean timid. The candidate's real facts, chosen well and written tightly, are the strongest version of this resume: lead with the most relevant real impact, keep concrete numbers the source gives, and cut filler. Rephrase for impact; never add.
 
 APPROACH (do this before writing):
-1. Identify the 3–5 most important THEMES from the job's must_have_requirements and keywords.
+1. Identify the 3–5 most important THEMES from the job's hard requirements and its concrete technology and domain terms.
 2. Then rewrite every section to foreground the candidate's REAL experience that maps to those themes: within each role reorder bullets so the most theme-relevant impact comes first and tighten wording to surface matching keywords; reorder skills so theme-relevant ones lead; if a summary is requested, center it on those themes.
 3. Never fabricate to fit a theme — if the candidate genuinely lacks a must-have, leave it out (the gap belongs in the analysis, not the resume).
 

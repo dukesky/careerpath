@@ -129,8 +129,13 @@ function toOpenAIMessages(
 // JSON helpers
 // ---------------------------------------------------------------------------
 
-/** Strip ```json ... ``` / ``` ... ``` fences and surrounding prose. */
-function stripCodeFences(text: string): string {
+/**
+ * Strip ```json ... ``` / ``` ... ``` fences and surrounding prose.
+ *
+ * Exported for the streaming routes: `streamLLM` hands back raw text, so the
+ * caller has to do the fence-stripping `callLLM`'s JSON mode does internally.
+ */
+export function stripCodeFences(text: string): string {
   const trimmed = text.trim();
   const fenced = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
   if (fenced) return fenced[1].trim();
@@ -223,4 +228,70 @@ export async function callLLM<T = unknown>(
     const second = await complete(retryMessages);
     return JSON.parse(stripCodeFences(second)) as T; // let a second failure throw
   }
+}
+
+export interface StreamLLMOptions {
+  task: LLMTask;
+  messages: ChatMessage[];
+  /** Overrides the analyze/tailor model. Ignored for parse/ocr. */
+  quality?: Quality;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+/**
+ * Streams raw text deltas; returns the full concatenated text.
+ *
+ * No JSON handling here — callers own parsing (routes normalize the final text
+ * with `stripCodeFences` and fall back to the buffered `callLLM` retry on a
+ * parse failure). No image support either: streaming is for the long text/JSON
+ * generations, and OCR stays on the buffered path.
+ */
+export async function* streamLLM(
+  options: StreamLLMOptions,
+): AsyncGenerator<string, string> {
+  const { task, messages, quality, temperature, maxTokens } = options;
+  const model = resolveModel(task, quality);
+  const temp = temperature ?? DEFAULT_TEMPERATURE[task];
+
+  const stream = await getClient().chat.completions.create({
+    model,
+    messages: toOpenAIMessages(messages),
+    temperature: temp,
+    ...(maxTokens ? { max_tokens: maxTokens } : {}),
+    stream: true,
+    // OpenRouter only sends the usage chunk when this is asked for; without it
+    // the stats below would record every streamed call as zero tokens.
+    stream_options: { include_usage: true },
+  });
+
+  let full = "";
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  for await (const chunk of stream) {
+    // The usage-bearing chunk arrives last and carries no content of its own.
+    if (chunk.usage) {
+      promptTokens = chunk.usage.prompt_tokens ?? 0;
+      completionTokens = chunk.usage.completion_tokens ?? 0;
+    }
+    const delta = chunk.choices?.[0]?.delta?.content ?? "";
+    if (delta) {
+      full += delta;
+      yield delta;
+    }
+  }
+
+  // Record after the stream settles. `withStats` wants a promise-returning fn
+  // it can time, so the already-resolved values get wrapped in one — the
+  // duration it measures is therefore ~0 rather than the stream's wall time.
+  // Tokens and the per-call log line, which is what the stats are for, are
+  // exact; a streamed call's latency is measured at the route instead.
+  await withStats({ task, model, quality }, async () => ({
+    result: full,
+    promptTokens,
+    completionTokens,
+  }));
+
+  return full;
 }

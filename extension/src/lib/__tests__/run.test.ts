@@ -168,18 +168,11 @@ describe("runTailor", () => {
     const ids = fetchMock.mock.calls
       .filter((c) => !String(c[0]).includes("parse-jd"))
       .map((c) => JSON.parse(String((c[1] as RequestInit).body)).runId);
-    // Five legs now: analyze, tailor, rescore, and the auto-refine pair
-    // (tailor again, rescore again). Every one of them carries the SAME id —
-    // not incidental: the server's marker gate refuses a runId it has never
-    // seen charged, so a rescore sent under a fresh id would 403 on every run,
-    // and a refine tailor under a fresh id would be charged as a new run.
-    expect(ids).toEqual([
-      "reused-id",
-      "reused-id",
-      "reused-id",
-      "reused-id",
-      "reused-id",
-    ]);
+    // Three legs by default: analyze, tailor, rescore. Every one of them
+    // carries the SAME id — not incidental: the server's marker gate refuses a
+    // runId it has never seen charged, so a rescore sent under a fresh id
+    // would 403 on every run.
+    expect(ids).toEqual(["reused-id", "reused-id", "reused-id"]);
   });
 
   it("sends the supplement to both analyze and tailor", async () => {
@@ -194,14 +187,10 @@ describe("runTailor", () => {
     const sent = fetchMock.mock.calls
       .filter((c) => /api\/(analyze|tailor)$/.test(String(c[0])))
       .map((c) => JSON.parse(String((c[1] as RequestInit).body)).extraInfo);
-    // analyze, tailor, and the auto-refine tailor: the rewrite leg must not
-    // drop the supplement, or the refined resume would lose the experience the
+    // analyze and tailor — the two legs a default run makes. Neither may drop
+    // the supplement, or the tailored resume would lose the experience the
     // user typed in and score worse for it.
-    expect(sent).toEqual([
-      "I used PyTorch on X",
-      "I used PyTorch on X",
-      "I used PyTorch on X",
-    ]);
+    expect(sent).toEqual(["I used PyTorch on X", "I used PyTorch on X"]);
 
     // ...and NOT to rescore, deliberately. Rescore measures the TAILORED
     // resume, which has already absorbed the supplement; re-declaring the same
@@ -216,8 +205,9 @@ describe("runTailor", () => {
   });
 
   // Pins the high-risk requirement from the brief: EVERY apiPost call —
-  // parse-jd, analyze, tailor, rescore, and the auto-refine tailor/rescore
-  // pair — must carry the run token, not just the two that happen to run in
+  // parse-jd, analyze, tailor, rescore, and (when the gated auto-refine leg
+  // runs) its tailor/rescore pair — must carry the run token, not just the two
+  // that happen to run in
   // parallel. Dropping any one of them sends that leg as a device caller with
   // nothing visibly wrong in the UI, and for rescore specifically the symptom
   // is a 403 from the marker gate (the run was charged to the user, so no
@@ -231,16 +221,26 @@ describe("runTailor", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz" });
+    const bearersAreSet = () => {
+      for (const call of fetchMock.mock.calls) {
+        const init = call[1] as RequestInit;
+        expect((init.headers as Record<string, string>).Authorization).toBe(
+          "Bearer run-token-xyz",
+        );
+      }
+    };
 
-    // parse-jd, analyze, tailor, rescore, refine-tailor, refine-rescore.
+    await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz" });
+    // The default run: parse-jd, analyze, tailor, rescore.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    bearersAreSet();
+
+    // ...and the gated auto-refine pair, which is where this is easiest to
+    // forget, since those two calls are made from a different block.
+    fetchMock.mockClear();
+    await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz", autoRefine: true });
     expect(fetchMock).toHaveBeenCalledTimes(6);
-    for (const call of fetchMock.mock.calls) {
-      const init = call[1] as RequestInit;
-      expect((init.headers as Record<string, string>).Authorization).toBe(
-        "Bearer run-token-xyz",
-      );
-    }
+    bearersAreSet();
   });
 
   // ------------------------------------------------------------------ rescore
@@ -273,16 +273,9 @@ describe("runTailor", () => {
       if (patch.rescoredScore != null) order.push("rescore-patch");
     });
 
-    // The auto-refine leg repeats the measurement, so there are two of each —
-    // but the FIRST thing in the list is still the done patch, and no request
-    // precedes it. That is the invariant this test exists for.
-    expect(order).toEqual([
-      "done-patch",
-      "rescore-request",
-      "rescore-patch",
-      "rescore-request",
-      "rescore-patch",
-    ]);
+    // The FIRST thing in the list is the done patch, and no request precedes
+    // it. That is the invariant this test exists for.
+    expect(order).toEqual(["done-patch", "rescore-request", "rescore-patch"]);
   });
 
   it("sends the TAILORED resume to rescore, not the original", async () => {
@@ -327,18 +320,9 @@ describe("runTailor", () => {
     // could disturb what is on screen.
     const scorePatch = patches.find((p) => p.rescoredScore != null);
     expect(scorePatch).toEqual({ rescoredScore: 88 });
-    // The auto-refine leg's closing patch follows it, and is equally
-    // phase-free. Here the refined rewrite measures 88 again — not worse — so
-    // it is adopted alongside the flag that closes the leg, and with the
-    // refine call's own quota read (the same 4 the done patch published, since
-    // the free leg does not charge).
-    expect(patches.at(-1)).toEqual({
-      tailored: { projected_match_score: 80 },
-      rescoredScore: 88,
-      remaining: 4,
-      refining: false,
-    });
-    expect(patches.at(-1)?.phase).toBeUndefined();
+    // With the auto-refine leg off by default, that measurement patch is also
+    // the LAST thing the run publishes.
+    expect(patches.at(-1)).toEqual({ rescoredScore: 88 });
   });
 
   it("leaves the run done — never error — when the rescore fails", async () => {
@@ -357,9 +341,8 @@ describe("runTailor", () => {
 
     // A completed, CHARGED result must not be thrown away because a cosmetic
     // follow-up failed. The panel keeps the tailor model's own projection.
-    // The auto-refine leg's `refining:false` patch is last and carries no
-    // phase, so read the last patch that reports one — and check no patch
-    // ever reported `error`.
+    // The measurement patch that follows `done` carries no phase, so read the
+    // last patch that reports one — and check no patch ever reported `error`.
     expect(patches.filter((p) => p.phase).at(-1)?.phase).toBe("done");
     expect(patches.some((p) => p.phase === "error")).toBe(false);
     // The "reading" patch nulls this field on purpose, so the check is that
@@ -387,8 +370,8 @@ describe("runTailor", () => {
     // The "reading" patch nulls this field on purpose, so the check is that
     // no patch ever delivers a VALUE.
     expect(patches.some((p) => p.rescoredScore != null)).toBe(false);
-    // Last patch is the auto-refine leg's phase-free `refining:false`, so read
-    // the last patch that reports a phase.
+    // Patches published after `done` are phase-free, so read the last patch
+    // that reports a phase.
     expect(patches.filter((p) => p.phase).at(-1)?.phase).toBe("done");
     // An unreadable rescore body is cosmetic: the run the user was charged for
     // must never be reported as failed on the way to `done` either.
@@ -436,6 +419,53 @@ describe("runTailor", () => {
   // refinement), measure the rewrite, and adopt it only when the measured
   // number is not worse. Everything here happens strictly after the `done`
   // patch, so it can only improve a number already on screen.
+  //
+  // It is OPT-IN (`autoRefine: true`) and nothing in the product turns it on —
+  // see the default test immediately below, which is the one that matters for
+  // shipped behavior. The bench evidence is that this leg improves
+  // blind-judged document quality but not the measured score, while spending
+  // the runId's second free leg and doubling per-IP quota use. The tests below
+  // keep the leg's own behavior pinned so the gated path still works.
+
+  // The shipped default, pinned directly: no flag, no tail. A regression here
+  // is not cosmetic — it silently spends the free leg the user's own refine
+  // needs, so their next refine gets charged, and it doubles per-IP quota use.
+  it("does NOT auto-refine by default: one tailor, one rescore, never refining", async () => {
+    let tailorCalls = 0;
+    let rescoreCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        const u = String(url);
+        if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
+        if (u.endsWith("/api/analyze"))
+          return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+        if (u.endsWith("/api/tailor")) {
+          tailorCalls += 1;
+          return json({
+            tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } },
+            remaining: 4,
+          });
+        }
+        rescoreCalls += 1;
+        return json({ score: 65 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(tailorCalls).toBe(1);
+    expect(rescoreCalls).toBe(1);
+    // `refining` is published as false by the reading and done patches; what
+    // must never happen is a patch turning it ON, which is the panel's cue
+    // that a second leg is in flight.
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+    // The run ends on the measurement, with the first tailor's document.
+    expect(patches.at(-1)).toEqual({ rescoredScore: 65 });
+    const withTailored = patches.filter((p) => p.tailored);
+    expect(withTailored.at(-1)?.tailored).toMatchObject({ resume: { summary: "v1" } });
+  });
 
   it("auto-refines after the first rescore: tailor with analysis, rescore again, adopt when not worse", async () => {
     const tailorBodies: Record<string, unknown>[] = [];
@@ -463,7 +493,7 @@ describe("runTailor", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { patches, onUpdate } = collect();
-    await runTailor(JD, RESUME, onUpdate);
+    await runTailor(JD, RESUME, onUpdate, { autoRefine: true });
 
     expect(tailorCalls).toBe(2);
     expect(rescoreCalls).toBe(2);
@@ -502,7 +532,7 @@ describe("runTailor", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { patches, onUpdate } = collect();
-    await runTailor(JD, RESUME, onUpdate);
+    await runTailor(JD, RESUME, onUpdate, { autoRefine: true });
 
     // Worse measurement: keep v1 and 65 on screen; only `refining:false` published after.
     const withTailored = patches.filter((p) => p.tailored);
@@ -510,6 +540,9 @@ describe("runTailor", () => {
     expect(patches.filter((p) => typeof p.rescoredScore === "number").pop()?.rescoredScore).toBe(65);
   });
 
+  // Both skip tests turn the flag ON deliberately: the point is that the
+  // `priorAnalysis || isRefinement` guard is independent of it, and still
+  // refuses the tail on a run that IS itself the second free leg.
   it("skips the auto-refine on a run that carries priorAnalysis, and sends it to tailor", async () => {
     const tailorBodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
@@ -526,7 +559,7 @@ describe("runTailor", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const prior = { overall_match_score: 55, requirements_matrix: [] } as unknown as GapAnalysis;
-    await runTailor(JD, RESUME, () => {}, { runId: "reused-id", priorAnalysis: prior });
+    await runTailor(JD, RESUME, () => {}, { runId: "reused-id", priorAnalysis: prior, autoRefine: true });
 
     expect(tailorBodies).toHaveLength(1);
     expect(tailorBodies[0].analysis).toEqual(prior);
@@ -556,7 +589,7 @@ describe("runTailor", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await runTailor(JD, RESUME, () => {}, { runId: "reused-id", isRefinement: true });
+    await runTailor(JD, RESUME, () => {}, { runId: "reused-id", isRefinement: true, autoRefine: true });
 
     expect(tailorBodies).toHaveLength(1);
     // Nothing to aim at, so nothing is sent — but the tail is still skipped.

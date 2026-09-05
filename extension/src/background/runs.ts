@@ -115,8 +115,11 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           runToken: msg.runToken,
           // A refine run rewrites against the PREVIOUS run's matrix: its own
           // analyze fires in parallel, so this is the only analysis the tailor
-          // leg can see. Fresh runs omit it and get the auto-refine tail
-          // instead.
+          // leg can see. Fresh runs omit it and simply run plain — the
+          // auto-refine tail still exists behind `RunOptions.autoRefine`, but
+          // it is off by default and nothing here turns it on, because it
+          // improves blind-judged quality without moving the measured score
+          // while spending the runId's second free leg.
           ...(isRefine && prior?.analysis ? { priorAnalysis: prior.analysis } : {}),
           // Carried separately from `priorAnalysis` on purpose: a refine run
           // is the second free leg whether or not the cached entry had an
@@ -126,17 +129,19 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
         },
       );
 
-      // `runTailor` now returns several API calls AFTER it publishes `done`:
-      // the rescore leg and the free auto-refine leg both run behind first
-      // paint (see run.ts). That gap is safe BECAUSE of the ordering below and
-      // nothing else — the panel reads the live run until `clearLiveRun`, so
-      // the `rescoredScore` and adopted-rewrite patches published during that
-      // gap are on screen before this code writes the cache. Invert "publish,
-      // then cache, then clear" and they land on a record the panel has
-      // already stopped reading.
+      // `runTailor` returns API calls AFTER it publishes `done`: the rescore
+      // leg always, and the gated auto-refine leg when it is on, both run
+      // behind first paint (see run.ts). That gap is safe BECAUSE of the
+      // ordering below and nothing else — the panel reads the live run until
+      // `clearLiveRun`, so the `rescoredScore` (and, on the gated path, the
+      // adopted-rewrite) patches published during that gap are on screen
+      // before this code writes the cache. Invert "publish, then cache, then
+      // clear" and they land on a record the panel has already stopped
+      // reading.
       //
-      // `latest` accumulates those patches, so the entry cached below is the
-      // ADOPTED rewrite and its measured score, not the pre-refine pair.
+      // `latest` accumulates those patches, so the entry cached below carries
+      // the measured score — and, where the auto-refine leg ran, the adopted
+      // rewrite rather than the pre-refine pair.
       if (latest.phase === "done" && latest.analysis && latest.tailored) {
         // The baseline is READ, not re-measured. Recomputing it per run is
         // what made the panel show the "before" score dropping after a user

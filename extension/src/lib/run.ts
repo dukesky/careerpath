@@ -23,6 +23,10 @@ export interface RunState {
    * then a second rescore) is in flight, so the panel can hint that the
    * right-hand number is still improving. Never blocks anything: the run is
    * already `done` when this goes true.
+   *
+   * That leg is off by default (RunOptions.autoRefine), so in production this
+   * stays false for a whole run. The field and the panel's hint are kept for
+   * the gated path rather than deleted.
    */
   refining: boolean;
   remaining: number | null;
@@ -88,6 +92,21 @@ export interface RunOptions {
    * and burns the last free leg so the NEXT refinement gets charged.
    */
   isRefinement?: boolean;
+  /**
+   * Run the free auto-refine leg. Default FALSE.
+   *
+   * When true, after the first rescore the run tailors again WITH the gap
+   * analysis and adopts the rewrite only if it measures not-worse.
+   *
+   * Off by default because bench evidence (the appendix of
+   * docs/superpowers/specs/2026-09-04-score-uplift-design.md) showed the
+   * analyze instrument reads THROUGH presentation: the leg improves
+   * blind-judged document quality but not the measured score — while costing
+   * a free leg and doubling per-IP quota use. The elicitation path (a user
+   * refine carrying real new facts) is the uplift mechanism; this leg is kept
+   * behind the flag, not deleted, so the bench can still exercise it.
+   */
+  autoRefine?: boolean;
 }
 
 /**
@@ -102,10 +121,10 @@ export interface RunOptions {
  * so total latency is max(analyze, tailor), not their sum. The panel still
  * renders analysis first because it lands first.
  *
- * Every remaining call — /api/rescore, then the free auto-refine pair
- * (/api/tailor again with the gap analysis, and a second /api/rescore to
- * measure it) — runs AFTER the `done` patch, never before it, never merged
- * into it. The done patch is first paint for the completed result: the
+ * Every remaining call — /api/rescore, then (only when `opts.autoRefine` is
+ * on, which it is not by default) the free auto-refine pair (/api/tailor
+ * again with the gap analysis, and a second /api/rescore to measure it) —
+ * runs AFTER the `done` patch, never before it, never merged into it. The done patch is first paint for the completed result: the
  * download button, the change log, the score card. Latency to that paint is
  * this product's number one complaint, and each of those is an analyze-grade
  * model call worth 20-30 seconds. Moving any of them in front of the done
@@ -157,8 +176,8 @@ export async function runTailor(
   );
   // A refine run's rewrite is aimed at the matrix the PREVIOUS charged run
   // produced; a fresh run's first tailor has no analysis to aim at yet (it is
-  // still in flight beside this call), and gets one on the auto-refine leg
-  // below instead.
+  // still in flight beside this call), and does not get a second pass either
+  // unless `opts.autoRefine` is on — see the gated leg below.
   const tailorCall = apiPost<{ tailored: TailorResult; remaining: number | null }>(
     "/api/tailor",
     opts.priorAnalysis ? { ...payload, analysis: opts.priorAnalysis } : payload,
@@ -292,6 +311,15 @@ export async function runTailor(
   // model calls, and every one of them happens after the `done` patch. It can
   // only replace one number and one already-downloadable document with better
   // versions of themselves; it can never delay what the user is looking at.
+  //
+  // Default OFF — see RunOptions.autoRefine. The leg is opt-in because it
+  // cannot reliably raise the MEASURED score, and running it unasked spends
+  // the runId's second free leg (which silently makes the user's own next
+  // refine a charged run) and doubles per-IP quota use. The two guards are
+  // independent and both stay: the flag decides whether this leg exists at
+  // all, `priorAnalysis || isRefinement` decides that it must never fire on a
+  // run that IS itself the second free leg.
+  if (opts.autoRefine !== true) return;
   if (opts.priorAnalysis || opts.isRefinement) return;
   // Adoption is published together with the closing `refining: false` rather
   // than in its own patch, so the leg ends in ONE terminal patch that

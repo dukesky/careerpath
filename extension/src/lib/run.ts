@@ -1,6 +1,13 @@
-import type { GapAnalysis, ParsedJD, ParsedResume, TailorResult } from "@shared/contract";
+import type {
+  GapAnalysis,
+  ParsedResume,
+  RequirementRow,
+  TailorResult,
+} from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
-import { apiPost, type ApiErrorKind } from "./api";
+import { apiPost, apiStream, type ApiErrorKind, type ApiResult } from "./api";
+import { extractNumber, extractObjects, extractString } from "./partialJson";
+import { partialExperience, partialResume, partialRows } from "./runStream";
 
 export type RunPhase = "idle" | "reading" | "comparing" | "writing" | "done" | "error";
 
@@ -29,6 +36,28 @@ export interface RunState {
    * the gated path rather than deleted.
    */
   refining: boolean;
+  /**
+   * The match score the analyze stream has emitted so far, or null.
+   *
+   * The first three of these fields are PRESENTATION, and nothing else. They
+   * are read out of a half-arrived JSON buffer, they are never cached, never
+   * downloaded, never measured, and no decision in this module or the worker
+   * reads them. A run that never streams a byte is a completely normal run:
+   * the buffered result is the only thing that has ever been authoritative.
+   *
+   * All three are cleared by every terminal patch, for the same reason the
+   * done patch re-sends the analysis — see the comment there.
+   */
+  streamingScore: number | null;
+  /** The complete requirement rows the analyze stream has emitted so far. */
+  streamingRows: RequirementRow[];
+  /**
+   * A preview of the tailored resume: the summary and the experience entries
+   * the tailor stream has finished writing, in a real ParsedResume so the
+   * panel can render it with the real components. The sections it does not
+   * carry are "not streamed", not "the model dropped them".
+   */
+  streamingResume: ParsedResume | null;
   remaining: number | null;
   error: { kind: ApiErrorKind; message: string } | null;
 }
@@ -39,9 +68,94 @@ export const INITIAL_RUN_STATE: RunState = {
   tailored: null,
   rescoredScore: null,
   refining: false,
+  streamingScore: null,
+  streamingRows: [],
+  streamingResume: null,
   remaining: null,
   error: null,
 };
+
+/**
+ * What a terminal patch says about the streaming preview: nothing is arriving.
+ *
+ * Spelled once and spread into the done and error patches so the two cannot
+ * drift — a terminal patch that cleared only two of the three would leave a
+ * half-written preview beside a finished result after App.tsx's state reset.
+ */
+const NO_STREAM: Pick<RunState, "streamingScore" | "streamingRows" | "streamingResume"> = {
+  streamingScore: null,
+  streamingRows: [],
+  streamingResume: null,
+};
+
+/**
+ * The floor between two streaming patches, per leg.
+ *
+ * Every patch is a chrome.storage write in the service worker (see
+ * background/runs.ts's `publish`), and a model emits tokens roughly two orders
+ * of magnitude faster than storage wants to absorb writes. Half a second is
+ * slow enough to be free and fast enough that the score and the matrix still
+ * appear to arrive live.
+ */
+const STREAM_PATCH_INTERVAL_MS = 500;
+
+/**
+ * A publisher that drops everything arriving inside the window above.
+ *
+ * `build` runs ONLY when the window is open — extraction re-scans the whole
+ * buffer, so calling it per token would be quadratic in the length of a model
+ * response. Returning null means "nothing new to say", and deliberately does
+ * NOT consume the window: the next delta gets to try again immediately.
+ */
+function throttle(
+  onUpdate: (patch: Partial<RunState>) => void,
+): (build: () => Partial<RunState> | null) => void {
+  let lastAt = 0;
+  return (build) => {
+    const now = Date.now();
+    if (now - lastAt < STREAM_PATCH_INTERVAL_MS) return;
+    const patch = build();
+    if (!patch) return;
+    lastAt = now;
+    onUpdate(patch);
+  };
+}
+
+/**
+ * One leg, streamed — with the buffered request the product shipped with as
+ * its fallback.
+ *
+ * THE rule this function exists to enforce: streaming may only make a result
+ * arrive sooner, and may NEVER decide whether a run succeeds. A stream that
+ * breaks, never sends a final frame, or comes back as an error frame costs the
+ * user nothing but a few seconds: the same leg is re-sent buffered, under the
+ * SAME runId, which is what makes the server treat it as the same charge
+ * rather than a second one.
+ *
+ * Exactly one retry, and only here — apiStream itself never retries, and
+ * `send` inside it retries only the device-token 401 it always has.
+ */
+async function streamThenBuffer<T>(
+  path: string,
+  body: Record<string, unknown>,
+  onDelta: (chunk: string) => void,
+  runToken?: string,
+): Promise<ApiResult<T>> {
+  const streamed = await apiStream<T>(path, { ...body, stream: true }, onDelta, runToken);
+  if (streamed.ok) return streamed;
+  console.warn(
+    JSON.stringify({
+      evt: "stream_fell_back",
+      path,
+      kind: streamed.kind,
+      message: streamed.message,
+    }),
+  );
+  // The buffered attempt's failure is the one the user is told about, if it
+  // comes to that: its message is the server's finished copy ("Analysis
+  // failed: …"), where a streamed error frame carries a bare detail.
+  return apiPost<T>(path, body, runToken);
+}
 
 /**
  * Collision-resistant enough for a per-run key, and defined everywhere.
@@ -138,7 +252,7 @@ export async function runTailor(
   opts: RunOptions = {},
 ): Promise<void> {
   const fail = (kind: ApiErrorKind, message: string) =>
-    onUpdate({ phase: "error", error: { kind, message } });
+    onUpdate({ phase: "error", error: { kind, message }, ...NO_STREAM });
 
   onUpdate({
     phase: "reading",
@@ -148,20 +262,19 @@ export async function runTailor(
     // PREVIOUS run's rescore on screen next to this run's fresh numbers.
     rescoredScore: null,
     refining: false,
+    ...NO_STREAM,
     error: null,
   });
 
-  const parsed = await apiPost<{ jd: ParsedJD }>(
-    "/api/parse-jd",
-    { text: jd.text },
-    opts.runToken,
-  );
-  if (!parsed.ok) return fail(parsed.kind, parsed.message);
-
+  // No parse hop. The posting text the content script already extracted goes
+  // straight to both model legs, which accept it as `jdText` — that serial
+  // 3-8s round trip used to sit in front of every run's first paint, and
+  // nothing downstream needed its structured output that the models cannot
+  // read for themselves.
   const runId = opts.runId || newRunId();
   const payload = {
     structuredResume: resume,
-    structuredJD: parsed.data.jd,
+    jdText: jd.text,
     extraInfo: opts.extraInfo ?? "",
     quality: "quality",
     runId,
@@ -169,25 +282,71 @@ export async function runTailor(
 
   onUpdate({ phase: "comparing" });
 
-  const analyzeCall = apiPost<{ analysis: GapAnalysis; remaining: number | null }>(
+  // --- what the two streams paint on the way to their results --------------
+  //
+  // Each leg accumulates its own buffer and each has its own throttle window,
+  // so a chatty leg cannot starve the other. Both `build` closures only ever
+  // report what CHANGED, and only commit what they reported once the patch is
+  // actually published — a suppressed patch must not convince the next one
+  // that its rows are already on screen.
+  const publishAnalyzePaint = throttle(onUpdate);
+  let analyzeBuffer = "";
+  let paintedScore: number | null = null;
+  let paintedRows = 0;
+  const onAnalyzeDelta = (chunk: string) => {
+    analyzeBuffer += chunk;
+    publishAnalyzePaint(() => {
+      const patch: Partial<RunState> = {};
+      // Null until the number is provably complete — partialJson refuses to
+      // read `8` out of a score that is about to become 87.
+      const score = extractNumber(analyzeBuffer, "overall_match_score");
+      if (score !== null && score !== paintedScore) patch.streamingScore = score;
+      const rows = partialRows(extractObjects(analyzeBuffer, "requirements_matrix"));
+      if (rows.length > paintedRows) patch.streamingRows = rows;
+      if (patch.streamingScore === undefined && patch.streamingRows === undefined) return null;
+      paintedScore = score ?? paintedScore;
+      paintedRows = rows.length;
+      return patch;
+    });
+  };
+
+  const publishTailorPaint = throttle(onUpdate);
+  let tailorBuffer = "";
+  let paintedSummary: string | null = null;
+  let paintedEntries = 0;
+  const onTailorDelta = (chunk: string) => {
+    tailorBuffer += chunk;
+    publishTailorPaint(() => {
+      const summary = extractString(tailorBuffer, "summary");
+      const experience = partialExperience(extractObjects(tailorBuffer, "experience"));
+      if (summary === paintedSummary && experience.length === paintedEntries) return null;
+      paintedSummary = summary;
+      paintedEntries = experience.length;
+      return { streamingResume: partialResume(summary, experience) };
+    });
+  };
+
+  const analyzeCall = streamThenBuffer<{ analysis: GapAnalysis; remaining: number | null }>(
     "/api/analyze",
     payload,
+    onAnalyzeDelta,
     opts.runToken,
   );
   // A refine run's rewrite is aimed at the matrix the PREVIOUS charged run
   // produced; a fresh run's first tailor has no analysis to aim at yet (it is
   // still in flight beside this call), and does not get a second pass either
   // unless `opts.autoRefine` is on — see the gated leg below.
-  const tailorCall = apiPost<{ tailored: TailorResult; remaining: number | null }>(
+  const tailorCall = streamThenBuffer<{ tailored: TailorResult; remaining: number | null }>(
     "/api/tailor",
     opts.priorAnalysis ? { ...payload, analysis: opts.priorAnalysis } : payload,
+    onTailorDelta,
     opts.runToken,
   );
 
   const analyzed = await analyzeCall;
   if (!analyzed.ok) {
-    // tailorCall is already in flight and apiPost never rejects, so there is
-    // nothing to clean up. Be aware of the consequence: if analyze fails while
+    // tailorCall is already in flight and neither transport rejects, so there
+    // is nothing to clean up. Be aware of the consequence: if analyze fails while
     // tailor succeeds, tailor's result is charged and then discarded. Known,
     // accepted, and recorded against the server plan — it needs both requests
     // to land on opposite sides of the quota boundary to happen at all.
@@ -227,6 +386,11 @@ export async function runTailor(
     // Same principle: the auto-refine leg has not started, so say so rather
     // than letting a reset leave a stale `true` beside a finished run.
     refining: false,
+    // And the same principle again for the streamed preview: both legs have
+    // landed, so nothing is arriving. Leaving these set would strand a
+    // half-written matrix and a contact-less resume next to the finished
+    // result they were an approximation of.
+    ...NO_STREAM,
     remaining: knownRemaining,
   });
 
@@ -260,7 +424,11 @@ export async function runTailor(
         "/api/rescore",
         {
           structuredResume: resume,
-          structuredJD: parsed.data.jd,
+          // The same JD the other two legs measured against, in the only form
+          // this run has now that nothing parses it. Measuring the rewrite
+          // against a differently-shaped JD would break the one property this
+          // leg exists for: the same ruler on both sides of the arrow.
+          jdText: jd.text,
           quality: "quality",
           runId,
         },
@@ -328,6 +496,10 @@ export async function runTailor(
   let adopted: Partial<RunState> = {};
   try {
     onUpdate({ refining: true });
+    // Buffered, deliberately. Nothing renders this leg's tokens: the panel is
+    // already showing a completed run plus a hint that a better version may
+    // replace it, so streaming here would put a second live preview over a
+    // finished result to no one's benefit.
     const refined = await apiPost<{ tailored: TailorResult; remaining: number | null }>(
       "/api/tailor",
       { ...payload, analysis: analyzed.data.analysis },

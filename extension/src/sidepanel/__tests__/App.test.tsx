@@ -1430,7 +1430,7 @@ describe("App - account bar, sign-out, and session handling", () => {
     clerkState = { signedIn: true, email: "ada@example.com" };
     await setResume(STORED_RESUME);
     await putLiveRun(JD_B.url, {
-      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: JD_B.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -1469,6 +1469,9 @@ describe("App - account bar, sign-out, and session handling", () => {
         remaining: null,
         rescoredScore: null,
         refining: false,
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_B.title,
@@ -2363,7 +2366,7 @@ describe("App - quota-first account bar", () => {
     // A run is in flight for this posting, and the panel has read it.
     await act(async () => {
       await putLiveRun(JD_A.url, {
-        state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+        state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
         jdTitle: JD_A.title,
         updatedAt: Date.now(),
         resumeFingerprint: RESUME_FP,
@@ -2860,7 +2863,7 @@ describe("App - runs owned by the background", () => {
 
   it("shows a run already in flight when the panel opens", async () => {
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2879,7 +2882,7 @@ describe("App - runs owned by the background", () => {
     await renderApp();
 
     await putLiveRun(JD_A.url, {
-      state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, rescoredScore: null, refining: false, error: null },
+      state: { phase: "done", analysis: ANALYSIS, tailored: TAILORED, remaining: 4, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2904,7 +2907,7 @@ describe("App - runs owned by the background", () => {
     await setResume(STORED_RESUME);
     await renderApp();
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: "Staff MLE",
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -2928,6 +2931,9 @@ describe("App - runs owned by the background", () => {
         remaining: null,
         rescoredScore: null,
         refining: false,
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: "Staff MLE",
@@ -2960,6 +2966,9 @@ describe("App - runs owned by the background", () => {
               remaining: null,
               rescoredScore: null,
               refining: false,
+              streamingScore: null,
+              streamingRows: [],
+              streamingResume: null,
               error: null,
             },
             jdTitle: JD_A.title,
@@ -3012,6 +3021,9 @@ describe("App - runs owned by the background", () => {
         remaining: null,
         rescoredScore: null,
         refining: false,
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_A.title,
@@ -3046,6 +3058,9 @@ describe("App - runs owned by the background", () => {
         remaining: null,
         rescoredScore: null,
         refining: false,
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
         error: { kind: "server", message: "That run stopped before it finished. Try again." },
       },
       jdTitle: JD_A.title,
@@ -3207,7 +3222,7 @@ describe("App - runs owned by the background", () => {
     // first read report the error and the test would pass with no poll at
     // all — the read on open is not the read this pins.
     await putLiveRun(JD_A.url, {
-      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+      state: { phase: "comparing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: JD_A.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -3246,7 +3261,7 @@ describe("App - runs owned by the background", () => {
     await setResume(STORED_RESUME);
     await putCachedRun(JD_A.url, cachedRun(60, "", "run-a-cached"));
     await putLiveRun(JD_B.url, {
-      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, error: null },
+      state: { phase: "writing", analysis: null, tailored: null, remaining: null, rescoredScore: null, refining: false, streamingScore: null, streamingRows: [], streamingResume: null, error: null },
       jdTitle: JD_B.title,
       updatedAt: Date.now(),
       resumeFingerprint: RESUME_FP,
@@ -3289,6 +3304,9 @@ describe("App - runs owned by the background", () => {
         remaining: null,
         rescoredScore: null,
         refining: false,
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
         error: { kind: "quota", message: "You've used all your free runs." },
       },
       jdTitle: JD_B.title,

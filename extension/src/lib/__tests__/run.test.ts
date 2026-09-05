@@ -22,9 +22,50 @@ const JD: ExtractedJD = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status });
 
+const encoder = new TextEncoder();
+
+function stream(frames: string[]): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+}
+
+/**
+ * What /api/analyze and /api/tailor answer now: text deltas, then the same
+ * body the buffered call would have returned, then [DONE].
+ */
+const sse = (final: unknown, deltas: string[] = []) =>
+  stream([
+    ...deltas.map((d) => `data: ${JSON.stringify({ d })}\n\n`),
+    `data: ${JSON.stringify({ final })}\n\n`,
+    "data: [DONE]\n\n",
+  ]);
+
+/** A stream that stops mid-JSON: deltas, then the socket closes. */
+const brokenSse = (deltas: string[]) =>
+  stream(deltas.map((d) => `data: ${JSON.stringify({ d })}\n\n`));
+
 function collect() {
   const patches: Partial<RunState>[] = [];
   return { patches, onUpdate: (p: Partial<RunState>) => patches.push(p) };
+}
+
+const bodyOf = (call: unknown[]) => JSON.parse(String((call[1] as RequestInit).body));
+
+/**
+ * Every delta opens the throttle window. The 500ms floor is real behaviour
+ * (see the throttle test below), but a test that wants to watch the paint
+ * progress has to let each delta through.
+ */
+function everyDeltaPaints() {
+  let clock = 100_000;
+  vi.spyOn(Date, "now").mockImplementation(() => (clock += 600));
 }
 
 function fakeChromeStorage() {
@@ -55,9 +96,11 @@ describe("runTailor", () => {
 
   it("sends the SAME runId to analyze and tailor", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).endsWith("/api/parse-jd")) return json({ jd: { company: "Acme" } });
-      if (String(url).endsWith("/api/analyze")) return json({ analysis: { overall_match_score: 70 }, remaining: 4 });
-      return json({ tailored: { projected_match_score: 85 }, remaining: 4 });
+      if (String(url).endsWith("/api/analyze"))
+        return sse({ analysis: { overall_match_score: 70 }, remaining: 4 });
+      if (String(url).endsWith("/api/tailor"))
+        return sse({ tailored: { projected_match_score: 85 }, remaining: 4 });
+      return json({ score: 80 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -65,10 +108,7 @@ describe("runTailor", () => {
     await runTailor(JD, RESUME, onUpdate);
 
     const byUrl = new Map(
-      fetchMock.mock.calls.map((c) => [
-        String(c[0]),
-        JSON.parse(String((c[1] as RequestInit).body)),
-      ]),
+      fetchMock.mock.calls.map((c) => [String(c[0]), bodyOf(c)]),
     );
     const analyzeBody = [...byUrl].find(([u]) => u.endsWith("/api/analyze"))?.[1];
     const tailorBody = [...byUrl].find(([u]) => u.endsWith("/api/tailor"))?.[1];
@@ -84,9 +124,9 @@ describe("runTailor", () => {
       vi.fn(async (url: string, init: RequestInit) => {
         const body = JSON.parse(String(init.body));
         if (body.runId) seen.push(body.runId);
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 3 });
-        return json({ tailored: {}, remaining: 3 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 3 });
+        if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 3 });
+        return json({ score: 70 });
       }),
     );
     await runTailor(JD, RESUME, () => {});
@@ -94,14 +134,57 @@ describe("runTailor", () => {
     expect(new Set(seen).size).toBe(2);
   });
 
+  // The serial parse hop is gone: the posting text the content script already
+  // extracted goes straight to both model legs. A reinstated /api/parse-jd
+  // would put a 3-8s round trip back in front of every run's first paint.
+  it("never calls /api/parse-jd, and sends the raw jdText to every leg", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor"))
+        return sse({ tailored: { resume: { summary: "v1" } }, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {});
+
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("parse-jd"))).toBe(false);
+    // analyze, tailor, rescore — and every one of them carries the JD as text.
+    expect(urls).toHaveLength(3);
+    for (const call of fetchMock.mock.calls) {
+      const body = bodyOf(call);
+      expect(body.jdText).toBe(JD.text);
+      expect(body.structuredJD).toBeUndefined();
+    }
+  });
+
+  it("asks the two model legs to stream, and the rescore leg not to", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {});
+
+    const streamFlag = (path: string) =>
+      bodyOf(fetchMock.mock.calls.find((c) => String(c[0]).endsWith(path))!).stream;
+    expect(streamFlag("/api/analyze")).toBe(true);
+    expect(streamFlag("/api/tailor")).toBe(true);
+    // Nothing renders a rescore in progress — it is one number, published once.
+    expect(streamFlag("/api/rescore")).toBeUndefined();
+  });
+
   it("reports analysis before the tailored result", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: { overall_match_score: 61 }, remaining: 2 });
+        if (String(url).endsWith("/api/analyze"))
+          return sse({ analysis: { overall_match_score: 61 }, remaining: 2 });
         if (String(url).endsWith("/api/rescore")) return json({ score: 83 });
-        return json({ tailored: { projected_match_score: 80 }, remaining: 2 });
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 2 });
       }),
     );
     const { patches, onUpdate } = collect();
@@ -119,34 +202,22 @@ describe("runTailor", () => {
   it("surfaces a quota error and stops", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        return json({ error: "You've used all your free runs." }, 402);
-      }),
+      vi.fn(async () => json({ error: "You've used all your free runs." }, 402)),
     );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const { patches, onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
     expect(patches.at(-1)?.phase).toBe("error");
     expect(patches.at(-1)?.error?.kind).toBe("quota");
   });
 
-  it("stops at a parse-jd failure without calling analyze", async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => json({ error: "bad jd" }, 422));
-    vi.stubGlobal("fetch", fetchMock);
-    const { patches, onUpdate } = collect();
-    await runTailor(JD, RESUME, onUpdate);
-    expect(patches.at(-1)?.phase).toBe("error");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
   it("reports the lower remaining when the two legs disagree", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 2 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 2 });
         if (String(url).endsWith("/api/rescore")) return json({ score: 77 });
-        return json({ tailored: {}, remaining: 3 });
+        return sse({ tailored: {}, remaining: 3 });
       }),
     );
     const { patches, onUpdate } = collect();
@@ -158,16 +229,15 @@ describe("runTailor", () => {
 
   it("reuses a supplied runId instead of minting one", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).includes("parse-jd")) return json({ jd: {} });
-      return json({ analysis: {}, tailored: {}, remaining: 4 });
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+      return json({ score: 80 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
     await runTailor(JD, RESUME, () => {}, { runId: "reused-id" });
 
-    const ids = fetchMock.mock.calls
-      .filter((c) => !String(c[0]).includes("parse-jd"))
-      .map((c) => JSON.parse(String((c[1] as RequestInit).body)).runId);
+    const ids = fetchMock.mock.calls.map((c) => bodyOf(c).runId);
     // Three legs by default: analyze, tailor, rescore. Every one of them
     // carries the SAME id — not incidental: the server's marker gate refuses a
     // runId it has never seen charged, so a rescore sent under a fresh id
@@ -177,8 +247,9 @@ describe("runTailor", () => {
 
   it("sends the supplement to both analyze and tailor", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).includes("parse-jd")) return json({ jd: {} });
-      return json({ analysis: {}, tailored: {}, remaining: 4 });
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+      return json({ score: 80 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -186,7 +257,7 @@ describe("runTailor", () => {
 
     const sent = fetchMock.mock.calls
       .filter((c) => /api\/(analyze|tailor)$/.test(String(c[0])))
-      .map((c) => JSON.parse(String((c[1] as RequestInit).body)).extraInfo);
+      .map((c) => bodyOf(c).extraInfo);
     // analyze and tailor — the two legs a default run makes. Neither may drop
     // the supplement, or the tailored resume would lose the experience the
     // user typed in and score worse for it.
@@ -195,29 +266,34 @@ describe("runTailor", () => {
     // ...and NOT to rescore, deliberately. Rescore measures the TAILORED
     // resume, which has already absorbed the supplement; re-declaring the same
     // facts as "experience not on the resume" would count them twice.
-    const rescoreBody = JSON.parse(
-      String(
-        (fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/api/rescore"))?.[1] as RequestInit)
-          .body,
-      ),
+    const rescoreBody = bodyOf(
+      fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/api/rescore"))!,
     );
     expect(rescoreBody.extraInfo).toBeUndefined();
   });
 
-  // Pins the high-risk requirement from the brief: EVERY apiPost call —
-  // parse-jd, analyze, tailor, rescore, and (when the gated auto-refine leg
-  // runs) its tailor/rescore pair — must carry the run token, not just the two
-  // that happen to run in
-  // parallel. Dropping any one of them sends that leg as a device caller with
-  // nothing visibly wrong in the UI, and for rescore specifically the symptom
-  // is a 403 from the marker gate (the run was charged to the user, so no
-  // marker exists under the device key).
+  // Pins the high-risk requirement from the brief: EVERY call — analyze,
+  // tailor, rescore, and (when the gated auto-refine leg runs) its
+  // tailor/rescore pair — must carry the run token, not just the two that
+  // happen to run in parallel. Dropping any one of them sends that leg as a
+  // device caller with nothing visibly wrong in the UI, and for rescore
+  // specifically the symptom is a 403 from the marker gate (the run was
+  // charged to the user, so no marker exists under the device key). The
+  // streamed legs are no exception: apiStream travels through the same
+  // identity fork apiPost does.
   it("sends the runToken as the bearer identity on every leg", async () => {
+    let tailorCalls = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-      if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
-      if (String(url).endsWith("/api/rescore")) return json({ score: 81 });
-      return json({ tailored: {}, remaining: 4 });
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor")) {
+        tailorCalls += 1;
+        // The auto-refine leg is buffered, not streamed — see the leg's own
+        // tests below.
+        return tailorCalls === 1
+          ? sse({ tailored: {}, remaining: 4 })
+          : json({ tailored: {}, remaining: 4 });
+      }
+      return json({ score: 81 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -231,16 +307,256 @@ describe("runTailor", () => {
     };
 
     await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz" });
-    // The default run: parse-jd, analyze, tailor, rescore.
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // The default run: analyze, tailor, rescore. The parse hop is gone.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     bearersAreSet();
 
     // ...and the gated auto-refine pair, which is where this is easiest to
     // forget, since those two calls are made from a different block.
     fetchMock.mockClear();
+    tailorCalls = 0;
     await runTailor(JD, RESUME, () => {}, { runToken: "run-token-xyz", autoRefine: true });
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     bearersAreSet();
+  });
+
+  // ---------------------------------------------------------------- streaming
+  //
+  // Presentation only. Everything below may make first paint arrive sooner;
+  // nothing below may decide whether the run succeeds. The buffered fallback
+  // test is the load-bearing one.
+
+  it("paints the score, then the matrix rows, before the analysis itself lands", async () => {
+    everyDeltaPaints();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze"))
+          return sse(
+            {
+              analysis: { overall_match_score: 71, requirements_matrix: [] },
+              remaining: 4,
+            },
+            [
+              '{"overall_match_score": 71, "rationale": "Solid",',
+              ' "requirements_matrix": [{"requirement":"Go","kind":"must_have",' +
+                '"status":"met","evidence":"e","suggestion":""},',
+              '{"requirement":"K8s","kind":"nice","status":"partial",' +
+                '"evidence":"","suggestion":"s"}]}',
+            ],
+          );
+        if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+        return json({ score: 80 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    const scoreAt = patches.findIndex((p) => p.streamingScore === 71);
+    const analysisAt = patches.findIndex((p) => "analysis" in p && p.analysis);
+    expect(scoreAt).toBeGreaterThanOrEqual(0);
+    // The point of the whole change: a number on screen before the model has
+    // finished writing the matrix behind it.
+    expect(analysisAt).toBeGreaterThan(scoreAt);
+
+    // Rows arrive one at a time and only ever grow.
+    const rowCounts = patches
+      .filter((p) => p.streamingRows !== undefined && p.streamingRows.length > 0)
+      .map((p) => p.streamingRows!.length);
+    expect(rowCounts).toEqual([1, 2]);
+    // Coerced with the server's own semantics, so a row does not change when
+    // the final frame replaces it: "nice"/"partial" are not raw enum values.
+    const lastRows = patches.filter((p) => p.streamingRows?.length === 2).at(-1)!.streamingRows!;
+    expect(lastRows[1]).toEqual({
+      requirement: "K8s",
+      kind: "nice_to_have",
+      status: "partially_met",
+      evidence: "",
+      suggestion: "s",
+    });
+  });
+
+  it("paints the tailored summary and experience as they arrive", async () => {
+    everyDeltaPaints();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/tailor"))
+          return sse({ tailored: { resume: { summary: "Backend engineer." } }, remaining: 4 }, [
+            '{"resume": {"summary": "Backend engineer.",',
+            ' "experience": [{"company":"Acme","title":"SRE","dates":"2020",' +
+              '"bullets":["Ran Go services"]}',
+            "]}}",
+          ]);
+        return json({ score: 80 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    const previews = patches
+      .map((p) => p.streamingResume)
+      .filter((r): r is NonNullable<typeof r> => !!r);
+    expect(previews[0].summary).toBe("Backend engineer.");
+    expect(previews.at(-1)?.experience).toEqual([
+      { company: "Acme", title: "SRE", dates: "2020", bullets: ["Ran Go services"] },
+    ]);
+    // A preview, not a result: the sections the stream has not reached are
+    // empty rather than invented.
+    expect(previews.at(-1)?.contact.name).toBe("");
+    expect(previews.at(-1)?.skills).toEqual([]);
+  });
+
+  // Terminal patches describe terminal state completely — App.tsx resets state
+  // on a JD URL change, so a done patch that left these set would strand a
+  // half-written preview beside a finished result.
+  it("clears every streaming field in the done patch", async () => {
+    everyDeltaPaints();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze"))
+          return sse({ analysis: { overall_match_score: 71 }, remaining: 4 }, [
+            '{"overall_match_score": 71,',
+          ]);
+        if (String(url).endsWith("/api/tailor"))
+          return sse({ tailored: { resume: { summary: "s" } }, remaining: 4 }, [
+            '{"resume":{"summary":"s",',
+          ]);
+        return json({ score: 80 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // The preview really was published, so the clearing below is not vacuous.
+    expect(patches.some((p) => p.streamingScore === 71)).toBe(true);
+    const done = patches.find((p) => p.phase === "done")!;
+    expect(done).toMatchObject({
+      streamingScore: null,
+      streamingRows: [],
+      streamingResume: null,
+    });
+  });
+
+  it("clears every streaming field in the error patch too", async () => {
+    everyDeltaPaints();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url, init) => {
+        const streamed = JSON.parse(String(init?.body)).stream === true;
+        if (String(url).endsWith("/api/analyze")) {
+          // The stream paints, then the leg fails — and the buffered fallback
+          // fails too, so the run really does end in error.
+          return streamed
+            ? brokenSse(['{"overall_match_score": 44,'])
+            : json({ error: "Analysis failed: upstream down" }, 502);
+        }
+        if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+        return json({ score: 80 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(patches.some((p) => p.streamingScore === 44)).toBe(true);
+    const errorPatch = patches.at(-1)!;
+    expect(errorPatch.phase).toBe("error");
+    expect(errorPatch).toMatchObject({
+      streamingScore: null,
+      streamingRows: [],
+      streamingResume: null,
+    });
+    // The copy is the buffered path's, prefix and all — the streamed error
+    // frame carries a bare message and never reaches the user.
+    expect(errorPatch.error?.message).toBe("Analysis failed: upstream down");
+  });
+
+  // THE rule for this whole change: streaming may only make a result arrive
+  // sooner. A stream that dies takes the leg back to the buffered request the
+  // product shipped with, under the SAME runId so the server dedupes the
+  // charge, and the user sees a completed run.
+  it("falls back to one buffered request when a stream breaks, and still completes", async () => {
+    everyDeltaPaints();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const streamed = JSON.parse(String(init?.body)).stream === true;
+      if (String(url).endsWith("/api/analyze")) {
+        return streamed
+          ? brokenSse(['{"overall_match_score": 64,'])
+          : json({ analysis: { overall_match_score: 64 }, remaining: 4 });
+      }
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: { resume: {} }, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    const analyzeCalls = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/analyze"));
+    // Exactly one retry, and it is the buffered shape.
+    expect(analyzeCalls).toHaveLength(2);
+    expect(bodyOf(analyzeCalls[1]).stream).toBeUndefined();
+    // Same runId on both, or the server would charge the leg twice.
+    expect(bodyOf(analyzeCalls[1]).runId).toBe(bodyOf(analyzeCalls[0]).runId);
+    // The leg that did NOT break is not retried.
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/tailor"))).toHaveLength(1);
+
+    expect(patches.some((p) => p.phase === "error")).toBe(false);
+    const done = patches.find((p) => p.phase === "done")!;
+    expect(done.analysis).toEqual({ overall_match_score: 64 });
+  });
+
+  it("does not retry a leg whose stream succeeded", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runTailor(JD, RESUME, () => {});
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // Each patch is a chrome.storage write in the service worker (see
+  // background/runs.ts), and a model emits tokens far faster than storage can
+  // absorb writes. The floor is what keeps a streamed run from flooding it.
+  it("publishes at most one streaming patch per 500ms window", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(500_000); // one frozen window
+    const deltas = ['{"overall_match_score": 70, "requirements_matrix": ['];
+    for (let i = 0; i < 50; i++) {
+      deltas.push(
+        `{"requirement":"r${i}","kind":"must_have","status":"met","evidence":"","suggestion":""},`,
+      );
+    }
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze"))
+          return sse({ analysis: { overall_match_score: 70 }, remaining: 4 }, deltas);
+        if (String(url).endsWith("/api/tailor")) return sse({ tailored: {}, remaining: 4 });
+        return json({ score: 80 });
+      }),
+    );
+
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // 51 deltas, one window: one paint. (The reading and done patches also
+    // carry these fields — as nulls — so count only the ones with a value.)
+    const painted = patches.filter(
+      (p) => p.streamingScore != null || (p.streamingRows?.length ?? 0) > 0,
+    );
+    expect(painted).toHaveLength(1);
   });
 
   // ------------------------------------------------------------------ rescore
@@ -256,13 +572,12 @@ describe("runTailor", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
         if (String(url).endsWith("/api/rescore")) {
           order.push("rescore-request");
           return json({ score: 88 });
         }
-        return json({ tailored: { projected_match_score: 80 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
       }),
     );
 
@@ -281,35 +596,36 @@ describe("runTailor", () => {
   it("sends the TAILORED resume to rescore, not the original", async () => {
     const tailoredResume = { contact: { name: "Ada (tailored)" }, summary: "rewritten" };
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      if (String(url).endsWith("/api/parse-jd")) return json({ jd: { company: "Acme" } });
-      if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
       if (String(url).endsWith("/api/rescore")) return json({ score: 88 });
-      return json({ tailored: { resume: tailoredResume, projected_match_score: 80 }, remaining: 4 });
+      return sse({
+        tailored: { resume: tailoredResume, projected_match_score: 80 },
+        remaining: 4,
+      });
     });
     vi.stubGlobal("fetch", fetchMock);
 
     await runTailor(JD, RESUME, () => {});
 
-    const body = JSON.parse(
-      String(
-        (fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/api/rescore"))?.[1] as RequestInit)
-          .body,
-      ),
+    const body = bodyOf(
+      fetchMock.mock.calls.find((c) => String(c[0]).endsWith("/api/rescore"))!,
     );
     // Measuring the ORIGINAL here would produce a second, more expensive copy
     // of the number already on the left and render "72 → 72" on every run.
     expect(body.structuredResume).toEqual(tailoredResume);
-    expect(body.structuredJD).toEqual({ company: "Acme" });
+    // The same JD the other two legs measured against, in the only form this
+    // run has: the raw posting. A rescore against a different JD is not the
+    // same ruler.
+    expect(body.jdText).toBe(JD.text);
   });
 
   it("publishes the rescored score with the phase still done", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
         if (String(url).endsWith("/api/rescore")) return json({ score: 88 });
-        return json({ tailored: { projected_match_score: 80 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
       }),
     );
     const { patches, onUpdate } = collect();
@@ -329,10 +645,9 @@ describe("runTailor", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
         if (String(url).endsWith("/api/rescore")) return json({ error: "Unknown run." }, 403);
-        return json({ tailored: { projected_match_score: 80 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
       }),
     );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -355,10 +670,9 @@ describe("runTailor", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
         if (String(url).endsWith("/api/rescore")) return json({ score: "88" });
-        return json({ tailored: { projected_match_score: 80 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
       }),
     );
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -381,12 +695,20 @@ describe("runTailor", () => {
   it("clears a previous run's rescored score when a new run starts", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn<typeof fetch>(async () => json({ jd: {} })),
+      vi.fn<typeof fetch>(async () => json({ error: "nope" }, 500)),
     );
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { patches, onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
-    expect(patches[0]).toMatchObject({ phase: "reading", rescoredScore: null });
+    expect(patches[0]).toMatchObject({
+      phase: "reading",
+      rescoredScore: null,
+      // Same rule, same patch: a regenerate must not leave the previous run's
+      // half-written preview on screen either.
+      streamingScore: null,
+      streamingRows: [],
+      streamingResume: null,
+    });
   });
 
   // The run above also exercises it, but state it directly: a tailor response
@@ -397,9 +719,12 @@ describe("runTailor", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
-        if (String(url).endsWith("/api/parse-jd")) return json({ jd: {} });
-        if (String(url).endsWith("/api/analyze")) return json({ analysis: {}, remaining: 4 });
-        return json({ tailored: null, remaining: 4 });
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/tailor")) return sse({ tailored: null, remaining: 4 });
+        // What the server answers when the rescore leg is handed the resume
+        // that was not in that body: a 400, which must warn and change
+        // nothing else.
+        return json({ error: "Missing structuredResume." }, 400);
       }),
     );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -426,6 +751,11 @@ describe("runTailor", () => {
   // blind-judged document quality but not the measured score, while spending
   // the runId's second free leg and doubling per-IP quota use. The tests below
   // keep the leg's own behavior pinned so the gated path still works.
+  //
+  // It is also BUFFERED. Nothing renders it: the panel shows the finished
+  // result and a hint that a better one may replace it, so streaming its
+  // tokens would buy nothing and would put a second live preview on a screen
+  // that is already showing a completed run.
 
   // The shipped default, pinned directly: no flag, no tail. A regression here
   // is not cosmetic — it silently spends the free leg the user's own refine
@@ -437,12 +767,11 @@ describe("runTailor", () => {
       "fetch",
       vi.fn<typeof fetch>(async (url) => {
         const u = String(url);
-        if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
         if (u.endsWith("/api/analyze"))
-          return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+          return sse({ analysis: { overall_match_score: 60 }, remaining: 4 });
         if (u.endsWith("/api/tailor")) {
           tailorCalls += 1;
-          return json({
+          return sse({
             tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } },
             remaining: 4,
           });
@@ -473,18 +802,22 @@ describe("runTailor", () => {
     let rescoreCalls = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const u = String(url);
-      if (u.endsWith("/api/parse-jd")) return json({ jd: { company: "Acme" } });
       if (u.endsWith("/api/analyze"))
-        return json({ analysis: { overall_match_score: 60, requirements_matrix: [] }, remaining: 4 });
+        return sse({
+          analysis: { overall_match_score: 60, requirements_matrix: [] },
+          remaining: 4,
+        });
       if (u.endsWith("/api/tailor")) {
         tailorCalls += 1;
         tailorBodies.push(JSON.parse(String(init?.body)));
         // The refine leg's read is LOWER than the done patch's: the charge for
         // this run committed after the first two reads answered.
-        return json({
+        const body = {
           tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } },
           remaining: tailorCalls === 1 ? 4 : 3,
-        });
+        };
+        // First leg streams; the refine leg is a plain buffered POST.
+        return tailorCalls === 1 ? sse(body) : json(body);
       }
       // /api/rescore: first measurement 65, refined measurement 72
       rescoreCalls += 1;
@@ -500,6 +833,9 @@ describe("runTailor", () => {
     // The refine tailor call carries the analysis; the first one does not.
     expect(tailorBodies[0].analysis).toBeUndefined();
     expect(tailorBodies[1].analysis).toEqual({ overall_match_score: 60, requirements_matrix: [] });
+    // ...and asks for a buffered response, unlike the first.
+    expect(tailorBodies[0].stream).toBe(true);
+    expect(tailorBodies[1].stream).toBeUndefined();
     // Refined result adopted with its measured score.
     const final = patches[patches.length - 1];
     expect(final.tailored).toMatchObject({ resume: { summary: "v2" } });
@@ -519,12 +855,15 @@ describe("runTailor", () => {
     let tailorCalls = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       const u = String(url);
-      if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
       if (u.endsWith("/api/analyze"))
-        return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+        return sse({ analysis: { overall_match_score: 60 }, remaining: 4 });
       if (u.endsWith("/api/tailor")) {
         tailorCalls += 1;
-        return json({ tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } }, remaining: 4 });
+        const body = {
+          tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } },
+          remaining: 4,
+        };
+        return tailorCalls === 1 ? sse(body) : json(body);
       }
       rescoreCalls += 1;
       return json({ score: rescoreCalls === 1 ? 65 : 58 });
@@ -547,12 +886,11 @@ describe("runTailor", () => {
     const tailorBodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const u = String(url);
-      if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
       if (u.endsWith("/api/analyze"))
-        return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+        return sse({ analysis: { overall_match_score: 60 }, remaining: 4 });
       if (u.endsWith("/api/tailor")) {
         tailorBodies.push(JSON.parse(String(init?.body)));
-        return json({ tailored: { projected_match_score: 70 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 70 }, remaining: 4 });
       }
       return json({ score: 66 });
     });
@@ -578,12 +916,11 @@ describe("runTailor", () => {
     const tailorBodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const u = String(url);
-      if (u.endsWith("/api/parse-jd")) return json({ jd: {} });
       if (u.endsWith("/api/analyze"))
-        return json({ analysis: { overall_match_score: 60 }, remaining: 4 });
+        return sse({ analysis: { overall_match_score: 60 }, remaining: 4 });
       if (u.endsWith("/api/tailor")) {
         tailorBodies.push(JSON.parse(String(init?.body)));
-        return json({ tailored: { projected_match_score: 70 }, remaining: 4 });
+        return sse({ tailored: { projected_match_score: 70 }, remaining: 4 });
       }
       return json({ score: 66 });
     });

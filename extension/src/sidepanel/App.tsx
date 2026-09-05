@@ -361,6 +361,11 @@ export default function App() {
           // A restored result is finished by definition: whatever auto-refine
           // it had ran to completion before it was cached.
           refining: false,
+          // Nothing is streaming into a result that was read back off disk.
+          // These are live-run presentation only and are never cached.
+          streamingScore: null,
+          streamingRows: [],
+          streamingResume: null,
           // Not cached: it is a live server-side count, and a stale one must
           // never be presented as the current allowance. Null here means
           // "this read knows nothing about the count" — the display falls

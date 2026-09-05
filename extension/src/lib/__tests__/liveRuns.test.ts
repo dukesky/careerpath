@@ -18,6 +18,9 @@ const RUNNING: RunState = {
   remaining: null,
   rescoredScore: null,
   refining: false,
+  streamingScore: null,
+  streamingRows: [],
+  streamingResume: null,
   error: null,
 };
 

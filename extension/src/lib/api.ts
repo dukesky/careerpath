@@ -49,6 +49,99 @@ async function toFailure<T>(res: Response): Promise<ApiResult<T>> {
 }
 
 /**
+ * How a successful response's body becomes a result.
+ *
+ * `send` owns identity, the 401 fork and status-code mapping; the ONLY thing
+ * that differs between a buffered call and a streamed one is this last step,
+ * so it is a parameter rather than a second copy of `send`. Everything above
+ * it — including the device-token refresh-and-retry, which re-issues the whole
+ * request — therefore behaves identically for both.
+ */
+type Consume<T> = (res: Response) => Promise<ApiResult<T>>;
+
+async function readJson<T>(res: Response): Promise<ApiResult<T>> {
+  try {
+    return { ok: true, data: (await res.json()) as T };
+  } catch {
+    return { ok: false, kind: "server", message: GENERIC_ERROR };
+  }
+}
+
+/**
+ * Reads an SSE body, handing each `d` delta to `onDelta` and resolving with the
+ * `final` frame's payload — which is byte-identical to the buffered response
+ * body for the same request.
+ *
+ * Frame contract (src/lib/sse.ts, verbatim):
+ *   data: {"d":"<text delta>"}   repeated
+ *   data: {"final":<body>}
+ *   data: [DONE]
+ * and, on failure, data: {"error":"<bare message>"} with no [DONE].
+ *
+ * NO retry of any kind lives here. A stream that ends without a final frame is
+ * a plain failure, and what to do about it — for this product, one buffered
+ * attempt at the same leg — is the caller's decision, because only the caller
+ * knows whether the leg is worth spending again. See run.ts.
+ */
+async function readStream<T>(
+  res: Response,
+  onDelta: (chunk: string) => void,
+): Promise<ApiResult<T>> {
+  if (!res.body) return { ok: false, kind: "server", message: GENERIC_ERROR };
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let final: T | undefined;
+  let haveFinal = false;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // A frame is only a frame once its blank line has arrived. Chunk
+      // boundaries fall wherever the transport likes, so anything after the
+      // last "\n\n" stays in the buffer for the next read.
+      let split: number;
+      while ((split = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+        if (!frame.startsWith("data: ")) continue;
+        const payload = frame.slice(6);
+        if (payload === "[DONE]") continue;
+
+        let parsed: { d?: unknown; final?: T; error?: unknown };
+        try {
+          parsed = JSON.parse(payload);
+        } catch {
+          // One unreadable frame must not cost us the final frame behind it.
+          continue;
+        }
+        if (typeof parsed.d === "string") onDelta(parsed.d);
+        else if (parsed.final !== undefined) {
+          final = parsed.final;
+          haveFinal = true;
+        } else if (typeof parsed.error === "string" && parsed.error) {
+          // The message is the server's, bare — it is not wrapped here because
+          // the caller decides how a streamed failure is surfaced, if at all.
+          return { ok: false, kind: "server", message: parsed.error };
+        }
+      }
+    }
+  } catch {
+    // The socket died mid-stream. Network, not server: nothing answered.
+    return { ok: false, kind: "network", message: "Couldn't reach career-path." };
+  }
+
+  if (!haveFinal) {
+    return { ok: false, kind: "server", message: "The result never finished arriving." };
+  }
+  return { ok: true, data: final as T };
+}
+
+/**
  * One request, carrying whichever identity currently applies.
  *
  * Before anything is sent: if `currentAuthToken` could not establish an
@@ -86,6 +179,7 @@ async function send<T>(
   init: RequestInit,
   allowRefresh = true,
   overrideToken?: string,
+  consume: Consume<T> = readJson,
 ): Promise<ApiResult<T>> {
   // An explicit token means the caller already settled identity and this
   // request must travel under it. The service worker uses this: it has no
@@ -145,16 +239,12 @@ async function send<T>(
 
   if (res.status === 401 && allowRefresh) {
     const refreshed = await ensureToken(true);
-    if (refreshed) return send<T>(path, init, false, overrideToken);
+    if (refreshed) return send<T>(path, init, false, overrideToken, consume);
   }
 
   if (!res.ok) return toFailure<T>(res);
 
-  try {
-    return { ok: true, data: (await res.json()) as T };
-  } catch {
-    return { ok: false, kind: "server", message: GENERIC_ERROR };
-  }
+  return consume(res);
 }
 
 /**
@@ -182,6 +272,39 @@ export function apiPost<T>(
     },
     true,
     overrideToken,
+  );
+}
+
+/**
+ * A POST whose response is read as a stream of deltas instead of one body.
+ *
+ * Identity, the 401 fork, and status-code mapping are `send`'s, unchanged: a
+ * streamed leg spends the same quota as a buffered one and must travel under
+ * the same caller. `overrideToken` behaves exactly as it does on apiPost.
+ *
+ * The result type is the SAME `T` the buffered call returns, because the final
+ * frame carries the buffered body verbatim — which is what lets a caller fall
+ * back to `apiPost` for the same leg without a second shape to handle.
+ *
+ * `onDelta` is presentation. It is called with raw model text, in order, and
+ * may be called zero times for a successful result.
+ */
+export function apiStream<T>(
+  path: string,
+  body: unknown,
+  onDelta: (chunk: string) => void,
+  overrideToken?: string,
+): Promise<ApiResult<T>> {
+  return send<T>(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    true,
+    overrideToken,
+    (res) => readStream<T>(res, onDelta),
   );
 }
 

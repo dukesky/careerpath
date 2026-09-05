@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { apiPost, apiPostForm, apiGet } from "@/lib/api";
+import { apiPost, apiPostForm, apiGet, apiStream } from "@/lib/api";
 import { setToken, getToken, setBetaCode } from "@/lib/storage";
 import { setClerkTokenSource } from "@/lib/session";
 import * as tokenLib from "@/lib/token";
@@ -331,6 +331,221 @@ describe("api client", () => {
 
       const init = fetchMock.mock.calls[0][1] as RequestInit;
       expect((init.headers as Record<string, string>).Authorization).toBe("Bearer ");
+    });
+  });
+
+  // ------------------------------------------------------------- apiStream
+  //
+  // Same identity, same error mapping, different way of reading the body. The
+  // frame contract is src/lib/sse.ts's, verbatim:
+  //   data: {"d":"…"}  ×n, data: {"final":<buffered body>}, data: [DONE]
+  // and a failure emits data: {"error":"…"} with no [DONE].
+  describe("apiStream", () => {
+    /** A streaming Response whose body arrives in the given chunks. */
+    const sse = (chunks: string[], status = 200) => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        status,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    };
+
+    const frames = (...payloads: string[]) => payloads.map((p) => `data: ${p}\n\n`);
+
+    it("delivers every delta in order and resolves with the final payload", async () => {
+      await setToken("t1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () =>
+          sse(
+            frames(
+              '{"d":"{\\"overall_"}',
+              '{"d":"match_score\\": 71}"}',
+              '{"final":{"analysis":{"overall_match_score":71},"remaining":3}}',
+              "[DONE]",
+            ),
+          ),
+        ),
+      );
+
+      const deltas: string[] = [];
+      const res = await apiStream<{ analysis: unknown; remaining: number }>(
+        "/api/analyze",
+        { stream: true },
+        (d) => deltas.push(d),
+      );
+
+      expect(deltas).toEqual(['{"overall_', 'match_score": 71}']);
+      expect(res).toEqual({
+        ok: true,
+        data: { analysis: { overall_match_score: 71 }, remaining: 3 },
+      });
+    });
+
+    // The transport splits wherever it likes; a frame is only a frame once its
+    // blank line has arrived. Reassembling across reads is the one piece of
+    // this parser that a naive per-chunk implementation gets wrong, and the
+    // symptom would be silently dropped deltas rather than a failure.
+    it("reassembles a frame split across two reads", async () => {
+      await setToken("t1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () =>
+          sse([
+            'data: {"d":"half ',
+            'a frame"}\n\ndata: {"final":{"ok":1}}\n',
+            "\ndata: [DONE]\n\n",
+          ]),
+        ),
+      );
+
+      const deltas: string[] = [];
+      const res = await apiStream<{ ok: number }>("/api/analyze", {}, (d) => deltas.push(d));
+
+      expect(deltas).toEqual(["half a frame"]);
+      expect(res).toEqual({ ok: true, data: { ok: 1 } });
+    });
+
+    // The server's error frame carries the bare message; callers decide how to
+    // dress it. No retry here — that judgement belongs to the run.
+    it("maps an error frame to a server failure carrying its message", async () => {
+      await setToken("t1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () =>
+          sse(frames('{"d":"partial"}', '{"error":"model timed out"}')),
+        ),
+      );
+
+      const res = await apiStream("/api/analyze", {}, () => {});
+
+      expect(res).toEqual({ ok: false, kind: "server", message: "model timed out" });
+    });
+
+    // A stream that stops mid-JSON is the case the run's buffered fallback
+    // exists for: it must come back as a failure, never as a half-result.
+    it("fails when the stream ends without a final frame", async () => {
+      await setToken("t1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () => sse(frames('{"d":"half an ana"}'))),
+      );
+
+      const res = await apiStream("/api/analyze", {}, () => {});
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.kind).toBe("server");
+    });
+
+    it("fails when the connection drops mid-stream", async () => {
+      await setToken("t1");
+      const encoder = new TextEncoder();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(
+          async () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(encoder.encode('data: {"d":"x"}\n\n'));
+                  controller.error(new Error("connection reset"));
+                },
+              }),
+              { status: 200 },
+            ),
+        ),
+      );
+
+      const res = await apiStream("/api/analyze", {}, () => {});
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.kind).toBe("network");
+    });
+
+    // Status codes are still status codes: the gates all run before the first
+    // frame, so a refusal arrives as JSON and must classify exactly as it does
+    // for apiPost — the panel's quota copy depends on the kind.
+    it("classifies a pre-stream refusal the same way apiPost does", async () => {
+      await setToken("t1");
+      vi.stubGlobal("fetch", vi.fn(async () => json({ error: "out of runs" }, 402)));
+
+      const onDelta = vi.fn();
+      const res = await apiStream("/api/analyze", {}, onDelta);
+
+      expect(res).toMatchObject({ ok: false, kind: "quota", message: "out of runs" });
+      expect(onDelta).not.toHaveBeenCalled();
+    });
+
+    it("classifies a thrown fetch as a network error", async () => {
+      await setToken("t1");
+      vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+
+      const res = await apiStream("/api/analyze", {}, () => {});
+
+      expect(res).toMatchObject({ ok: false, kind: "network" });
+    });
+
+    // The whole identity fork lives in `send`, and a streaming leg spends the
+    // same quota as a buffered one — so it has to travel under the same
+    // identity. A stream that bypassed it would bill the run to the device
+    // bucket while the panel showed the user their daily allowance.
+    it("carries the run token as the bearer identity", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () =>
+        sse(frames('{"final":{"ok":1}}', "[DONE]")),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await apiStream("/api/analyze", { a: 1 }, () => {}, "run-token-xyz");
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect((init.headers as Record<string, string>).Authorization).toBe(
+        "Bearer run-token-xyz",
+      );
+      expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+        "application/json",
+      );
+      expect(init.body).toBe(JSON.stringify({ a: 1 }));
+    });
+
+    it("never refreshes to a device token when the run token is rejected", async () => {
+      await setToken("device-token");
+      const fetchMock = vi.fn<typeof fetch>(async () => json({ error: "expired" }, 401));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await apiStream("/api/analyze", {}, () => {}, "run-token-xyz");
+
+      expect(res).toMatchObject({ ok: false, kind: "session_expired" });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A frame this client cannot read is dropped, not fatal: the stream is a
+    // presentation channel, and one unreadable delta must not cost the run the
+    // final frame that follows it.
+    it("skips malformed frames rather than abandoning the stream", async () => {
+      await setToken("t1");
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async () =>
+          sse([
+            "event: ping\n\n",
+            "data: {not json}\n\n",
+            ...frames('{"d":"ok"}', '{"final":{"ok":1}}', "[DONE]"),
+          ]),
+        ),
+      );
+
+      const deltas: string[] = [];
+      const res = await apiStream<{ ok: number }>("/api/analyze", {}, (d) => deltas.push(d));
+
+      expect(deltas).toEqual(["ok"]);
+      expect(res).toEqual({ ok: true, data: { ok: 1 } });
     });
   });
 });

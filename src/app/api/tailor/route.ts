@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { callLLM } from "@/lib/llm";
+import { callLLM, streamLLM, stripCodeFences } from "@/lib/llm";
+import { sseResponse, drainDeltas } from "@/lib/sse";
 import { normalizeResume } from "@/lib/resume";
 import { normalizeJD } from "@/lib/jd";
 import {
@@ -63,6 +64,7 @@ export async function POST(request: Request) {
     analysis?: unknown;
     quality?: unknown;
     includeSummary?: unknown;
+    stream?: unknown;
     runId?: unknown;
   };
   try {
@@ -93,17 +95,64 @@ export async function POST(request: Request) {
   const includeSummary = body.includeSummary !== false; // default true
   const runId = readRunId(body);
 
+  // Built once and shared by both branches — including the optional analysis —
+  // so streaming sends the model the same prompt the buffered path would have.
+  const messages = buildTailorMessages(resume, jd, extraInfo, includeSummary, analysis);
+  // The 2026-09-04 bench saw tailored resumes reach 5057 tokens with no
+  // truncation; a longer resume closes that gap the way analyze's did, so keep
+  // ~2x headroom over the worst case. Mirrored in evaluator/bench.
+  const maxTokens = 12000;
+
+  /**
+   * Charges the run and reports what's left, exactly once per request.
+   *
+   * A quota-store outage must not discard a completed tailor, so it degrades to
+   * `null` — same posture as /api/quota and llm-stats: degrade, don't block.
+   * Beta callers don't consume quota and report unlimited (`null`) too.
+   */
+  const charge = async (): Promise<number | null> => {
+    if (beta) return null;
+    try {
+      const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
+      return after.remaining;
+    } catch {
+      return null;
+    }
+  };
+
+  // Opt-in streaming. Every gate above has already run; from here the only
+  // difference from the buffered branch is how the result reaches the client.
+  if (body.stream === true) {
+    return sseResponse(async (send) => {
+      const full = await drainDeltas(
+        streamLLM({ task: "tailor", quality, messages, maxTokens }),
+        (delta) => send({ d: delta }),
+      );
+
+      let tailored;
+      try {
+        tailored = normalizeTailorResult(JSON.parse(stripCodeFences(full)));
+      } catch {
+        // The streamed text won't parse. Don't re-stream — hand it to the
+        // buffered call, whose own single retry is the product's existing
+        // posture for exactly this. The client sees only the final frame.
+        tailored = normalizeTailorResult(
+          await callLLM({ task: "tailor", json: true, quality, messages, maxTokens }),
+        );
+      }
+
+      send({ final: { tailored, remaining: await charge() } });
+    });
+  }
+
   let tailored;
   try {
     const parsed = await callLLM({
       task: "tailor",
       json: true,
       quality,
-      messages: buildTailorMessages(resume, jd, extraInfo, includeSummary, analysis),
-      // The 2026-09-04 bench saw tailored resumes reach 5057 tokens with no
-      // truncation; a longer resume closes that gap the way analyze's did, so
-      // keep ~2x headroom over the worst case. Mirrored in evaluator/bench.
-      maxTokens: 12000,
+      messages,
+      maxTokens,
     });
     tailored = normalizeTailorResult(parsed);
   } catch (err) {
@@ -111,17 +160,5 @@ export async function POST(request: Request) {
     return bad(`Tailoring failed: ${detail}`, 502);
   }
 
-  // Beta users don't consume quota; report unlimited (remaining: null).
-  if (beta) {
-    return NextResponse.json({ tailored, remaining: null });
-  }
-
-  // A quota-store outage must not discard a completed tailor. Same posture as
-  // /api/quota and llm-stats: degrade, don't block.
-  try {
-    const after = await consumeRun(caller, ip, runId || crypto.randomUUID());
-    return NextResponse.json({ tailored, remaining: after.remaining });
-  } catch {
-    return NextResponse.json({ tailored, remaining: null });
-  }
+  return NextResponse.json({ tailored, remaining: await charge() });
 }

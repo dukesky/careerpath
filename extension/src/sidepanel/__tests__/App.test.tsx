@@ -784,6 +784,62 @@ describe("App - cross-posting state", () => {
     expect(score()).toBe("72 → 79 match");
   });
 
+  // The free auto-refine tail is a 40-60 second window in which the run reads
+  // `done` — download button, change log, score card, all live — while two
+  // more model calls are still in flight under its runId. A click on the
+  // primary button in that window starts a run the panel cannot make free
+  // (the cache entry is not written until the tail settles, so a fresh
+  // CHARGED id is minted), drops the supplement the displayed result was
+  // generated with, and leaves the finishing run's cache write to land on top
+  // of the new run's live state. `busy` therefore has to include `refining`
+  // even though the phase is terminal.
+  it("keeps the regenerate buttons closed while the free refine leg is still in flight", async () => {
+    await setResume(STORED_RESUME);
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    let finishRefine: (() => void) | null = null;
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      // Exactly run.ts's sequence: `done` first, then the tail's own
+      // `refining: true`, and only later the closing patch.
+      onUpdate({
+        phase: "done",
+        analysis: analysisFixture(72),
+        tailored: tailoredFixture(82),
+        remaining: 3,
+      });
+      onUpdate({ rescoredScore: 79 });
+      onUpdate({ refining: true });
+      await new Promise<void>((resolve) => {
+        finishRefine = () => {
+          onUpdate({ refining: false });
+          resolve();
+        };
+      });
+    };
+
+    await act(async () => {
+      findButton(container, "Tailor my resume").click();
+    });
+    await flush();
+
+    // The result really is on screen and complete — this is not a
+    // still-running phase in disguise.
+    expect(container.querySelector(".score")?.textContent).toBe("72 → 79 match");
+    const primary = container.querySelector("button.primary") as HTMLButtonElement;
+    expect(primary.disabled).toBe(true);
+
+    await act(async () => {
+      finishRefine?.();
+    });
+    await flush();
+
+    // And it reopens the moment the tail settles — this must not become a
+    // button that stays dead after a completed run.
+    expect((container.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(false);
+    expect(findButton(container, "Tailor again")).toBeTruthy();
+  });
+
   // The honesty rule, stated as a test so nobody "fixes" it with a max().
   // A rescore below the baseline is displayed as it is. A number invented to
   // look like progress is worse than one that shows none.

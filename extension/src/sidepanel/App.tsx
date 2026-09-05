@@ -524,7 +524,16 @@ export default function App() {
   // more: a run in flight is a fact about storage, and the button reads it
   // the same way a newly opened panel does. `starting` covers only the gap
   // before the background has published anything.
-  const busy = starting || isRunning(state);
+  //
+  // `state.refining` counts as busy even though the phase is already `done`.
+  // During the free auto-refine tail two model calls are still in flight under
+  // the finished run's id, and starting a new run in that window does three
+  // things at once: it mints a fresh, CHARGED runId (the cache entry that
+  // would have made it free is not written until the tail settles), it drops
+  // the supplement the displayed result was generated with, and it leaves the
+  // old run's terminal cache-write to land on top of the new run's live state.
+  // The window is 40-60 seconds wide, so it is reachable by an ordinary click.
+  const busy = starting || isRunning(state) || state.refining;
   const canRun = Boolean(jd && stored) && !busy && !saving;
 
   // Below the other effects only because it reads `busy`, which is derived

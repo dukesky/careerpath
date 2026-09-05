@@ -39,6 +39,10 @@ const ALL_MET: GapAnalysis = {
 const CEILING_NOTE =
   "All 2 must-have requirements are already met — the score is near its honest ceiling for this role.";
 
+/** The same note for a JD with a single must-have, which reads in the singular. */
+const CEILING_NOTE_ONE =
+  "All 1 must-have requirement is already met — the score is near its honest ceiling for this role.";
+
 const TAILORED: TailorResult = { resume: RESUME, change_log: [], projected_match_score: 70 };
 
 /**
@@ -143,6 +147,23 @@ describe("Results - uplift wiring", () => {
       state: { ...INITIAL_RUN_STATE, phase: "done", analysis: ALL_MET, tailored: TAILORED },
     });
     expect(container.textContent).toContain(CEILING_NOTE);
+  });
+
+  // A one-must-have JD is common (a single hard credential or language), and
+  // the plural read as a bug in the panel rather than as English.
+  it("says it in the singular when the JD has exactly one must-have", async () => {
+    await renderResults({
+      state: {
+        ...INITIAL_RUN_STATE,
+        phase: "done",
+        analysis: {
+          ...ALL_MET,
+          requirements_matrix: [ALL_MET.requirements_matrix[0], ALL_MET.requirements_matrix[2]],
+        },
+        tailored: TAILORED,
+      },
+    });
+    expect(container.textContent).toContain(CEILING_NOTE_ONE);
   });
 
   it("stays silent when a must-have is still short, or when there are none at all", async () => {

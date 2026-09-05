@@ -142,8 +142,9 @@ export function Results({
               the rewrite exists. */}
           {state.phase === "done" && tailored && !state.refining && atCeiling && (
             <p className="muted tiny">
-              All {mustHaves.length} must-have requirements are already met — the
-              score is near its honest ceiling for this role.
+              All {mustHaves.length} must-have requirement
+              {mustHaves.length === 1 ? " is" : "s are"} already met — the score
+              is near its honest ceiling for this role.
             </p>
           )}
           {analysis.rationale && <p className="muted">{analysis.rationale}</p>}

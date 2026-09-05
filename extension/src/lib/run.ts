@@ -183,6 +183,17 @@ export async function runTailor(
   const tailored = await tailorCall;
   if (!tailored.ok) return fail(tailored.kind, tailored.message);
 
+  // Exactly one leg charges; the other's read may land before that charge
+  // commits, so it can come back one too high. Show the lower of the two so
+  // the count the user sees never jumps back up. Kept in a variable because
+  // the auto-refine leg below refreshes it the same defensive way.
+  const knownRemaining =
+    analyzed.data.remaining === null
+      ? tailored.data.remaining
+      : tailored.data.remaining === null
+        ? analyzed.data.remaining
+        : Math.min(analyzed.data.remaining, tailored.data.remaining);
+
   onUpdate({
     phase: "done",
     // Terminal patches describe terminal state completely rather than
@@ -197,15 +208,7 @@ export async function runTailor(
     // Same principle: the auto-refine leg has not started, so say so rather
     // than letting a reset leave a stale `true` beside a finished run.
     refining: false,
-    // Exactly one leg charges; the other's read may land before that charge
-    // commits, so it can come back one too high. Show the lower of the two so
-    // the count the user sees never jumps back up.
-    remaining:
-      analyzed.data.remaining === null
-        ? tailored.data.remaining
-        : tailored.data.remaining === null
-          ? analyzed.data.remaining
-          : Math.min(analyzed.data.remaining, tailored.data.remaining),
+    remaining: knownRemaining,
   });
 
   // The same ruler, applied to the rewritten resume. Everything above has
@@ -313,6 +316,19 @@ export async function runTailor(
     // unmeasured projection.
     if (refinedScore !== null && refinedScore >= (firstScore ?? -1)) {
       adopted = { tailored: refined.data.tailored, rescoredScore: refinedScore };
+      // This leg is free, so its read normally REPEATS the count the done
+      // patch published — but it is also the freshest read of the quota, and
+      // a charge committing after the done patch's reads (or a run started
+      // elsewhere) leaves that count one too high. Min-ed rather than
+      // assigned, for the same reason the done patch mins its two reads: the
+      // number the user is watching must never jump back up. A null read
+      // means "not reported", so it changes nothing.
+      if (refined.data.remaining !== null) {
+        adopted.remaining =
+          knownRemaining === null
+            ? refined.data.remaining
+            : Math.min(knownRemaining, refined.data.remaining);
+      }
     }
   } catch (err) {
     console.warn(
@@ -324,7 +340,8 @@ export async function runTailor(
   } finally {
     // Unconditional: every path out of the block above — adopted, discarded,
     // failed, or thrown — has to clear the hint it turned on. The
-    // `priorAnalysis` early return is before the `true`, so it needs nothing.
+    // `priorAnalysis || isRefinement` early return above is before the `true`,
+    // so it needs nothing.
     onUpdate({ ...adopted, refining: false });
   }
 }

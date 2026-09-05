@@ -281,6 +281,39 @@ describe("startRun", () => {
     expect(runTailorOpts.at(-1)?.isRefinement).toBe(false);
   });
 
+  // The dangerous shape, pinned because it is REACHABLE, not because it is
+  // wrong: a supplement with no cached prior run is a CHARGED run. It happens
+  // whenever the user types into the box before any result exists for the
+  // posting, and — until the panel started treating the free auto-refine tail
+  // as busy — whenever they answered the question cards during that tail,
+  // whose cache entry is not written until it settles. `isRefinement` must be
+  // false and `priorAnalysis` absent here: there is no earlier leg for this
+  // id, so the auto-refine tail is this run's free second leg and the tailor
+  // call has no previous matrix to aim at. A future change that reused an id
+  // it did not find, or set the flag off the supplement alone, would send the
+  // server a refinement of a run that never happened.
+  it("mints a fresh charged run id for a supplement with no cached prior run", async () => {
+    runTailorImpl = async () => {};
+
+    await startRun({ ...msg(), supplement: "I also led migrations." });
+
+    const first = runTailorOpts.at(-1);
+    expect(first?.extraInfo).toBe("I also led migrations.");
+    expect(first?.runId).toBeTruthy();
+    expect(first?.isRefinement).toBe(false);
+    expect(first?.priorAnalysis).toBeUndefined();
+
+    // Freshly MINTED rather than reused: the same shape on another posting
+    // gets a different id, which a reuse path could not produce.
+    await startRun({
+      ...msg(),
+      jd: { ...JD, url: "https://example.com/jobs/2" },
+      supplement: "I also led migrations.",
+    });
+    expect(runTailorOpts.at(-1)?.runId).toBeTruthy();
+    expect(runTailorOpts.at(-1)?.runId).not.toBe(first?.runId);
+  });
+
   // Re-measuring the baseline is what made the panel show the score DROPPING
   // after a user added experience. The stored one carries forward unchanged.
   it("carries the stored baseline forward instead of re-measuring", async () => {

@@ -329,10 +329,13 @@ describe("runTailor", () => {
     expect(scorePatch).toEqual({ rescoredScore: 88 });
     // The auto-refine leg's closing patch follows it, and is equally
     // phase-free. Here the refined rewrite measures 88 again — not worse — so
-    // it is adopted alongside the flag that closes the leg.
+    // it is adopted alongside the flag that closes the leg, and with the
+    // refine call's own quota read (the same 4 the done patch published, since
+    // the free leg does not charge).
     expect(patches.at(-1)).toEqual({
       tailored: { projected_match_score: 80 },
       rescoredScore: 88,
+      remaining: 4,
       refining: false,
     });
     expect(patches.at(-1)?.phase).toBeUndefined();
@@ -446,7 +449,12 @@ describe("runTailor", () => {
       if (u.endsWith("/api/tailor")) {
         tailorCalls += 1;
         tailorBodies.push(JSON.parse(String(init?.body)));
-        return json({ tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } }, remaining: 4 });
+        // The refine leg's read is LOWER than the done patch's: the charge for
+        // this run committed after the first two reads answered.
+        return json({
+          tailored: { projected_match_score: 70, resume: { summary: `v${tailorCalls}` } },
+          remaining: tailorCalls === 1 ? 4 : 3,
+        });
       }
       // /api/rescore: first measurement 65, refined measurement 72
       rescoreCalls += 1;
@@ -466,6 +474,11 @@ describe("runTailor", () => {
     const final = patches[patches.length - 1];
     expect(final.tailored).toMatchObject({ resume: { summary: "v2" } });
     expect(final.rescoredScore).toBe(72);
+    // The refine leg's own quota read is published with the adoption rather
+    // than discarded — it is the freshest count there is, and the done patch's
+    // 4 was taken before this run's charge committed. Min-ed, so it can only
+    // go down.
+    expect(patches.filter((p) => p.remaining !== undefined).at(-1)?.remaining).toBe(3);
     // refining toggled on then off around the refine leg.
     expect(patches.some((p) => p.refining === true)).toBe(true);
     expect(patches[patches.length - 1].refining).toBe(false);

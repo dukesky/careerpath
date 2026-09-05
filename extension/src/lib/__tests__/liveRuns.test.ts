@@ -112,6 +112,42 @@ describe("liveRuns", () => {
     expect((await getLiveRun(URL_A))?.state.error?.kind).toBe("quota");
   });
 
+  // The refine tail is the one flag a terminal record can be stranded with:
+  // the worker publishes `done` + `refining: true`, then dies (browser quit,
+  // extension reload) before the leg that would clear it. Nothing else ever
+  // clears it, and the panel's busy gate counts `refining`, so the posting
+  // would say "Working…" forever with no in-panel way out.
+  it("clears a refine tail stranded past STALE_RUN_MS", async () => {
+    const doneRefining: RunState = { ...RUNNING, phase: "done", refining: true, rescoredScore: 71 };
+    await putLiveRun(URL_A, {
+      state: doneRefining,
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now() - STALE_RUN_MS - 1,
+      resumeFingerprint: FP,
+    });
+
+    const got = await getLiveRun(URL_A);
+    expect(got?.state.refining).toBe(false);
+    // The run itself finished and its result is valid — only the flag is stale.
+    expect(got?.state.phase).toBe("done");
+    expect(got?.state.error).toBeNull();
+    expect(got?.state.rescoredScore).toBe(71);
+    expect(got?.jdTitle).toBe("Staff MLE");
+  });
+
+  // The tail legitimately takes 40-60s, so a young one is a live refine, not
+  // a stranded one, and must be left to finish.
+  it("leaves a refine tail younger than STALE_RUN_MS alone", async () => {
+    await putLiveRun(URL_A, {
+      state: { ...RUNNING, phase: "done", refining: true },
+      jdTitle: "Staff MLE",
+      updatedAt: Date.now() - 1000,
+      resumeFingerprint: FP,
+    });
+
+    expect((await getLiveRun(URL_A))?.state.refining).toBe(true);
+  });
+
   it("clears one posting without touching the others", async () => {
     const other = "https://example.com/jobs/2";
     await putLiveRun(URL_A, { state: RUNNING, jdTitle: "A", updatedAt: Date.now(), resumeFingerprint: FP });

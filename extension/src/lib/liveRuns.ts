@@ -134,8 +134,20 @@ async function readAll(): Promise<Record<string, LiveRun>> {
  * the only participant guaranteed to be alive is whoever is reading.
  */
 function withStaleRule(run: LiveRun): LiveRun {
-  if (!isRunning(run.state)) return run;
-  if (Date.now() - run.updatedAt <= STALE_RUN_MS) return run;
+  const abandoned = Date.now() - run.updatedAt > STALE_RUN_MS;
+  if (!isRunning(run.state)) {
+    // The refine tail is the one flag a TERMINAL record can be stranded with.
+    // The worker publishes `done` + `refining: true` and clears it 40-60s
+    // later; die in between (browser quit, extension reload or update) and
+    // nothing ever clears it — clearLiveRun only runs after the tail
+    // completes. The panel's busy gate counts `refining`, so that record
+    // disables the posting forever with no in-panel recovery. Only the flag
+    // is stale here, never the run: it finished and its result is valid, so
+    // this drops `refining` and leaves everything else intact.
+    if (run.state.refining && abandoned) return { ...run, state: { ...run.state, refining: false } };
+    return run;
+  }
+  if (!abandoned) return run;
   return {
     ...run,
     state: {

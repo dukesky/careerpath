@@ -7,10 +7,10 @@ import { callerKey, type Caller } from "./auth";
  * One "run" = one analyze + tailor flow. Both endpoints send the same client-
  * generated runId; the first SUCCESSFUL one charges, the other does not.
  *
- * Reusing that runId again refines the same result for free, up to
- * FREE_REFINES times, so a user can answer a gap the analysis found without
- * paying twice. Free of the caller's tier only — the per-IP ceiling still
- * counts every generate.
+ * Reusing that runId again re-runs the same result for free while the free
+ * window (MAX_FREE_LEGS) holds, so a user can answer a gap the analysis found
+ * without paying twice. Free of the caller's tier only — the per-IP ceiling
+ * still counts every generate.
  *
  * A caller is blocked when EITHER its tier counter OR the per-IP ceiling is
  * exhausted.
@@ -52,24 +52,41 @@ export interface QuotaState {
 const LEGS_PER_GENERATE = 2;
 
 /**
- * How many times a charged generate may be re-run for free.
+ * The number of free refinements MAX_FREE_LEGS is SIZED for — not the number
+ * a run actually gets. Read the arithmetic below before touching it.
  *
  * Refining a posting with supplementary experience must not cost a second
  * unit — but "free" cannot mean "unmetered". Extension code ships publicly
  * and is trivially unpackable, so an unbounded free-ride on a reused runId
  * would let one attacker-chosen id buy uncharged LLM calls until the marker
- * expired. This bound is what keeps that closed.
+ * expired. The bound that keeps that closed is MAX_FREE_LEGS, in LEGS. This
+ * constant only feeds it.
  *
- * What raising it costs, precisely — because the obvious guess is wrong: NOT
+ * WHAT A RUN ACTUALLY GETS. The window is 8 legs wide and the charged generate
+ * spends 2 of them, leaving 6 free. Nothing reserves one of those for the
+ * repair leg, and a run that never repairs — the common case — spends the 6 on
+ * three refine PAIRS. So a no-repair run gets THREE free refinements, one more
+ * than this constant's name suggests, and is worth 4 generates for the price of
+ * one. A run that does repair spends leg 3 on it, gets two full free refines
+ * (legs 4-7), and a third that straddles the edge: its first leg is free (8)
+ * and its second charges (9 — past the window and odd, so the pair rule below
+ * does not wave it through).
+ *
+ * That third refinement is free but not fully served: the rescore route's own
+ * MAX_RESCORES_PER_RUN is 4, so its measurement is refused and the user sees
+ * the tailor model's projection instead of a measured number. The two ceilings
+ * count different units and are deliberately not derived from each other (see
+ * that constant's note), so a change here does not move that one.
+ *
+ * WHAT RAISING IT COSTS, precisely — because the obvious guess is wrong: NOT
  * the per-IP ceiling. The IP counter below fires once per generate for any
  * value of FREE_REFINES, so LLM legs per IP per day stay at
- * 2 * DAILY_IP_LIMIT. What scales is the caller's TIER: a tier of N buys
- * N * (1 + FREE_REFINES) generates. For callers the platform gives no IP for
+ * 2 * DAILY_IP_LIMIT. What scales is the caller's TIER: a tier of N buys up to
+ * 4N generates' worth of LLM work. For callers the platform gives no IP for
  * (see hasIp), the tier is the ONLY bound. Note the routes gate on
  * `exhausted` BEFORE doing the work, and `exhausted` reads the tier counter a
  * refinement does not charge — so the LAST charged run of an allowance gets no
- * refinements at all, and the real worth is
- * N * (1 + FREE_REFINES) - FREE_REFINES generates, not N * (1 + FREE_REFINES).
+ * refinements at all, and the real worth is 4N - 3 generates, not 4N.
  * Closing that would mean letting the routes skip the gate when the marker
  * exists and is below MAX_FREE_LEGS, which is safe because consumeRun enforces
  * the bound regardless — deliberately not done here.
@@ -90,22 +107,29 @@ const FREE_REFINES = 2;
 const REPAIR_LEGS = 1;
 
 /**
- * The free window, in legs: 8.
+ * The free window, in legs: 8. THIS is the security bound — the one number a
+ * reused runId cannot spend past.
  *
- * The worst honest run spends 7 of them —
+ * The expression below reads as "a repairing run's worst case, rounded up to a
+ * pair":
  *   generate            2 (analyze + tailor)
  * + repair              1 (tailor only)
  * + 2 free refines      4 (analyze + tailor each)
  *   ------------------------------------------
- *                       7
+ *                       7, rounded to 8
  *
- * — so 8 leaves exactly one leg of slack. The slack is not generosity, it is
- * the parity rule below stated honestly: legs are charged in PAIRS, and at an
- * odd bound of 7 the eighth leg would be the second half of a pair, which
- * `seen > MAX_FREE_LEGS && !isFirstLegOfGenerate` waves through uncharged
- * anyway. A bound of 7 and a bound of 8 are the same window; 8 is the one that
- * says so. Raising this beyond an even count past the arithmetic above is what
- * would actually widen the free ride.
+ * The rounding is the parity rule below stated honestly: legs are charged in
+ * PAIRS, and at an odd bound of 7 the eighth leg would be the second half of a
+ * pair, which `seen > MAX_FREE_LEGS && !isFirstLegOfGenerate` waves through
+ * uncharged anyway. A bound of 7 and a bound of 8 are the same window for that
+ * run.
+ *
+ * They are NOT the same window for a run that never repairs, and that is the
+ * common case. Nothing holds leg 3 in reserve for a repair that never comes:
+ * the run simply spends legs 3-8 on three refine pairs, so the eighth leg is
+ * not slack, it is the second half of a THIRD free refinement. See FREE_REFINES
+ * above for what that is worth per tier. Raising this past an even count widens
+ * the free ride by a whole refinement each time, not by a leg.
  */
 const MAX_FREE_LEGS = LEGS_PER_GENERATE * (1 + FREE_REFINES) + REPAIR_LEGS + 1;
 

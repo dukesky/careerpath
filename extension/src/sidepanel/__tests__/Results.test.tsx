@@ -224,6 +224,28 @@ describe("Results - uplift wiring", () => {
     expect(container.textContent).toContain("Improving the rewrite against the gaps…");
   });
 
+  // The two notes are both true and cannot stand together. "The rewrite reads
+  // weaker on X — try the question cards" asks the user to do something;
+  // "the score is near its honest ceiling" tells them there is nothing left
+  // to do. Printed one under the other, the ceiling line reads as the panel
+  // withdrawing the ask it just made. The downgrade owns this slot: it is the
+  // one that has a way forward attached.
+  it("drops the ceiling note under a downgrade, whose CTA it would undercut", async () => {
+    await renderResults({
+      state: {
+        ...INITIAL_RUN_STATE,
+        phase: "done",
+        analysis: ALL_MET,
+        tailored: TAILORED,
+        rescoredScore: 55,
+        scoreNote: "downgraded",
+        downgradedRequirements: ["Terraform"],
+      },
+    });
+    expect(container.textContent).toContain("The rewrite reads weaker on:");
+    expect(container.textContent).not.toContain("honest ceiling");
+  });
+
   it("hides the cards before the rewrite exists", async () => {
     await renderResults({
       state: { ...INITIAL_RUN_STATE, phase: "comparing", analysis: ANALYSIS, tailored: null },
@@ -320,18 +342,20 @@ describe("Results - score floor display", () => {
     );
   });
 
-  // "downgraded": the ONE display allowed to go down. It gets the ordinary
-  // arrow, because the drop is real and measured, and it gets a way forward —
-  // the question cards below it are what actually raises the number back.
-  it("shows the lower number honestly, names the row, and points at the cards", async () => {
+  // "downgraded": the ONE display allowed to go down. The number is shown as
+  // measured — but NOT in success green. `.after` is the improvement colour,
+  // and a drop wearing it reads as a win at a glance, which is the opposite of
+  // what the sentence underneath says. Neutral lets the number and its note
+  // agree; the way forward is the question cards, not the colour.
+  it("shows the lower number honestly in a neutral arrow, names the row, and points at the cards", async () => {
     await renderScore({
       rescoredScore: 55,
       scoreNote: "downgraded",
       downgradedRequirements: ["Kubernetes"],
     });
     expect(container.querySelector(".score")?.textContent).toBe("60 → 55 match");
-    expect(container.querySelector(".score .after")).toBeTruthy();
-    expect(container.querySelector(".score .after-neutral")).toBeNull();
+    expect(container.querySelector(".score .after-neutral")).toBeTruthy();
+    expect(container.querySelector(".score .after")).toBeNull();
     expect(container.textContent).toContain(
       'The rewrite reads weaker on: "Kubernetes". Try the question cards below — real detail there raises it back.',
     );

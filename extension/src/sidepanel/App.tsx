@@ -338,6 +338,15 @@ export default function App() {
           // number back to the tailor model's projection for a result that had
           // already been measured properly.
           rescoredScore: failedOverAResult.rescoredScore ?? null,
+          // Same entry, same reason as the number above, and the same reason
+          // the `hit` branch below restores them: the note and the number are
+          // one statement. The failed run's own note is null, so without this
+          // a held score ("maintained", "nice_dip") comes back as a bare green
+          // number — an improvement claim nothing measured, with the sentence
+          // that made it honest dropped. Absent on older entries and on runs
+          // that needed no note, which restore bare exactly as they always did.
+          scoreNote: failedOverAResult.scoreNote ?? null,
+          downgradedRequirements: failedOverAResult.downgradedRequirements ?? [],
         });
         setGeneratedAt(failedOverAResult.generatedAt);
         setAppliedSupplement(failedOverAResult.extraInfo);

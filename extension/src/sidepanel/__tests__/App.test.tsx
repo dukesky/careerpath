@@ -3051,6 +3051,51 @@ describe("App - runs owned by the background", () => {
     );
   });
 
+  // The failover restore above rebuilds the displayed state field by field,
+  // so every field the score card reads has to be on that list. `scoreNote`
+  // is the one that makes a HELD number honest: without it a "maintained"
+  // entry comes back as a bare green number claiming an improvement that was
+  // never measured, and the sentence explaining why it held is silently gone
+  // — only after a failed retry, which is exactly when the user is least able
+  // to tell the difference.
+  it("keeps a restored result's score note when a later run for it failed", async () => {
+    await setResume(STORED_RESUME);
+    await putCachedRun(JD_A.url, {
+      ...cachedRun(60, "", "run-a-cached"),
+      rescoredScore: 60,
+      scoreNote: "maintained",
+      downgradedRequirements: [],
+    });
+    await putLiveRun(JD_A.url, {
+      state: {
+        phase: "error",
+        analysis: null,
+        tailored: null,
+        remaining: null,
+        rescoredScore: null,
+        refining: false,
+        scoreNote: null,
+        downgradedRequirements: [],
+        streamingScore: null,
+        streamingRows: [],
+        streamingResume: null,
+        error: { kind: "server", message: "That run stopped before it finished. Try again." },
+      },
+      jdTitle: JD_A.title,
+      updatedAt: Date.now(),
+      resumeFingerprint: RESUME_FP,
+    });
+    activeJdState = { jd: JD_A, failure: null, loading: false };
+    await renderApp();
+
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 60 match");
+    expect(container.querySelector(".score .after-neutral")).toBeTruthy();
+    expect(container.querySelector(".score .after")).toBeNull();
+    expect(container.textContent).toContain(
+      "Re-measured within the ruler's precision — every requirement holds; presentation improved.",
+    );
+  });
+
   // Guarantee #6 from the inventory — "a result produced from a different
   // resume is neither displayed nor its run id reused" — which held on the
   // cache path (getCachedRun checks provenance) and not on the live path

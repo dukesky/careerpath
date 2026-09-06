@@ -227,21 +227,17 @@ export function Results({
                 // not an event worth animating, and flagging it would invite
                 // the user to distrust the first value.
                 //
-                // The colour is the note's, not the number's. A held number
-                // ("maintained", "nice_dip") was never measured higher — run.ts
-                // pinned it to the left score — so green would claim an
-                // improvement nothing observed. Green stays for the two cases
-                // that earned it: a real measured number (note null) and the
-                // honest drop ("downgraded"), which is not an improvement but
-                // IS the measurement, and dressing it in grey would hide that
-                // it moved at all.
-                <span
-                  className={
-                    scoreNote === "maintained" || scoreNote === "nice_dip"
-                      ? "after-neutral"
-                      : "after"
-                  }
-                >
+                // The colour is the note's, not the number's, and green is
+                // reserved for one case: a measured improvement (note null).
+                // A held number ("maintained", "nice_dip") was never measured
+                // higher — run.ts pinned it to the left score — so green would
+                // claim an improvement nothing observed. A "downgraded" number
+                // is lower than where it started, and success-green on a drop
+                // is read before the sentence under it is: the colour would say
+                // "won" while the words say "reads weaker". Neutral is what
+                // lets the two agree. The drop is not hidden by it — the number
+                // itself is smaller and the note names the row.
+                <span className={scoreNote === null ? "after" : "after-neutral"}>
                   {" "}
                   → {rescoredScore ?? tailored.projected_match_score}
                 </span>
@@ -298,14 +294,26 @@ export function Results({
               gate: while the refine leg is still running the number may yet
               move, so claiming a ceiling then would be a guess. Gated on
               `tailored` too — there is no right-hand number to explain until
-              the rewrite exists. */}
-          {state.phase === "done" && tailored && !state.refining && atCeiling && (
-            <p className="muted tiny">
-              All {mustHaves.length} must-have requirement
-              {mustHaves.length === 1 ? " is" : "s are"} already met — the score
-              is near its honest ceiling for this role.
-            </p>
-          )}
+              the rewrite exists.
+
+              And never under a downgrade. Both sentences can be true at once
+              (every must-have met, and a row that reads weaker on the second
+              pass), but printed together the ceiling line withdraws the ask
+              the line above it just made: "try the question cards" followed by
+              "there is nothing left to gain" leaves the user with no reason to
+              answer them. The downgrade owns the slot because it is the one
+              with a way forward attached. */}
+          {state.phase === "done" &&
+            tailored &&
+            !state.refining &&
+            atCeiling &&
+            scoreNote !== "downgraded" && (
+              <p className="muted tiny">
+                All {mustHaves.length} must-have requirement
+                {mustHaves.length === 1 ? " is" : "s are"} already met — the score
+                is near its honest ceiling for this role.
+              </p>
+            )}
           {/* Says out loud that the number above is a stream's, not a
               measurement's. Without it the card is indistinguishable from a
               finished one that lost its download button, and a number that

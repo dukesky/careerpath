@@ -7,6 +7,58 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-09-06 — Seconds to a score, and a floor under it (extension 0.2.1)
+
+### Changed
+
+- **The match score appears in seconds, not minutes.** The panel used to sit
+  on a progress line for a minute-plus while two long model calls finished.
+  Analysis and rewrite now stream: the score paints in roughly six to nine
+  seconds, requirement rows fill in as they are judged, and the rewritten
+  resume grows section by section, complete and downloadable in about half a
+  minute. Nothing about what gets generated changed — only when you get to
+  see it. (Under the hood the analysis prompt also says the same things more
+  briefly, which is where much of the time went.)
+- **A lower re-measurement is no longer shown bare — and this supersedes
+  0.2.0's "shown as it is" rule, for a reason we can defend.** The
+  re-measurement now returns its full requirement matrix, not just a number.
+  When the number dips but *every requirement status is unchanged*, the dip
+  is measurement noise on an equivalent document, and the panel holds the
+  score you started with, saying so: "Re-measured within the ruler's
+  precision — every requirement holds." That is not flooring; it is refusing
+  to report instrument jitter as if your resume got worse. When a
+  requirement genuinely reads weaker, career-path takes one free second
+  pass at the rewrite, aimed at exactly the rows that slipped — the panel
+  says so and keeps you company with application tips while it works. Only a
+  must-have that survives that second pass is shown as a lower number, named,
+  with a pointer to the question cards that can raise it back. Nothing is
+  invented at any step; every held number is backed by row-level evidence.
+- The waiting moments now show rotating, pre-written application and
+  interview tips instead of a bare progress line.
+- The extension sends the job posting's raw text directly; the separate
+  parsing call that used to gate everything is gone from its path.
+
+### Added
+
+- `POST /api/rescore` now returns the requirement statuses behind its score
+  (`rows`), which is what makes the noise-vs-regression distinction possible.
+- Waiting tips: ~two dozen short, concrete pointers on applying, resumes,
+  interviews, and follow-up, shuffled per session.
+
+### Notes
+
+- Roughly one run in twelve to twenty takes the free second pass; for those,
+  the right-hand number lands about a minute later than usual. The finished
+  resume is never held up by it.
+- The free-refinement allowance widened (8 legs, 4 measurements per run) so
+  the second pass never eats a refinement you were promised.
+- Serving cost per run is down about a third from the shorter analysis
+  output, except on runs that take the second pass.
+- Old caches and the website keep working unchanged; an extension talking to
+  an older server simply behaves like 0.2.0.
+
+---
+
 ## 2026-09-03 — The "after" score is measured, not guessed (extension 0.2.0)
 
 ### Changed

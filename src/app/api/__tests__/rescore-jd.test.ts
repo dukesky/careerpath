@@ -68,7 +68,7 @@ describe("POST /api/rescore — JD input shape", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ score: 81 });
+    expect(await res.json()).toEqual({ score: 81, rows: [] });
     expect(sentUserMessage()).toContain("JOB DESCRIPTION (raw text)");
     expect(sentUserMessage()).toContain("We need Kubernetes and Go.");
   });
@@ -126,6 +126,58 @@ describe("POST /api/rescore — JD input shape", () => {
 
     expect(sentUserMessage()).toContain("x".repeat(MAX_JD_CHARS));
     expect(sentUserMessage()).not.toContain("x".repeat(MAX_JD_CHARS + 1));
+  });
+
+  // The matrix was always computed and then dropped on the floor. The score
+  // floor needs the statuses, so the response carries them — trimmed to the
+  // three fields a comparison reads. evidence/suggestion stay out: they are
+  // prose the panel never shows here, and they are the bulk of the bytes.
+  it("returns the matrix statuses alongside the score", async () => {
+    await generate("rj-rows");
+    vi.mocked(callLLM).mockResolvedValue({
+      overall_match_score: 77,
+      requirements_matrix: [
+        {
+          requirement: "5 years of Go",
+          kind: "must_have",
+          status: "partially_met",
+          evidence: "three years at Acme",
+          suggestion: "name the Go services",
+        },
+        {
+          requirement: "Kubernetes",
+          kind: "nice_to_have",
+          status: "met",
+          evidence: "ran the cluster",
+          suggestion: "",
+        },
+      ],
+    } as never);
+
+    const res = await rescore(
+      post("https://x/api/rescore", { ...resume, jdText: "We need Go.", runId: "rj-rows" }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.score).toBe(77);
+    expect(body.rows).toEqual([
+      { requirement: "5 years of Go", kind: "must_have", status: "partially_met" },
+      { requirement: "Kubernetes", kind: "nice_to_have", status: "met" },
+    ]);
+    // Exactly three keys — a widened row would quietly ship evidence prose.
+    expect(Object.keys(body.rows[0]).sort()).toEqual(["kind", "requirement", "status"]);
+  });
+
+  it("returns an empty rows array when the model returned no matrix", async () => {
+    await generate("rj-norows");
+
+    const res = await rescore(
+      post("https://x/api/rescore", { ...resume, jdText: "We need Go.", runId: "rj-norows" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ score: 81, rows: [] });
   });
 
   it("still rejects a missing resume first", async () => {

@@ -10,6 +10,7 @@ import { callerKey } from "@/lib/auth";
 import { getKV } from "@/lib/kv";
 import { RUN_TTL_SECONDS } from "@/lib/quota";
 import { capText, MAX_JD_CHARS } from "@/lib/limits";
+import type { ReqKind, ReqStatus } from "@shared/contract";
 
 /**
  * Re-score a TAILORED resume with the exact instrument analyze uses.
@@ -175,6 +176,7 @@ export async function POST(request: Request) {
   const quality = body.quality === "fast" ? "fast" : "quality";
 
   let score: number;
+  let rows: { requirement: string; kind: ReqKind; status: ReqStatus }[];
   try {
     const parsed = await callLLM({
       task: "analyze",
@@ -192,15 +194,29 @@ export async function POST(request: Request) {
       // 4000. A tailored long resume produces the same-sized matrix.
       maxTokens: 8000,
     });
-    // The full matrix is computed and thrown away. Only the score is returned:
-    // the panel has nowhere to put a second requirements table, and shipping
-    // one now would fix a response shape nobody has designed a screen for. If
-    // "remaining gaps after the rewrite" ever becomes a feature, widen this.
-    score = normalizeGapAnalysis(parsed).overall_match_score;
+    // The matrix used to be computed and thrown away. It now rides back with
+    // the score, because the score floor needs it: a rewrite that scores the
+    // same overall while flipping a must-have from met to missing is a
+    // regression the number alone cannot show, and the caller compares these
+    // statuses against the ones analyze produced to catch exactly that.
+    //
+    // Only requirement/kind/status travel. evidence and suggestion are prose
+    // no screen renders on this leg and would roughly triple the payload; the
+    // comparison reads none of it. The INSTRUMENT above is untouched — same
+    // messages, same empty extraInfo, same task, same temperature — which is
+    // the whole point of this route. Widening the response is not widening the
+    // ruler.
+    const analysis = normalizeGapAnalysis(parsed);
+    score = analysis.overall_match_score;
+    rows = analysis.requirements_matrix.map(({ requirement, kind, status }) => ({
+      requirement,
+      kind,
+      status,
+    }));
   } catch (err) {
     const detail = err instanceof Error ? err.message : "Unknown error";
     return bad(`Rescoring failed: ${detail}`, 502);
   }
 
-  return NextResponse.json({ score });
+  return NextResponse.json({ score, rows });
 }

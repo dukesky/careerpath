@@ -62,7 +62,8 @@ describe("POST /api/rescore", () => {
     await generate("r1");
     const res = await rescore(post("https://x/api/rescore", inputs("r1")));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ score: 81 });
+    // rows rides along with the score now; this mock has no matrix to report.
+    expect(await res.json()).toEqual({ score: 81, rows: [] });
   });
 
   // "Same instrument" is the entire premise. A cheaper bespoke prompt would

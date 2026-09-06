@@ -54,6 +54,26 @@ export interface CachedRun {
    * number, which is the correct degradation.
    */
   rescoredScore?: number;
+  /**
+   * How the number above should be read — see RunState.scoreNote in lib/run.ts
+   * for what the three values mean.
+   *
+   * OPTIONAL for the same two reasons `rescoredScore` is, and one more: most
+   * runs need no note at all (the measurement landed at or above the analysis
+   * score), and those write nothing here, exactly like a run whose rescore
+   * failed. What makes it worth STORING is that the note and the number are
+   * one statement: "maintained" and "nice_dip" publish a number the rewrite
+   * did not measure at, and an entry that restored the held number without the
+   * note explaining it would show a bare "70 → 70 match" — a claim about the
+   * rewrite with the honesty stripped out of it.
+   */
+  scoreNote?: "maintained" | "nice_dip" | "downgraded";
+  /**
+   * The requirements that rewrite made weaker, must-haves first. Present
+   * exactly when `scoreNote` is "nice_dip" or "downgraded" — a display that
+   * holds a number up, or drops one, has to say which rows it means.
+   */
+  downgradedRequirements?: string[];
 }
 
 interface CacheEntry extends CachedRun {
@@ -172,7 +192,30 @@ export async function getCachedRun(
     // dropped rather than disqualifying the entry — the panel has a real
     // fallback for a missing rescore and none for a missing baseline.
     ...(Number.isFinite(hit.rescoredScore) ? { rescoredScore: hit.rescoredScore } : {}),
+    // The note and its rows are read the same defensive way, and dropped
+    // TOGETHER: they are one statement, so a recognised note beside unreadable
+    // names (or names beside a note the panel cannot render) is not half a
+    // statement worth keeping. A bad value here costs the explanation and
+    // leaves the number bare, which is what an entry from before this field
+    // existed shows anyway — never the whole entry, which the user paid for.
+    ...readNote(hit),
   };
+}
+
+/** The three notes lib/run.ts can publish, as a runtime check. */
+const SCORE_NOTES = ["maintained", "nice_dip", "downgraded"] as const;
+
+function readNote(
+  hit: StoredEntry,
+): Pick<CachedRun, "scoreNote" | "downgradedRequirements"> {
+  const note = SCORE_NOTES.find((n) => n === hit.scoreNote);
+  if (!note) return {};
+  // Absent is the normal shape for "maintained", which names no rows — the
+  // writer omits an empty list exactly as it omits a null rescore. Read it
+  // back as the empty list the panel expects rather than as a missing field.
+  const names = hit.downgradedRequirements ?? [];
+  if (!Array.isArray(names) || names.some((n) => typeof n !== "string")) return {};
+  return { scoreNote: note, downgradedRequirements: names };
 }
 
 /**

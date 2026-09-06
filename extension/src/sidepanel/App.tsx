@@ -358,12 +358,15 @@ export default function App() {
           // projection back on screen, which is exactly what those entries
           // were displayed with when they were generated.
           rescoredScore: hit.rescoredScore ?? null,
-          // Not cached, so a restored result shows its number bare. The note
-          // and the rows it named belong to the run that produced them, and
-          // inventing either from an entry that never carried them would put a
-          // claim about THIS resume under a number read off disk.
-          scoreNote: null,
-          downgradedRequirements: [],
+          // Restored from the entry, exactly like the number it explains: the
+          // two are one statement, and the held scores ("maintained",
+          // "nice_dip") are numbers the rewrite did not measure at, so a
+          // restore that dropped the note would show them bare — a claim about
+          // the rewrite with its honesty removed. Absent on entries written
+          // before the field existed, and on every run that needed no note, so
+          // those restore exactly as they always did: the number, bare.
+          scoreNote: hit.scoreNote ?? null,
+          downgradedRequirements: hit.downgradedRequirements ?? [],
           // A restored result is finished by definition: whatever free second
           // leg it had ran to completion before it was cached.
           refining: false,

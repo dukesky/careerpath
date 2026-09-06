@@ -76,7 +76,38 @@ const LEGS_PER_GENERATE = 2;
  */
 const FREE_REFINES = 2;
 
-const MAX_FREE_LEGS = LEGS_PER_GENERATE * (1 + FREE_REFINES);
+/**
+ * The repair leg: ONE extra tailor, and only a tailor.
+ *
+ * When the client measures its rewrite as having lost a requirement it rewrites
+ * once more against the gap matrix (extension/src/lib/run.ts's repair leg). That
+ * call reuses the runId, so it lands here as an extra leg — an ODD one, since a
+ * generate is a pair and this is a single. It is deliberately not made a
+ * refinement's worth of allowance: the repair fires at most once per charged
+ * generate (`repaired` guards recursion and the auto-refine tail), and a refine
+ * run never repairs at all.
+ */
+const REPAIR_LEGS = 1;
+
+/**
+ * The free window, in legs: 8.
+ *
+ * The worst honest run spends 7 of them —
+ *   generate            2 (analyze + tailor)
+ * + repair              1 (tailor only)
+ * + 2 free refines      4 (analyze + tailor each)
+ *   ------------------------------------------
+ *                       7
+ *
+ * — so 8 leaves exactly one leg of slack. The slack is not generosity, it is
+ * the parity rule below stated honestly: legs are charged in PAIRS, and at an
+ * odd bound of 7 the eighth leg would be the second half of a pair, which
+ * `seen > MAX_FREE_LEGS && !isFirstLegOfGenerate` waves through uncharged
+ * anyway. A bound of 7 and a bound of 8 are the same window; 8 is the one that
+ * says so. Raising this beyond an even count past the arithmetic above is what
+ * would actually widen the free ride.
+ */
+const MAX_FREE_LEGS = LEGS_PER_GENERATE * (1 + FREE_REFINES) + REPAIR_LEGS + 1;
 
 /** UTC calendar day, so a "daily" allowance is well-defined server-side. */
 function dayKey(): string {

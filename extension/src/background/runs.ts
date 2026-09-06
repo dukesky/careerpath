@@ -162,6 +162,15 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           // analysis to hand over, and the auto-refine tail must be off in
           // both cases.
           isRefinement: isRefine,
+          // The posting's frozen "before" number, when this posting has one.
+          // The panel puts it on the LEFT of the arrow (App.tsx reads the same
+          // entry), so a run that holds its right-hand number — "nothing was
+          // lost" — must not hold it below this, or the display contradicts
+          // itself. Read from the cache like `baseline` below, never
+          // re-measured; a fresh posting has none and runTailor falls back to
+          // this run's own analysis score. Undefined rather than `?? null` so
+          // the option is simply absent, which is what RunOptions expects.
+          baselineScore: prior?.baselineScore,
         },
       );
 
@@ -199,6 +208,18 @@ export async function startRun(msg: StartRunMessage): Promise<StartRunResult> {
           // existed, and the panel's own `?? projected_match_score` fallback
           // handles both identically.
           ...(latest.rescoredScore === null ? {} : { rescoredScore: latest.rescoredScore }),
+          // The note travels WITH the number, because it is half of what the
+          // number says: "maintained" and "nice_dip" publish a score the
+          // rewrite did not measure at, and an entry restored without the note
+          // would show that held number bare — the honesty stripped off a
+          // claim the panel keeps making. Same absent-when-empty rule as the
+          // score above, and for the same reason: a run that needed no note
+          // writes an entry indistinguishable from one written before the
+          // field existed, and both restore identically.
+          ...(latest.scoreNote === null ? {} : { scoreNote: latest.scoreNote }),
+          ...(latest.downgradedRequirements.length === 0
+            ? {}
+            : { downgradedRequirements: latest.downgradedRequirements }),
         });
         // Success moves the record from "in flight" to "cached"; a failure
         // deliberately stays put, so returning to the posting shows the error

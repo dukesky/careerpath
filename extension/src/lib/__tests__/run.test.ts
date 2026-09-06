@@ -1418,4 +1418,123 @@ describe("runTailor", () => {
 
     expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
   });
+
+  // --- the frozen baseline as the floor of a HELD number -------------------
+  //
+  // The panel's left-hand number is the posting's frozen baseline, not this
+  // run's analysis: a refine run re-analyses and the instrument answers a few
+  // points lower, but the "before" number the user has been looking at does
+  // not move. A held display ("nothing got worse") that published this run's
+  // lower analysis score would therefore render as a DROP — 70 → 66 — while
+  // asserting in words that nothing was lost. Hold at whichever of the two is
+  // higher.
+
+  /** The analysis a refine run's own analyze leg produced: lower than the baseline. */
+  const RE_ANALYSIS = { ...LEFT_ANALYSIS, overall_match_score: 66 };
+
+  it("holds a maintained display at the frozen baseline, not this run's lower analysis", async () => {
+    const run = runWith([{ score: 62, rows: rescoreRows("met", "met") }], RE_ANALYSIS);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, {
+      runId: "reused-id",
+      isRefinement: true,
+      baselineScore: 70,
+    });
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "maintained",
+      downgradedRequirements: [],
+    });
+  });
+
+  it("holds a nice_dip display at the frozen baseline too", async () => {
+    const run = runWith([{ score: 62, rows: rescoreRows("met", "missing") }], RE_ANALYSIS);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, {
+      runId: "reused-id",
+      isRefinement: true,
+      baselineScore: 70,
+    });
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Kubernetes cluster operations"],
+    });
+  });
+
+  // The floor lifts a HELD number only. A measurement at or above this run's
+  // analysis is a real reading of the rewritten document and is displayed as
+  // measured, even when it sits below the older baseline — the pre-existing
+  // honesty rule, unchanged: a number invented to look like progress is worse
+  // than one that shows none.
+  it("still publishes a measurement above this run's analysis as measured, below baseline or not", async () => {
+    const run = runWith([{ score: 68, rows: rescoreRows("met", "met") }], RE_ANALYSIS);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, {
+      runId: "reused-id",
+      isRefinement: true,
+      baselineScore: 70,
+    });
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 68,
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+  });
+
+  // A fresh run has no frozen baseline, so nothing changes for it.
+  it("holds at the analysis score when no baseline was supplied", async () => {
+    runWith([{ score: 62, rows: rescoreRows("met", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "maintained",
+      downgradedRequirements: [],
+    });
+  });
+
+  // Observability only. A rewrite that measures HIGHER while the matrix says a
+  // must-have got weaker is either a real regression the number hides or a
+  // sign the two instruments disagree — either way it is the shape worth
+  // knowing about, and neither the display nor the budget may change for it.
+  it("warns when the score went up while a must-have got weaker, and displays the measurement anyway", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run = runWith([{ score: 74, rows: rescoreRows("missing", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 74,
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+    const logged = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes("score_up_must_down"));
+    expect(logged).toHaveLength(1);
+    expect(JSON.parse(logged[0])).toMatchObject({
+      evt: "score_up_must_down",
+      rows: ["Go microservices at scale"],
+    });
+  });
+
+  it("stays silent when the score went up with nothing weaker", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    runWith([{ score: 74, rows: rescoreRows("met", "met") }]);
+    await runTailor(JD, RESUME, () => {});
+
+    expect(
+      warn.mock.calls.filter((c) => String(c[0]).includes("score_up_must_down")),
+    ).toHaveLength(0);
+  });
 });

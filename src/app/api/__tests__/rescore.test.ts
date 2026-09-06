@@ -175,16 +175,17 @@ describe("POST /api/rescore", () => {
     expect(vi.mocked(callLLM)).not.toHaveBeenCalled();
   });
 
-  // One generate plus FREE_REFINES refinements is three rescores. The fourth
-  // is a client that re-scored more times than it could have generated.
-  it("caps a single run at three rescores", async () => {
+  // One generate, its repair rewrite, and FREE_REFINES refinements is four
+  // rescores — every rewrite a single charged run can honestly produce. The
+  // fifth is a client that re-scored more times than it could have generated.
+  it("caps a single run at four rescores", async () => {
     await generate("r-cap");
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       expect((await rescore(post("https://x/api/rescore", inputs("r-cap")))).status).toBe(200);
     }
     const res = await rescore(post("https://x/api/rescore", inputs("r-cap")));
     expect(res.status).toBe(429);
-    expect(vi.mocked(callLLM)).toHaveBeenCalledTimes(2 + 3); // generate + 3 rescores
+    expect(vi.mocked(callLLM)).toHaveBeenCalledTimes(2 + 4); // generate + 4 rescores
   });
 
   // Verified against analyze/tailor rather than assumed: both `return` before
@@ -207,7 +208,7 @@ describe("POST /api/rescore", () => {
   it("still caps a beta caller's rescores", async () => {
     process.env.BETA_ACCESS_CODES = "letmein";
     const beta = { "x-access-code": "letmein" };
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       expect(
         (await rescore(post("https://x/api/rescore", inputs("r-beta-cap"), beta))).status,
       ).toBe(200);

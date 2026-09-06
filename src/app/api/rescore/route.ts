@@ -40,19 +40,30 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 /**
- * How many times one runId may be re-scored.
+ * How many times one runId may be re-scored: 4.
  *
- * Deliberately equal to quota.ts's own free-generate allowance: one charged
- * generate plus FREE_REFINES refinements, each producing exactly one rescore.
- * Reaching this bound means a client re-scored more times than it could
- * possibly have generated, which is not a shape the product produces.
+ * One per rewrite the client can honestly produce for a single charged run —
+ *   the charged generate's own rewrite      1
+ * + the repair rewrite, when the first measurement lost a requirement   1
+ * + FREE_REFINES (2) user refinements       2
+ *   ---------------------------------------------
+ *                                           4
+ *
+ * The repair leg is why this is 4 and not 3: a run that loses a requirement
+ * rewrites once against the gap matrix and MEASURES that rewrite (see
+ * extension/src/lib/run.ts). At 3 that measurement was the run's second, and
+ * the user's own second refinement then hit this ceiling and lost its number
+ * — a 429 on the leg the product tells them is free. Reaching 5 still means a
+ * client re-scored more times than it could possibly have generated, which is
+ * not a shape the product produces.
  *
  * It is NOT derived from quota.ts's MAX_FREE_LEGS, on purpose: that constant
- * counts analyze/tailor LEGS (two per generate) and this one counts rescores
- * (one per generate). Importing it and dividing by two would look tidy and
- * would couple this ceiling to a constant whose units are different.
+ * counts analyze/tailor LEGS (a pair per generate, plus the repair's single
+ * tailor) and this one counts rescores (one per rewrite). Importing it and
+ * doing arithmetic on it would look tidy and would couple this ceiling to a
+ * constant whose units are different.
  */
-const MAX_RESCORES_PER_RUN = 3;
+const MAX_RESCORES_PER_RUN = 4;
 
 function bad(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });

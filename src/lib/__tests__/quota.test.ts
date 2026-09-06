@@ -112,21 +112,45 @@ describe("run idempotency", () => {
   // until the marker expired. The window is deliberately bounded, not removed
   // — free refinement is a feature, unmetered refinement is a hole.
   it("charges again once a runId is replayed past the free-refinement window", async () => {
-    // Legs 1-2 are the charged generate; 3-4 and 5-6 are two free refinements.
-    for (let i = 0; i < 6; i++) await consumeRun(user, IP, "refined");
+    // The window is 8 legs: legs 1-2 are the charged generate, leg 3 is the
+    // repair tailor a run spends when its rewrite lost a requirement, legs 4-5
+    // and 6-7 are the two free refinements, and leg 8 is the slack the even
+    // bound leaves (see MAX_FREE_LEGS).
+    for (let i = 0; i < 8; i++) await consumeRun(user, IP, "refined");
     expect((await getQuota(user, IP)).used).toBe(1);
 
-    // Leg 7 opens a charged pair...
+    // Leg 9 opens a charged pair...
     await consumeRun(user, IP, "refined");
     expect((await getQuota(user, IP)).used).toBe(2);
 
-    // ...and leg 8 closes it. A generate past the window must cost ONE unit,
+    // ...and leg 10 closes it. A generate past the window must cost ONE unit,
     // exactly what a fresh runId would cost — not two.
     await consumeRun(user, IP, "refined");
     expect((await getQuota(user, IP)).used).toBe(2);
 
-    await consumeRun(user, IP, "refined"); // leg 9 — the next pair
+    await consumeRun(user, IP, "refined"); // leg 11 — the next pair
     expect((await getQuota(user, IP)).used).toBe(3);
+  });
+
+  // The shape the window was widened for. A run whose rewrite lost a
+  // requirement spends an extra tailor — one leg, no analyze — repairing it,
+  // and that leg lands on the same runId. At six free legs it pushed the
+  // user's SECOND refinement out of the window, so a refine the product calls
+  // free quietly charged a unit. Both refinements have to stay free behind a
+  // repair.
+  it("keeps both free refinements after a run spends its repair leg", async () => {
+    await consumeRun(user, IP, "repaired"); // leg 1 — analyze, charges
+    await consumeRun(user, IP, "repaired"); // leg 2 — tailor
+    await consumeRun(user, IP, "repaired"); // leg 3 — the repair tailor
+    expect((await getQuota(user, IP)).used).toBe(1);
+
+    await consumeRun(user, IP, "repaired"); // refinement 1: analyze
+    await consumeRun(user, IP, "repaired"); //               tailor
+    expect((await getQuota(user, IP)).used).toBe(1);
+
+    await consumeRun(user, IP, "repaired"); // refinement 2: analyze
+    await consumeRun(user, IP, "repaired"); //               tailor
+    expect((await getQuota(user, IP)).used).toBe(1);
   });
 
   it("does not charge the tier for refinements inside the free window", async () => {

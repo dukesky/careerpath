@@ -12,6 +12,7 @@ interface CapturedOpts {
   runToken?: string;
   priorAnalysis?: GapAnalysis;
   isRefinement?: boolean;
+  baselineScore?: number;
 }
 
 let runTailorImpl: (
@@ -207,6 +208,69 @@ describe("startRun", () => {
     expect(hit?.rescoredScore).toBeUndefined();
   });
 
+  // The note is half of the statement the number makes: a held score with no
+  // note restores as a bare measurement, and the panel says "70 → 70 match"
+  // with nothing explaining that a nice-to-have was lost on the way there.
+  it("writes the score note and the named rows into the cache", async () => {
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: { overall_match_score: 70 } as never,
+        tailored: { projected_match_score: 78 } as never,
+      });
+      onUpdate({
+        rescoredScore: 70,
+        scoreNote: "nice_dip",
+        downgradedRequirements: ["Kubernetes cluster operations"],
+      });
+    };
+
+    await startRun(msg());
+    await new Promise((r) => setTimeout(r, 0));
+
+    const hit = await getCachedRun(JD.url, FP);
+    expect(hit?.scoreNote).toBe("nice_dip");
+    expect(hit?.downgradedRequirements).toEqual(["Kubernetes cluster operations"]);
+  });
+
+  // The ordinary run — measured at or above the analysis, nothing lost — has
+  // no note, and writes an entry indistinguishable from one from before the
+  // field existed. Same rule as the absent rescore above.
+  it("omits the note entirely for a run that needed none", async () => {
+    runTailorImpl = async (_jd, _resume, onUpdate) => {
+      onUpdate({
+        phase: "done",
+        analysis: { overall_match_score: 70 } as never,
+        tailored: { projected_match_score: 78 } as never,
+      });
+      onUpdate({ rescoredScore: 83, scoreNote: null, downgradedRequirements: [] });
+    };
+
+    await startRun(msg());
+    await new Promise((r) => setTimeout(r, 0));
+
+    const hit = await getCachedRun(JD.url, FP);
+    expect(hit?.scoreNote).toBeUndefined();
+    expect(hit?.downgradedRequirements).toBeUndefined();
+  });
+
+  // The floor under a HELD number. The panel's left-hand number is this frozen
+  // baseline, so a run whose own analyze read lower must not publish that
+  // lower number as "nothing was lost" — runTailor cannot know the baseline
+  // unless this is passed. A fresh run has none, and must be handed none.
+  it("passes the frozen baseline to runTailor on a refine, and nothing on a fresh run", async () => {
+    await putCachedRunFixture(JD.url, { runId: "run-abc", baselineScore: 61, fingerprint: FP });
+    runTailorImpl = async () => {};
+
+    await startRun({ ...msg(), supplement: "I also led migrations." });
+
+    expect(runTailorOpts.at(-1)?.baselineScore).toBe(61);
+
+    await startRun({ ...msg(), jd: { ...JD, url: "https://example.com/jobs/fresh" } });
+
+    expect(runTailorOpts.at(-1)?.baselineScore).toBeUndefined();
+  });
+
   // A failure must PERSIST. If it did not, a background run that failed would
   // leave nothing behind, and returning to the posting would show a blank
   // panel — strictly worse than today, where the error is at least on screen.
@@ -272,11 +336,11 @@ describe("startRun", () => {
   });
 
   // The quota half of the same wiring. A refine run reuses the runId and IS
-  // itself the second free leg, so runTailor's auto-refine tail must never
-  // fire on it: that tail's rescore would be the runId's fourth call (429),
-  // its tailor output could never be adopted, and it would burn the sixth free
-  // leg so the NEXT refine gets charged. The flag says so independently of
-  // whether a cached analysis happened to exist.
+  // one of its two free refinements, so runTailor's auto-refine tail must
+  // never fire on it: the runId's allowance (8 legs, 4 rescores) has nothing
+  // spare, so that tail's tailor and rescore come out of what the user's OTHER
+  // refine is holding, and its output could never be adopted anyway. The flag
+  // says so independently of whether a cached analysis happened to exist.
   it("marks a refine run as a refinement so the auto-refine tail cannot fire", async () => {
     await putCachedRunFixture(JD.url, { runId: "run-abc", baselineScore: 61, fingerprint: FP });
     runTailorImpl = async () => {};

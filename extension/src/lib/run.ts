@@ -268,9 +268,9 @@ export interface RunOptions {
   /**
    * The previous charged run's analysis, present only on a user-triggered
    * refine run. Two effects: the tailor leg sends it so the rewrite targets
-   * the matrix, and the auto-refine tail is SKIPPED — a refine run is itself
-   * the second (and last) free leg, and its own rescore is the third and
-   * last allowed for the runId. Fresh charged runs omit it.
+   * the matrix, and the auto-refine tail is SKIPPED — a refine run IS one of
+   * the runId's two free refinements, and its own rescore is one of the four
+   * the runId is allowed. Fresh charged runs omit it.
    */
   priorAnalysis?: GapAnalysis;
   /**
@@ -279,9 +279,11 @@ export interface RunOptions {
    * A refinement run is ITSELF the second free leg, so the auto-refine tail
    * must never fire on it — even when no cached analysis was available to pass
    * as `priorAnalysis`, which is why this is a separate flag rather than an
-   * inference from that field. Letting the tail run here sends the runId's
-   * fourth rescore (refused), produces a rewrite that can never be adopted,
-   * and burns the last free leg so the NEXT refinement gets charged.
+   * inference from that field. Letting the tail run here spends an extra
+   * tailor and an extra rescore out of an allowance (8 legs, 4 rescores per
+   * runId) that has none spare, produces a rewrite that can never be adopted,
+   * and burns the free leg the user's OTHER refinement needs — so that one
+   * gets charged.
    */
   isRefinement?: boolean;
   /**
@@ -299,6 +301,24 @@ export interface RunOptions {
    * behind the flag, not deleted, so the bench can still exercise it.
    */
   autoRefine?: boolean;
+  /**
+   * The posting's frozen "before" number — the one the panel shows on the LEFT
+   * of the arrow. Absent on a fresh run, which has no earlier one.
+   *
+   * The score floor must never display a right-hand number below it when the
+   * matrix says nothing was lost. That is not the same as this run's analysis
+   * score: a refine run re-analyses, the instrument answers a few points
+   * apart, and the baseline deliberately does not move with it (see
+   * cache.ts's `baselineScore` — re-measuring it per run is what made the
+   * panel show the "before" score dropping after the user added experience).
+   * So a held display built on this run's lower analysis would render as
+   * "70 → 66" while asserting in words that nothing got worse.
+   *
+   * Read ONLY by the held branches of `decide` — "maintained" and "nice_dip".
+   * A measurement at or above this run's analysis is a real reading of the
+   * rewritten document and is published as measured, above or below this.
+   */
+  baselineScore?: number;
 }
 
 /**
@@ -647,6 +667,19 @@ export async function runTailor(
       : null;
 
   /**
+   * What a HELD number is held at: the higher of this run's analysis score and
+   * the posting's frozen baseline (see RunOptions.baselineScore).
+   *
+   * Only the two "nothing a must-have cared about was lost" displays use it.
+   * They are claims about the DOCUMENT, not readings of it — "this rewrite did
+   * not cost you anything" — and the number under such a claim must not be
+   * lower than the "before" number the same panel is showing, or the display
+   * contradicts itself. A measurement is never lifted this way: an actual
+   * reading of the rewritten resume is published exactly as measured.
+   */
+  const heldScore = (left: number) => Math.max(opts.baselineScore ?? -Infinity, left);
+
+  /**
    * One measurement in, one display out — plus the downgrades behind it, which
    * are what the caller reads to decide whether the repair leg is worth firing.
    *
@@ -671,13 +704,40 @@ export async function runTailor(
   const decide = (m: Measurement): { patch: Partial<RunState>; downs: Downgrade[] } => {
     if (m.rows.length === 0) return { patch: { rescoredScore: m.score }, downs: [] };
     if (leftScore === null || m.score >= leftScore) {
+      // OBSERVABILITY ONLY, and deliberately not a branch: a number that went
+      // UP while the matrix says a must-have got weaker is the one shape this
+      // whole design does not have an answer for — either the rewrite really
+      // did lose something the score is hiding, or the two reads of the same
+      // document disagree about a row. It is logged so the rate can be
+      // measured before anyone decides what it should DO. Nothing below reads
+      // this; the display and the leg budget are exactly what they were.
+      if (leftScore !== null) {
+        const up = compareMatrices(
+          analyzed.data.analysis?.requirements_matrix ?? [],
+          m.rows,
+        ).filter((d) => d.kind === "must_have");
+        if (up.length > 0) {
+          console.warn(
+            JSON.stringify({
+              evt: "score_up_must_down",
+              left: leftScore,
+              measured: m.score,
+              rows: up.map((d) => d.requirement),
+            }),
+          );
+        }
+      }
       return { patch: { rescoredScore: m.score, ...NO_SCORE_NOTE }, downs: [] };
     }
 
     const downs = compareMatrices(analyzed.data.analysis?.requirements_matrix ?? [], m.rows);
     if (downs.length === 0) {
       return {
-        patch: { rescoredScore: leftScore, scoreNote: "maintained", downgradedRequirements: [] },
+        patch: {
+          rescoredScore: heldScore(leftScore),
+          scoreNote: "maintained",
+          downgradedRequirements: [],
+        },
         downs,
       };
     }
@@ -692,7 +752,11 @@ export async function runTailor(
       patch:
         mustHave.length > 0
           ? { rescoredScore: m.score, scoreNote: "downgraded", downgradedRequirements: named }
-          : { rescoredScore: leftScore, scoreNote: "nice_dip", downgradedRequirements: named },
+          : {
+              rescoredScore: heldScore(leftScore),
+              scoreNote: "nice_dip",
+              downgradedRequirements: named,
+            },
       downs,
     };
   };
@@ -711,11 +775,14 @@ export async function runTailor(
     // lost, and the wait costs a free leg on the ~5-8% of runs that reach here.
     //
     // Not on a refine run, though, for exactly the reason the auto-refine tail
-    // is not: that run IS the second free leg, and its own rescore is the last
-    // one the runId is allowed. Repairing it would send a third tailor and a
-    // third rescore, be refused, and burn the allowance the user's NEXT refine
-    // needs. The DISPLAY still tells the truth there — only the repair is
-    // skipped.
+    // is not: the server's budget for one runId funds ONE repair, and it is
+    // this one. The window is 8 legs (src/lib/quota.ts's MAX_FREE_LEGS) and 4
+    // rescores (the rescore route's MAX_RESCORES_PER_RUN), which pays for the
+    // charged generate's pair, one repair tailor, and both free refine pairs —
+    // 7 legs, 4 rescores, nothing spare. A refine that repaired itself would
+    // take the leg and the rescore the user's OTHER refine is holding, and at
+    // the ceiling would simply be refused. The DISPLAY still tells the truth
+    // there — only the repair is skipped.
     if (first.downs.length === 0 || opts.priorAnalysis || opts.isRefinement) {
       // Phase stays "done" — it already was, and re-sending it would be the
       // only way this patch could disturb anything.
@@ -742,6 +809,17 @@ export async function runTailor(
         // enough, it must also have stopped losing must-haves. A repaired
         // rewrite that still drops one is no improvement on the one the user
         // already has, and adopting it would swap the document for nothing.
+        //
+        // This compareMatrices call must NOT be collapsed into the `downs`
+        // that `decide(remeasured)` computes just below, tempting as the
+        // second comparison of the same two matrices looks. `decide` returns
+        // `downs: []` from its first two branches WITHOUT comparing anything —
+        // rows absent (an old server) and score-at-or-above-left both answer
+        // "no downgrades" by construction. Reading those as the gate would let
+        // exactly the two shapes that were never examined pass it: a rewrite
+        // measured with no matrix at all, and one whose number came back up
+        // while a must-have got weaker. The gate has to ask the question
+        // itself.
         if (
           outcome &&
           remeasured &&
@@ -780,8 +858,9 @@ export async function runTailor(
   // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
   // so the server treats it as a refinement and does not charge), measure the
   // rewrite, and adopt it only when it is not worse. A refine run skips this —
-  // it IS the second free leg, and its own rescore is the last one the runId
-  // is allowed. `isRefinement` is checked as well as `priorAnalysis` because a
+  // it IS one of the runId's two free refinements, and the allowance behind
+  // them has nothing spare. `isRefinement` is checked as well as
+  // `priorAnalysis` because a
   // refine run whose previous entry carried no usable analysis is still a
   // refine run: gating on the analysis alone would let the tail fire there and
   // spend the runId's remaining legs on a rewrite it can never adopt.
@@ -793,17 +872,19 @@ export async function runTailor(
   //
   // Default OFF — see RunOptions.autoRefine. The leg is opt-in because it
   // cannot reliably raise the MEASURED score, and running it unasked spends
-  // the runId's second free leg (which silently makes the user's own next
-  // refine a charged run) and doubles per-IP quota use. The two guards are
-  // independent and both stay: the flag decides whether this leg exists at
+  // one of the runId's free refinements (which silently makes the user's own
+  // next refine a charged run) and doubles per-IP quota use. The two guards
+  // are independent and both stay: the flag decides whether this leg exists at
   // all, `priorAnalysis || isRefinement` decides that it must never fire on a
-  // run that IS itself the second free leg.
+  // run that IS itself one of those refinements.
   if (opts.autoRefine !== true) return;
   if (opts.priorAnalysis || opts.isRefinement) return;
   // Third guard, and the one that is new: the repair leg above already spent
-  // this runId's second free leg on the same rewrite. Running both would send
-  // a third tailor and a third rescore for a document the repair has already
-  // produced, measured, and either adopted or refused.
+  // the ONE repair the runId's budget funds (8 legs, 4 rescores — see the
+  // repair's own comment above), on the same rewrite this tail would ask for.
+  // Running both would send an extra tailor and an extra rescore out of the
+  // allowance the user's two refines are holding, for a document the repair
+  // has already produced, measured, and either adopted or refused.
   if (repaired) return;
   // Adoption is published together with the closing `refining: false` rather
   // than in its own patch, so the leg ends in ONE terminal patch that

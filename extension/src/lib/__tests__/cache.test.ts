@@ -200,6 +200,58 @@ describe("result cache", () => {
     expect((await getCachedRun("https://acme.com/jobs/1", FP))?.rescoredScore).toBe(71);
   });
 
+  // The note and the number are ONE statement. An entry that stored the held
+  // number without the note explaining it would restore as a bare measurement
+  // — "70 → 70 match" with nothing saying the rewrite lost a nice-to-have,
+  // which is the honesty the note exists to carry.
+  it("round-trips the score note and the rows it names", async () => {
+    await putCachedRun("https://acme.com/jobs/1", {
+      ...run(62),
+      rescoredScore: 62,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Kubernetes cluster operations"],
+    });
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
+    expect(hit?.scoreNote).toBe("nice_dip");
+    expect(hit?.downgradedRequirements).toEqual(["Kubernetes cluster operations"]);
+  });
+
+  // The same backward-compatibility rule the rescored score has: every entry
+  // already in a real user's browser predates these fields, and a run whose
+  // measurement needed no note writes neither. Both read as absent, and the
+  // panel renders the number bare — exactly what those entries displayed when
+  // they were generated.
+  it("reports an entry written before the score note existed as having none", async () => {
+    await putCachedRun("https://acme.com/jobs/1", { ...run(62), rescoredScore: 71 });
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
+    expect(hit?.scoreNote).toBeUndefined();
+    expect(hit?.downgradedRequirements).toBeUndefined();
+  });
+
+  // Same hand-edited-storage screen the two numbers get: a note the panel
+  // cannot render, or names that are not strings, are dropped rather than
+  // taking the whole result down with them.
+  it("drops a note it does not recognise, and keeps the entry", async () => {
+    const entry = {
+      key: "https://acme.com/jobs/1",
+      analysis: run(62).analysis,
+      tailored: run(62).tailored,
+      generatedAt: "2026-08-14T10:00:00.000Z",
+      extraInfo: "",
+      runId: "rid",
+      baselineScore: 62,
+      resumeFingerprint: FP,
+      scoreNote: "improved",
+      downgradedRequirements: [7],
+    };
+    await chrome.storage.local.set({ cp_results: JSON.stringify([entry]) });
+
+    const hit = await getCachedRun("https://acme.com/jobs/1", FP);
+    expect(hit).not.toBeNull();
+    expect(hit?.scoreNote).toBeUndefined();
+    expect(hit?.downgradedRequirements).toBeUndefined();
+  });
+
   // BACKWARD COMPATIBILITY, and the reason `rescoredScore` is optional rather
   // than part of the provenance rule. Every entry already sitting in a real
   // user's browser lacks this field, as does every entry whose rescore leg

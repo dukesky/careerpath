@@ -206,9 +206,14 @@ export async function POST(request: Request) {
     // messages, same empty extraInfo, same task, same temperature — which is
     // the whole point of this route. Widening the response is not widening the
     // ruler.
+    //
+    // The 50-row bound is a ceiling on model misbehaviour, not on real JDs: a
+    // posting tops out near 20 requirements, so nothing legitimate reaches it.
+    // A model that runs away would otherwise put an unbounded array on the
+    // wire and hand the caller's row comparison an O(n*m) job over it.
     const analysis = normalizeGapAnalysis(parsed);
     score = analysis.overall_match_score;
-    rows = analysis.requirements_matrix.map(({ requirement, kind, status }) => ({
+    rows = analysis.requirements_matrix.slice(0, 50).map(({ requirement, kind, status }) => ({
       requirement,
       kind,
       status,

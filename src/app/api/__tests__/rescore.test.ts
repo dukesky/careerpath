@@ -66,6 +66,33 @@ describe("POST /api/rescore", () => {
     expect(await res.json()).toEqual({ score: 81, rows: [] });
   });
 
+  it("caps the returned matrix at 50 rows", async () => {
+    // A real JD tops out around 20 requirements. A model that runs away and
+    // emits hundreds must not turn this response into an unbounded payload —
+    // and the comparison downstream is O(n*m) over it.
+    vi.mocked(callLLM).mockResolvedValue({
+      overall_match_score: 70,
+      requirements_matrix: Array.from({ length: 60 }, (_, i) => ({
+        requirement: `Requirement ${i}`,
+        kind: "must_have",
+        status: "met",
+        evidence: "long prose that must not travel",
+        suggestion: "more prose",
+      })),
+    } as never);
+
+    await generate("r-cap");
+    const res = await rescore(post("https://x/api/rescore", inputs("r-cap")));
+    const body = (await res.json()) as { rows: unknown[] };
+
+    expect(body.rows).toHaveLength(50);
+    expect(body.rows[0]).toEqual({
+      requirement: "Requirement 0",
+      kind: "must_have",
+      status: "met",
+    });
+  });
+
   // "Same instrument" is the entire premise. A cheaper bespoke prompt would
   // save tokens and silently destroy the calibration the delta depends on, so
   // pin the call shape: the analyze task (which routes the model), JSON mode,
@@ -79,6 +106,10 @@ describe("POST /api/rescore", () => {
     expect(args?.task).toBe("analyze");
     expect(args?.json).toBe(true);
     expect(args?.temperature).toBeUndefined();
+    // The ceiling is part of the instrument: analyze's bench worst case was
+    // 3992 natural tokens against a 4000 cap. A lower one here truncates the
+    // matrix and the ruler quietly stops matching.
+    expect(args?.maxTokens).toBe(8000);
 
     // The prompt itself must be analyze's, byte for byte — compare against
     // what the analyze route sent for the same inputs.

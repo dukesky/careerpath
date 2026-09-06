@@ -22,31 +22,55 @@ export interface Downgrade {
  * definition of "downgrade": met(2) > partially_met(1) > missing(0), and a
  * pair is a loss when the new rank is strictly lower than the old one.
  */
-const RANK: Record<string, number> = {
+const RANK: Record<ReqStatus, number> = {
   met: 2,
   partially_met: 1,
   missing: 0,
 };
 
 /**
+ * The words every requirement carries. Ported verbatim from the bench
+ * flip-detector (evaluator/bench/lib/score-parse-jd.ts), including
+ * "experience"/"years"/"year" — the three that show up in most requirement
+ * lines and, left in, let "Experience with distributed systems for 5 years"
+ * pair with "Experience with payroll compliance for 5 years" at 0.67.
+ */
+const STOP = new Set([
+  "a", "an", "and", "or", "the", "of", "to", "in", "with", "for", "on", "at",
+  "is", "are", "be", "you", "your", "we", "our", "have", "has", "that", "this",
+  "as", "by", "from", "it", "its", "not", "than", "into", "over", "across",
+  "including", "experience", "years", "year",
+]);
+
+/**
  * The two matrices are written by two independent model calls, so a
  * requirement almost never comes back as the same string. Pairing is by word
- * overlap instead: lowercase, drop punctuation, drop words shorter than three
- * characters (the "and"/"of"/"in" that every requirement shares and that no
- * pair should be built on).
+ * overlap instead — the bench flip-detector's tokenizer, character class and
+ * stop list included, so this gate and the bench measure the same thing.
+ *
+ * Two details are load-bearing:
+ *   - `+ # . /` survive the punctuation strip, so "c++", "c#" and "node.js"
+ *     stay whole and stay DIFFERENT from each other. Stripping them collapses
+ *     "C++" to a one-character token the length filter then drops, leaving an
+ *     empty set that matches nothing.
+ *   - the class is Unicode-aware (\p{L}\p{N}), because an ASCII-only one
+ *     erases a Chinese or Japanese requirement to the empty set — and an empty
+ *     set matches nothing, so every row of a non-Latin JD would read as a
+ *     vanished requirement and the floor would block every rewrite.
  */
 function tokens(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .split(" ")
-      .filter((w) => w.length >= 3),
+      .replace(/[^\p{L}\p{N}+#./ -]/gu, " ")
+      .split(/[\s/,-]+/)
+      .map((w) => w.replace(/\.$/, ""))
+      .filter((w) => w.length > 1 && !STOP.has(w)),
   );
 }
 
 /**
- * |A ∩ B| / min(|A|,|B|) — the bench flip-detector's measure.
+ * |A ∩ B| / min(|A|,|B|) — the bench matcher's `jaccardish`, same denominator.
  *
  * The min denominator (rather than the union) is deliberate: a rescore row
  * that says "Kubernetes" and a left row that says "Production experience with
@@ -80,11 +104,17 @@ function requirementOf(value: unknown): string {
 }
 
 /**
- * Pairs left-analysis rows with rescore rows by token overlap (>=0.5 on
- * lowercased word sets — the bench flip-detector's algorithm) and returns
- * every row whose status got WORSE (met -> partially_met/missing, or
+ * Pairs left-analysis rows with rescore rows by token overlap (>=0.5 of the
+ * smaller token set — the tokenizer, stop list and threshold are the bench
+ * matcher's, ported from evaluator/bench/lib/score-parse-jd.ts; the greedy
+ * one-partner-each assignment below is this file's own, because the bench
+ * scores a list against a gold list and this scores a matrix against its own
+ * later self) and returns every row whose status got WORSE (met ->
+ * partially_met/missing, or
  * partially_met -> missing). A left row with no match is treated as a
- * downgrade to "missing" — conservative by design.
+ * downgrade to "missing" — conservative by design. The one exception is a row
+ * the tokenizer cannot represent at all (empty or all-punctuation): it is
+ * dropped, because "" is not a requirement a reader can be shown as lost.
  *
  * Pure; never throws. It sits between two model calls and a score floor that
  * gates shipping a rewrite, so every input here is model output: a thrown
@@ -95,6 +125,14 @@ function requirementOf(value: unknown): string {
  * Greedy, first-come pairing: each left row takes the best still-unclaimed
  * rescore row, ties going to the earlier one. Matrices run to about 20 rows,
  * so an optimal assignment would buy nothing a reader could see.
+ *
+ * EVERY left row is paired, including the "missing" ones that can never
+ * produce a downgrade — only the REPORT is skipped for those. Skipping them
+ * before pairing looks like a free optimisation and is not: it leaves their
+ * rightful partner unclaimed for a later row to take. A requirement that went
+ * missing -> met while a longer must-have vanished would hand the vanished row
+ * the upgrade's partner, read met -> met, and hide the exact regression this
+ * function exists to find.
  */
 export function compareMatrices(left: RequirementRow[], rescored: RescoreRow[]): Downgrade[] {
   const leftRows = Array.isArray(left) ? left : [];
@@ -109,12 +147,13 @@ export function compareMatrices(left: RequirementRow[], rescored: RescoreRow[]):
     const from = statusOf(row?.status);
     const kind = kindOf(row?.kind);
 
-    // A left row that is already "missing" cannot go anywhere worse, so it can
-    // never produce a downgrade — including the unmatched case below, where a
-    // missing row that finds no partner is still just missing.
-    if (RANK[from] === 0) continue;
-
     const leftTokens = tokens(requirement);
+
+    // Nothing to pair on and nothing to name. Reporting it would put an empty
+    // bullet in the panel's list of what the rewrite lost, which tells the
+    // reader nothing and blocks the rewrite anyway.
+    if (leftTokens.size === 0) continue;
+
     let bestIndex = -1;
     let bestScore = 0;
     for (let i = 0; i < rightRows.length; i += 1) {
@@ -126,8 +165,14 @@ export function compareMatrices(left: RequirementRow[], rescored: RescoreRow[]):
       }
     }
 
-    if (bestIndex >= 0 && bestScore >= MIN_OVERLAP) {
-      claimed[bestIndex] = true;
+    const matched = bestIndex >= 0 && bestScore >= MIN_OVERLAP;
+    if (matched) claimed[bestIndex] = true;
+
+    // A left row that is already "missing" cannot go anywhere worse — but it
+    // has claimed its partner above, which is the point.
+    if (from === "missing") continue;
+
+    if (matched) {
       const to = statusOf(rightRows[bestIndex]?.status);
       if (RANK[to] < RANK[from]) out.push({ requirement, kind, from, to });
       continue;

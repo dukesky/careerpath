@@ -1091,4 +1091,331 @@ describe("runTailor", () => {
     const rescoreHits = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/rescore"));
     expect(rescoreHits).toHaveLength(1);
   });
+
+  // ------------------------------------------------------- the score floor
+  //
+  // The rescore now answers with the matrix it always computed, so a dipped
+  // number can be read against WHY it dipped. Three displays come out of that,
+  // and one repair leg sits between them:
+  //
+  //   measured >= left            -> the measurement, bare (today's behaviour)
+  //   dip, nothing got worse      -> the LEFT score, note "maintained"
+  //   dip, something got worse    -> one free matrix-aimed rewrite, re-measure,
+  //                                  then re-branch on whichever measurement
+  //                                  stands. Residuals: nice-to-have only keeps
+  //                                  the LEFT score with note "nice_dip"; a
+  //                                  must-have that survived the repair is the
+  //                                  ONE display allowed to show a lower number
+  //                                  (note "downgraded").
+  //
+  // The old-server guard is what makes the deploy order safe: a rescore body
+  // with no rows is never compared and never repaired.
+
+  const LEFT_ANALYSIS = {
+    overall_match_score: 70,
+    requirements_matrix: [
+      {
+        requirement: "Go microservices at scale",
+        kind: "must_have",
+        status: "met",
+        evidence: "",
+        suggestion: "",
+      },
+      {
+        requirement: "Kubernetes cluster operations",
+        kind: "nice_to_have",
+        status: "met",
+        evidence: "",
+        suggestion: "",
+      },
+    ],
+  };
+
+  /** The two rows above as /api/rescore returns them, at the statuses given. */
+  const rescoreRows = (must: string, nice: string) => [
+    { requirement: "Go microservices at scale", kind: "must_have", status: must },
+    { requirement: "Kubernetes cluster operations", kind: "nice_to_have", status: nice },
+  ];
+
+  /**
+   * The URL-dispatch mock again, with the rescore leg answering from a queue.
+   *
+   * Each entry is one whole /api/rescore body — `rows` omitted means an old
+   * server — and the last entry repeats, so a test that expects one
+   * measurement fails loudly on call counts rather than on a missing body.
+   * The tailor leg streams its first call and buffers every one after it,
+   * which is the shape both free legs (auto-refine and repair) use.
+   */
+  function runWith(
+    measurements: { score: unknown; rows?: unknown[] }[],
+    analysis: unknown = LEFT_ANALYSIS,
+  ) {
+    const tailorBodies: Record<string, unknown>[] = [];
+    let tailorCalls = 0;
+    let rescoreCalls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const u = String(url);
+      if (u.endsWith("/api/analyze")) return sse({ analysis, remaining: 4 });
+      if (u.endsWith("/api/tailor")) {
+        tailorCalls += 1;
+        tailorBodies.push(JSON.parse(String(init?.body)));
+        const body = {
+          tailored: { projected_match_score: 75, resume: { summary: `v${tailorCalls}` } },
+          remaining: 4,
+        };
+        return tailorCalls === 1 ? sse(body) : json(body);
+      }
+      const measurement = measurements[Math.min(rescoreCalls, measurements.length - 1)];
+      rescoreCalls += 1;
+      return json(measurement);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      fetchMock,
+      tailorBodies,
+      counts: () => ({ tailor: tailorCalls, rescore: rescoreCalls }),
+    };
+  }
+
+  // (a)
+  it("publishes the measurement as-is when it did not fall below the analysis score", async () => {
+    const run = runWith([{ score: 74, rows: rescoreRows("met", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // The default budget, unchanged: nothing above the floor costs a leg.
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 74,
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+  });
+
+  // (b) — the noise case, and the reason the repair is gated on the MATRIX
+  // rather than on the number. The instrument is a model: it answers a few
+  // points apart on two readings of the same document. A dip with nothing
+  // behind it is not worth a second tailor.
+  it("holds the left score when the number dips but no requirement got worse", async () => {
+    const run = runWith([{ score: 66, rows: rescoreRows("met", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "maintained",
+      downgradedRequirements: [],
+    });
+    // No repair: zero downgrades is noise, and a second tailor would spend the
+    // free leg the user's own refine needs to find nothing.
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+  });
+
+  // (c) + the recovery half of (d)
+  it("repairs a dip that lost a requirement: a second tailor WITH the analysis, then a second rescore", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 71, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // The repair budget: exactly the shape the gated auto-refine leg has.
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    // The repair rewrite aims at the matrix, is buffered (nothing renders it),
+    // and rides the SAME runId — it is a free leg, not a second charge.
+    expect(run.tailorBodies[0].analysis).toBeUndefined();
+    expect(run.tailorBodies[1].analysis).toEqual(LEFT_ANALYSIS);
+    expect(run.tailorBodies[1].stream).toBeUndefined();
+    expect(run.tailorBodies[1].runId).toBe(run.tailorBodies[0].runId);
+
+    // The repaired rewrite measures back above the left score, so it is
+    // adopted and displayed bare — the dip never happened as far as the panel
+    // is concerned.
+    expect(patches.at(-1)).toMatchObject({
+      rescoredScore: 71,
+      scoreNote: null,
+      downgradedRequirements: [],
+      tailored: { resume: { summary: "v2" } },
+      refining: false,
+    });
+  });
+
+  // (d)
+  it("shows maintained after a repair that fixed the rows but not the number", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 68, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    expect(patches.at(-1)).toMatchObject({
+      // Zero residual downgrades, so the dip is noise again: the left number.
+      rescoredScore: 70,
+      scoreNote: "maintained",
+      downgradedRequirements: [],
+      tailored: { resume: { summary: "v2" } },
+      refining: false,
+    });
+  });
+
+  // (e)
+  it("keeps the left number and names the row when only a nice-to-have survives the repair", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 67, rows: rescoreRows("met", "partially_met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    // Not worse than the first measurement and no must-have lost, so the
+    // repaired document is adopted — and the number STILL does not drop. The
+    // note and the named row are what keep that honest.
+    expect(patches.at(-1)).toMatchObject({
+      rescoredScore: 70,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Kubernetes cluster operations"],
+      tailored: { resume: { summary: "v2" } },
+      refining: false,
+    });
+  });
+
+  // (f) — the only display whose number is allowed to be lower than the left
+  // score, and (with the adoption gate above it) the one expected never to
+  // appear in production.
+  it("shows the measured number, the note and the row when a must-have survives the repair", async () => {
+    const run = runWith([
+      { score: 60, rows: rescoreRows("missing", "met") },
+      { score: 62, rows: rescoreRows("missing", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // The repair ran ONCE. A must-have residual is not a reason to try again:
+    // there is no third free leg, and a loop here would spend the user's own
+    // refine allowance on a rewrite it cannot adopt either.
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    const final = patches.at(-1)!;
+    expect(final).toMatchObject({
+      rescoredScore: 60,
+      scoreNote: "downgraded",
+      downgradedRequirements: ["Go microservices at scale"],
+      refining: false,
+    });
+    // The repaired rewrite still loses the must-have, so it is NOT adopted:
+    // the document on screen stays the one the user already has.
+    expect(final.tailored).toBeUndefined();
+    expect(patches.filter((p) => p.tailored).at(-1)?.tailored).toMatchObject({
+      resume: { summary: "v1" },
+    });
+  });
+
+  // (g) — THE deploy-order guard. An extension that ships before the widened
+  // rescore response (or one talking to a stale deployment) gets a bare score,
+  // and a bare score is displayed exactly as it is today. Comparing against an
+  // absent matrix would read every met requirement as vanished and turn every
+  // run into a "downgraded" display.
+  it("behaves exactly as before when the rescore body carries no rows", async () => {
+    const run = runWith([{ score: 60 }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    // Below the left score, and shown anyway: with no rows there is nothing to
+    // compare, so there is no honest reason to hold the number up.
+    expect(patches.at(-1)).toEqual({ rescoredScore: 60 });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+  });
+
+  // (h) — the panel puts the score slot on a placeholder while `refining` is
+  // true and no note has been decided. If a rescoredScore were published
+  // before that flag, the user would watch the number drop to the dipped
+  // measurement and then jump back up, which is the exact flicker the whole
+  // hold-the-number design exists to avoid.
+  it("turns refining on before it publishes any score during a repair", async () => {
+    runWith([
+      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 67, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    const refiningAt = patches.findIndex((p) => p.refining === true);
+    const scored = patches.filter((p) => p.rescoredScore != null);
+    expect(refiningAt).toBeGreaterThanOrEqual(0);
+    expect(patches.findIndex((p) => p.rescoredScore != null)).toBeGreaterThan(refiningAt);
+    // Exactly one number is ever published, and it is the decided one. The
+    // intermediate 66 never reaches the panel.
+    expect(scored).toHaveLength(1);
+    expect(scored[0].rescoredScore).toBe(70);
+  });
+
+  // (i) — the same completeness rule the streaming fields have: a terminal
+  // patch describes terminal state completely, because App.tsx resets state on
+  // a JD URL change and a patch that omitted these would leave the previous
+  // run's note beside this run's number.
+  it("clears the note and the named rows in every terminal patch", async () => {
+    runWith([{ score: 66, rows: rescoreRows("met", "missing") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(patches[0]).toMatchObject({
+      phase: "reading",
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+    expect(patches.find((p) => p.phase === "done")).toMatchObject({
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ error: "You've used all your free runs." }, 402)),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failed = collect();
+    await runTailor(JD, RESUME, failed.onUpdate);
+    expect(failed.patches.at(-1)).toMatchObject({
+      phase: "error",
+      scoreNote: null,
+      downgradedRequirements: [],
+    });
+  });
+
+  // A refine run IS the second free leg. Repairing it would send the runId's
+  // third tailor and third rescore — refused by the server, and it would burn
+  // the allowance the user's NEXT refine needs. The display still tells the
+  // truth; only the repair is skipped.
+  it("never repairs a refinement run, and still decides the display", async () => {
+    const run = runWith([{ score: 66, rows: rescoreRows("met", "missing") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, { runId: "reused-id", isRefinement: true });
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Kubernetes cluster operations"],
+    });
+  });
+
+  // Both legs are the SAME free leg. Running them back to back would send the
+  // runId a third tailor and a third rescore for a rewrite the repair already
+  // produced and measured.
+  it("does not also run the gated auto-refine tail after a repair", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 67, rows: rescoreRows("met", "met") },
+    ]);
+    await runTailor(JD, RESUME, () => {}, { autoRefine: true });
+
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+  });
 });

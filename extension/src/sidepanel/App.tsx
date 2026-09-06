@@ -358,8 +358,14 @@ export default function App() {
           // projection back on screen, which is exactly what those entries
           // were displayed with when they were generated.
           rescoredScore: hit.rescoredScore ?? null,
-          // A restored result is finished by definition: whatever auto-refine
-          // it had ran to completion before it was cached.
+          // Not cached, so a restored result shows its number bare. The note
+          // and the rows it named belong to the run that produced them, and
+          // inventing either from an entry that never carried them would put a
+          // claim about THIS resume under a number read off disk.
+          scoreNote: null,
+          downgradedRequirements: [],
+          // A restored result is finished by definition: whatever free second
+          // leg it had ran to completion before it was cached.
           refining: false,
           // Nothing is streaming into a result that was read back off disk.
           // These are live-run presentation only and are never cached.

@@ -6,6 +6,7 @@ import type {
 } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 import { apiPost, apiStream, type ApiErrorKind, type ApiResult } from "./api";
+import { compareMatrices, type Downgrade, type RescoreRow } from "./compareMatrices";
 import { extractNumber, extractObjects, extractString } from "./partialJson";
 import { partialExperience, partialResume, partialRows } from "./runStream";
 
@@ -26,14 +27,46 @@ export interface RunState {
    */
   rescoredScore: number | null;
   /**
-   * True only while the free auto-refine leg (tailor with the gap analysis,
-   * then a second rescore) is in flight, so the panel can hint that the
-   * right-hand number is still improving. Never blocks anything: the run is
-   * already `done` when this goes true.
+   * How the right-hand number above should be read, or null for "as measured".
    *
-   * That leg is off by default (RunOptions.autoRefine), so in production this
-   * stays false for a whole run. The field and the panel's hint are kept for
-   * the gated path rather than deleted.
+   * Set only when the rescore came back with a MATRIX to compare against the
+   * analysis — an old server sends none, and an uncompared number is never
+   * annotated. The three notes:
+   *
+   *   "maintained" — the measurement dipped below the analysis score but not
+   *     one requirement got worse, so the dip is instrument noise (the same
+   *     model, read twice, answers a few points apart) and `rescoredScore`
+   *     carries the LEFT number rather than the lower reading.
+   *   "nice_dip" — the same dip with only nice-to-have rows weaker. The number
+   *     still holds at the left score; this note and `downgradedRequirements`
+   *     are what stop that from being a lie.
+   *   "downgraded" — a must-have got weaker and survived the repair leg. The
+   *     ONLY display whose number is allowed to be lower than the left score,
+   *     and the one the adoption gate is built to make vanishingly rare.
+   */
+  scoreNote: "maintained" | "nice_dip" | "downgraded" | null;
+  /**
+   * The requirements the rewrite made weaker, must-haves first.
+   *
+   * Non-empty exactly when `scoreNote` is "nice_dip" or "downgraded": a
+   * display that holds a number up, or drops one, has to say which rows it is
+   * talking about. Must-haves lead because they are the ones a reader has to
+   * act on, and this is a flat list of strings — the order is the only way it
+   * can distinguish them.
+   */
+  downgradedRequirements: string[];
+  /**
+   * True only while a free second tailor (tailor with the gap analysis, then a
+   * second rescore) is in flight, so the panel can hint that the right-hand
+   * number is still settling. Never blocks anything: the run is already `done`
+   * when this goes true.
+   *
+   * TWO legs raise it, and they are the same free leg — never both in one run:
+   * the gated auto-refine tail (RunOptions.autoRefine, off by default) and the
+   * repair leg below, which fires on a dip that actually lost a requirement.
+   * On the repair leg it means something stronger than a hint: no score has
+   * been published yet, and the panel holds the slot on a placeholder rather
+   * than showing a dipped number it is about to replace.
    */
   refining: boolean;
   /**
@@ -67,6 +100,8 @@ export const INITIAL_RUN_STATE: RunState = {
   analysis: null,
   tailored: null,
   rescoredScore: null,
+  scoreNote: null,
+  downgradedRequirements: [],
   refining: false,
   streamingScore: null,
   streamingRows: [],
@@ -87,6 +122,25 @@ const NO_STREAM: Pick<RunState, "streamingScore" | "streamingRows" | "streamingR
   streamingRows: [],
   streamingResume: null,
 };
+
+/**
+ * What a terminal patch says about the score note: nothing has been decided.
+ *
+ * Same rule as NO_STREAM, and spelled the same way for the same reason: the
+ * note and the rows it names are one statement, and a patch that cleared the
+ * note while leaving the names would put a previous run's lost requirements
+ * under this run's number after App.tsx's state reset.
+ */
+const NO_SCORE_NOTE: Pick<RunState, "scoreNote" | "downgradedRequirements"> = {
+  scoreNote: null,
+  downgradedRequirements: [],
+};
+
+/** A rescore's answer: the number, and the matrix behind it ([] on an old server). */
+interface Measurement {
+  score: number;
+  rows: RescoreRow[];
+}
 
 /**
  * The floor between two streaming patches, per leg.
@@ -294,7 +348,7 @@ export async function runTailor(
   let live = true;
   const fail = (kind: ApiErrorKind, message: string) => {
     live = false;
-    onUpdate({ phase: "error", error: { kind, message }, ...NO_STREAM });
+    onUpdate({ phase: "error", error: { kind, message }, ...NO_STREAM, ...NO_SCORE_NOTE });
   };
 
   onUpdate({
@@ -302,8 +356,10 @@ export async function runTailor(
     analysis: null,
     tailored: null,
     // Cleared alongside the other results: a regenerate must not leave the
-    // PREVIOUS run's rescore on screen next to this run's fresh numbers.
+    // PREVIOUS run's rescore — or the note explaining it — on screen next to
+    // this run's fresh numbers.
     rescoredScore: null,
+    ...NO_SCORE_NOTE,
     refining: false,
     ...NO_STREAM,
     error: null,
@@ -432,9 +488,11 @@ export async function runTailor(
     // completed, charged run. Re-sending it here costs nothing.
     analysis: analyzed.data.analysis,
     tailored: tailored.data.tailored,
-    // Same principle: the auto-refine leg has not started, so say so rather
-    // than letting a reset leave a stale `true` beside a finished run.
+    // Same principle: no free second leg has started, so say so rather than
+    // letting a reset leave a stale `true` beside a finished run. And nothing
+    // has been measured yet, so there is no note to carry either.
     refining: false,
+    ...NO_SCORE_NOTE,
     // And the same principle again for the streamed preview: both legs have
     // landed, so nothing is arriving. Leaving these set would strand a
     // half-written matrix and a contact-less resume next to the finished
@@ -445,8 +503,9 @@ export async function runTailor(
 
   // The same ruler, applied to the rewritten resume. Everything above has
   // already been published, so from here on nothing this code does can delay
-  // what the user is looking at — it can only replace the number, and (on the
-  // auto-refine leg below) the document, with better versions of themselves.
+  // what the user is looking at — it can only replace the number, and (on
+  // either of the free legs below) the document, with better versions of
+  // themselves.
   //
   // `payload.structuredResume` is deliberately NOT reused: the whole point is
   // to measure the TAILORED resume. Sending the original again would produce a
@@ -459,17 +518,17 @@ export async function runTailor(
   // completed, charged result over a cosmetic refinement, and is the single
   // most tempting wrong edit in this function.
   //
-  // The try/catch inside `measure`, and the one around the refine leg, are
-  // that same rule against a THROW rather than a failure. `apiPost` does not
+  // The try/catch inside `measureWithRows`, and the ones around the two free
+  // legs, are that same rule against a THROW rather than a failure. `apiPost` does not
   // reject, but building the body reads into a response this module does not
   // validate, and background/runs.ts wraps runTailor in a catch that publishes
   // `phase: "error"` — so an exception escaping from here would do exactly the
   // damage the paragraph above forbids, by a route no reviewer of that catch
   // block would connect to rescoring. The resume is read with `?.` for the
   // same reason: a tailor body with no result at all must warn, not throw.
-  const measure = async (resume: ParsedResume | undefined): Promise<number | null> => {
+  const measureWithRows = async (resume: ParsedResume | undefined): Promise<Measurement | null> => {
     try {
-      const rescored = await apiPost<{ score: number }>(
+      const rescored = await apiPost<{ score: number; rows?: RescoreRow[] }>(
         "/api/rescore",
         {
           structuredResume: resume,
@@ -500,7 +559,16 @@ export async function runTailor(
         console.warn(JSON.stringify({ evt: "rescore_malformed" }));
         return null;
       }
-      return rescored.data.score;
+      return {
+        score: rescored.data.score,
+        // The same unchecked-cast defence, and the hinge of everything below:
+        // a server that predates the widened rescore response sends no rows,
+        // and an empty array is the signal `decide` reads as "do not compare".
+        // Comparing against an absent matrix would read every met requirement
+        // as vanished and turn every run into a "downgraded" display, which is
+        // why this coercion — not a `!` — is what makes the deploy order safe.
+        rows: Array.isArray(rescored.data.rows) ? rescored.data.rows : [],
+      };
     } catch (err) {
       console.warn(
         JSON.stringify({
@@ -512,10 +580,202 @@ export async function runTailor(
     }
   };
 
-  const firstScore = await measure(tailored.data.tailored?.resume);
-  // Phase stays "done" — it already was, and re-sending it would be the only
-  // way this patch could disturb anything.
-  if (firstScore !== null) onUpdate({ rescoredScore: firstScore });
+  /**
+   * The free second tailor, and the measurement of what it wrote.
+   *
+   * Buffered, deliberately. Nothing renders this leg's tokens: the panel is
+   * already showing a completed run plus a hint that a better version may
+   * replace it, so streaming here would put a second live preview over a
+   * finished result to no one's benefit. Same runId, so the server treats it
+   * as a refinement and does not charge for it.
+   *
+   * It publishes nothing and adopts nothing. BOTH callers below — the gated
+   * auto-refine tail and the repair leg — are the same free leg spent under
+   * different rules, and the rules are the whole difference between them, so
+   * they stay at the call sites where they can be read against each other.
+   * Null means the leg produced no rewrite at all; a non-null result with a
+   * null `measurement` means it produced one nobody could measure.
+   */
+  const runRefineLeg = async (
+    analysis: GapAnalysis,
+  ): Promise<{
+    tailored: TailorResult;
+    measurement: Measurement | null;
+    remaining: number | null;
+  } | null> => {
+    const refined = await apiPost<{ tailored: TailorResult; remaining: number | null }>(
+      "/api/tailor",
+      { ...payload, analysis },
+      opts.runToken,
+    );
+    if (!refined.ok || !refined.data.tailored) {
+      console.warn(JSON.stringify({ evt: "refine_failed" }));
+      return null;
+    }
+    return {
+      tailored: refined.data.tailored,
+      measurement: await measureWithRows(refined.data.tailored.resume),
+      remaining: refined.data.remaining,
+    };
+  };
+
+  /**
+   * A free leg's own quota read, min-ed into the count already on screen.
+   *
+   * The read normally REPEATS the count the done patch published — but it is
+   * also the freshest read there is, and a charge committing after the done
+   * patch's reads (or a run started elsewhere) leaves that count one too high.
+   * Min-ed rather than assigned, for the same reason the done patch mins its
+   * two reads: the number the user is watching must never jump back up. A null
+   * read means "not reported", so it changes nothing.
+   */
+  const freshRemaining = (reported: number | null): Partial<RunState> =>
+    reported === null
+      ? {}
+      : {
+          remaining:
+            knownRemaining === null ? reported : Math.min(knownRemaining, reported),
+        };
+
+  /**
+   * The number the analysis put on the LEFT of the arrow, or null when this
+   * run has none to compare against. Everything below is relative to it.
+   */
+  const leftScore =
+    typeof analyzed.data.analysis?.overall_match_score === "number"
+      ? analyzed.data.analysis.overall_match_score
+      : null;
+
+  /**
+   * One measurement in, one display out — plus the downgrades behind it, which
+   * are what the caller reads to decide whether the repair leg is worth firing.
+   *
+   * Three displays, in the order they are tried:
+   *
+   *   1. No rows to compare (an old server, or a matrix-less reply): the
+   *      measurement, published exactly as this module has always published
+   *      it. This branch is FIRST on purpose. It is the backward-compatibility
+   *      guard, and every line under it assumes a matrix that really arrived.
+   *   2. Measured at or above the left score: the measurement, annotated as
+   *      needing no explanation.
+   *   3. A dip. Now the matrix decides. Nothing worse -> the dip is instrument
+   *      noise (the same model reads the same document a few points apart) and
+   *      the LEFT score is what the panel shows. Only nice-to-haves worse ->
+   *      the left score still stands, with the note and the named rows to keep
+   *      it honest. A must-have worse -> the measured number, lower, named and
+   *      noted: the one display this product allows to go down.
+   *
+   * Called on the repaired measurement too, which is why it never fires the
+   * repair itself: it decides, the caller spends.
+   */
+  const decide = (m: Measurement): { patch: Partial<RunState>; downs: Downgrade[] } => {
+    if (m.rows.length === 0) return { patch: { rescoredScore: m.score }, downs: [] };
+    if (leftScore === null || m.score >= leftScore) {
+      return { patch: { rescoredScore: m.score, ...NO_SCORE_NOTE }, downs: [] };
+    }
+
+    const downs = compareMatrices(analyzed.data.analysis?.requirements_matrix ?? [], m.rows);
+    if (downs.length === 0) {
+      return {
+        patch: { rescoredScore: leftScore, scoreNote: "maintained", downgradedRequirements: [] },
+        downs,
+      };
+    }
+
+    const mustHave = downs.filter((d) => d.kind === "must_have");
+    // Must-haves first: `downgradedRequirements` is a flat list of strings, so
+    // order is the only way it can tell the panel which name matters most.
+    const named = [...mustHave, ...downs.filter((d) => d.kind !== "must_have")].map(
+      (d) => d.requirement,
+    );
+    return {
+      patch:
+        mustHave.length > 0
+          ? { rescoredScore: m.score, scoreNote: "downgraded", downgradedRequirements: named }
+          : { rescoredScore: leftScore, scoreNote: "nice_dip", downgradedRequirements: named },
+      downs,
+    };
+  };
+
+  const measured = await measureWithRows(tailored.data.tailored?.resume);
+  /**
+   * True once the repair leg has run — which is also true of the free leg it
+   * spent, so the gated auto-refine tail below must not run as well.
+   */
+  let repaired = false;
+  if (measured) {
+    const first = decide(measured);
+    // ANY downgrade under a dipped number buys ONE matrix-aimed rewrite. Not
+    // just a must-have: the owner widened this deliberately, because a
+    // nice-to-have the rewrite dropped is still something the user had and
+    // lost, and the wait costs a free leg on the ~5-8% of runs that reach here.
+    //
+    // Not on a refine run, though, for exactly the reason the auto-refine tail
+    // is not: that run IS the second free leg, and its own rescore is the last
+    // one the runId is allowed. Repairing it would send a third tailor and a
+    // third rescore, be refused, and burn the allowance the user's NEXT refine
+    // needs. The DISPLAY still tells the truth there — only the repair is
+    // skipped.
+    if (first.downs.length === 0 || opts.priorAnalysis || opts.isRefinement) {
+      // Phase stays "done" — it already was, and re-sending it would be the
+      // only way this patch could disturb anything.
+      onUpdate(first.patch);
+    } else {
+      repaired = true;
+      // Nothing about the score is published until the decision is final. The
+      // panel holds the slot on a placeholder while `refining` is true and no
+      // note has been decided, so publishing the dipped measurement here would
+      // make the number visibly fall and then jump back — the exact flicker
+      // the hold-the-number design exists to prevent.
+      //
+      // `settled` starts as the display for the measurement we already have:
+      // it is what the panel gets if the repair produces nothing better, or
+      // throws.
+      let settled = first.patch;
+      let adopted: Partial<RunState> = {};
+      try {
+        onUpdate({ refining: true });
+        const outcome = await runRefineLeg(analyzed.data.analysis);
+        const remeasured = outcome?.measurement ?? null;
+        // A stricter gate than the auto-refine tail's, because this rewrite
+        // exists to fix a specific regression: not-worse on the number is not
+        // enough, it must also have stopped losing must-haves. A repaired
+        // rewrite that still drops one is no improvement on the one the user
+        // already has, and adopting it would swap the document for nothing.
+        if (
+          outcome &&
+          remeasured &&
+          remeasured.score >= measured.score &&
+          compareMatrices(
+            analyzed.data.analysis?.requirements_matrix ?? [],
+            remeasured.rows,
+          ).filter((d) => d.kind === "must_have").length === 0
+        ) {
+          // Re-branch on the measurement that now stands. `decide` can report
+          // downgrades again — a nice-to-have residual — and this time they
+          // are the DISPLAY, not a trigger: the repair runs once. A loop here
+          // would spend free legs the runId does not have on a rewrite the
+          // gate above has already refused once.
+          settled = decide(remeasured).patch;
+          adopted = { tailored: outcome.tailored, ...freshRemaining(outcome.remaining) };
+        }
+      } catch (err) {
+        console.warn(
+          JSON.stringify({
+            evt: "repair_threw",
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      } finally {
+        // One patch, describing the outcome completely — the same reason the
+        // done patch re-sends the analysis. Unconditional, because every path
+        // out of the block above has to clear the hint it turned on, and every
+        // path out of it also owes the panel a number: `settled` is the
+        // pre-repair display until something better replaces it.
+        onUpdate({ ...settled, ...adopted, refining: false });
+      }
+    }
+  }
 
   // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
   // so the server treats it as a refinement and does not charge), measure the
@@ -540,6 +800,11 @@ export async function runTailor(
   // run that IS itself the second free leg.
   if (opts.autoRefine !== true) return;
   if (opts.priorAnalysis || opts.isRefinement) return;
+  // Third guard, and the one that is new: the repair leg above already spent
+  // this runId's second free leg on the same rewrite. Running both would send
+  // a third tailor and a third rescore for a document the repair has already
+  // produced, measured, and either adopted or refused.
+  if (repaired) return;
   // Adoption is published together with the closing `refining: false` rather
   // than in its own patch, so the leg ends in ONE terminal patch that
   // describes its outcome completely — the same reason the `done` patch
@@ -547,39 +812,23 @@ export async function runTailor(
   let adopted: Partial<RunState> = {};
   try {
     onUpdate({ refining: true });
-    // Buffered, deliberately. Nothing renders this leg's tokens: the panel is
-    // already showing a completed run plus a hint that a better version may
-    // replace it, so streaming here would put a second live preview over a
-    // finished result to no one's benefit.
-    const refined = await apiPost<{ tailored: TailorResult; remaining: number | null }>(
-      "/api/tailor",
-      { ...payload, analysis: analyzed.data.analysis },
-      opts.runToken,
-    );
-    if (!refined.ok || !refined.data.tailored) {
-      console.warn(JSON.stringify({ evt: "refine_failed" }));
-      return;
-    }
-    const refinedScore = await measure(refined.data.tailored.resume);
+    const outcome = await runRefineLeg(analyzed.data.analysis);
+    if (!outcome) return;
     // Adopt only a measured, not-worse rewrite: the right-hand number must
     // never go DOWN because of a leg the user did not ask for. `?? -1` adopts
     // when the first measurement itself failed — any measured number beats an
-    // unmeasured projection.
-    if (refinedScore !== null && refinedScore >= (firstScore ?? -1)) {
-      adopted = { tailored: refined.data.tailored, rescoredScore: refinedScore };
-      // This leg is free, so its read normally REPEATS the count the done
-      // patch published — but it is also the freshest read of the quota, and
-      // a charge committing after the done patch's reads (or a run started
-      // elsewhere) leaves that count one too high. Min-ed rather than
-      // assigned, for the same reason the done patch mins its two reads: the
-      // number the user is watching must never jump back up. A null read
-      // means "not reported", so it changes nothing.
-      if (refined.data.remaining !== null) {
-        adopted.remaining =
-          knownRemaining === null
-            ? refined.data.remaining
-            : Math.min(knownRemaining, refined.data.remaining);
-      }
+    // unmeasured projection. Unchanged from the day this leg was written; the
+    // repair leg's stricter gate is its own, and deliberately not shared.
+    if (outcome.measurement && outcome.measurement.score >= (measured?.score ?? -1)) {
+      adopted = {
+        tailored: outcome.tailored,
+        // The same three-way display the first measurement got. NO_SCORE_NOTE
+        // leads so that a rewrite measured WITHOUT rows cannot leave the first
+        // measurement's note standing beside its new number.
+        ...NO_SCORE_NOTE,
+        ...decide(outcome.measurement).patch,
+        ...freshRemaining(outcome.remaining),
+      };
     }
   } catch (err) {
     console.warn(

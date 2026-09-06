@@ -221,3 +221,176 @@ describe("Results - uplift wiring", () => {
     expect(container.textContent).not.toContain("Raise your score with real experience");
   });
 });
+
+/**
+ * The streamed preview's half of Results.tsx.
+ *
+ * Every test here is really the same assertion twice: the preview paints when
+ * there is nothing better, and it yields the moment there is. The real result
+ * winning is not an optimisation — the writing patch does not clear the
+ * streaming fields, so a component that preferred them would show a
+ * half-arrived matrix beside a finished download button.
+ */
+describe("Results - streamed preview", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  async function render(state: Partial<Parameters<typeof Results>[0]["state"]>) {
+    await act(async () => {
+      root.render(
+        <Results
+          state={{ ...INITIAL_RUN_STATE, ...state }}
+          company=""
+          roleTitle=""
+          jdSummary=""
+          jdUrl={undefined}
+          signedIn
+          saving={false}
+          onSavingChange={() => {}}
+          generatedAt={null}
+          baselineScore={null}
+          appliedSupplement=""
+          canRun
+          onImprove={() => {}}
+          supplement={{ text: "", onChange: () => {}, onSubmit: () => {}, busy: false, canRun: true }}
+        />,
+      );
+    });
+  }
+
+  it("paints a streamed score with no arrow, because there is nothing to point at yet", async () => {
+    await render({ phase: "comparing", streamingScore: 62 });
+    expect(container.querySelector(".score")?.textContent).toBe("62 match");
+  });
+
+  // The pinned string is the contract: several App tests assert `.score`
+  // verbatim, so a streamed number must never leak into a card that has a
+  // real analysis to show.
+  it("yields the score slot to the real analysis the moment it lands", async () => {
+    await render({
+      phase: "done",
+      analysis: ANALYSIS,
+      tailored: TAILORED,
+      // Deliberately still set: the writing patch does not clear these.
+      streamingScore: 62,
+    });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 70 match");
+  });
+
+  it("paints streamed requirement rows, marked as still arriving", async () => {
+    await render({
+      phase: "comparing",
+      streamingRows: [
+        { requirement: "Kubernetes", kind: "must_have", status: "met", evidence: "Ran a cluster", suggestion: "" },
+      ],
+    });
+    expect(container.textContent).toContain("Kubernetes");
+    expect(container.textContent).toContain("Ran a cluster");
+    expect(container.textContent).toContain("assessing");
+  });
+
+  it("yields the requirement list to the real matrix", async () => {
+    await render({
+      phase: "done",
+      analysis: ANALYSIS,
+      tailored: TAILORED,
+      streamingRows: [
+        { requirement: "Streamed only", kind: "must_have", status: "met", evidence: "", suggestion: "" },
+      ],
+    });
+    expect(container.textContent).toContain("Kubernetes");
+    expect(container.textContent).not.toContain("Streamed only");
+    expect(container.textContent).not.toContain("assessing");
+  });
+
+  // A streamed resume is a display, not a result: it has no contact block, it
+  // was never measured, and it is not what a download would contain. The gates
+  // on the download, the save and the question cards all read `tailored` for
+  // exactly that reason, and this test is what keeps them reading it.
+  it("previews a streamed resume without offering to download or save it", async () => {
+    await render({
+      phase: "writing",
+      analysis: ANALYSIS,
+      streamingResume: {
+        contact: { name: "", email: "", phone: "", location: "", links: [] },
+        summary: "Platform engineer with eight years on payment systems.",
+        experience: [
+          { company: "Stripe", title: "Staff Engineer", dates: "", bullets: ["Cut deploy time to six minutes"] },
+        ],
+        projects: [],
+        skills: [],
+        education: [],
+      },
+    });
+    expect(container.textContent).toContain("Platform engineer with eight years");
+    expect(container.textContent).toContain("Stripe");
+    expect(container.textContent).toContain("Staff Engineer");
+    expect(container.textContent).toContain("Cut deploy time to six minutes");
+    expect(container.textContent).toContain("Drafting");
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent);
+    expect(labels).not.toContain("Download PDF resume");
+    expect(labels).not.toContain("Save to career-path");
+    expect(container.textContent).not.toContain("Raise your score with real experience");
+  });
+
+  it("drops the draft preview once the real rewrite exists", async () => {
+    await render({
+      phase: "done",
+      analysis: ANALYSIS,
+      tailored: TAILORED,
+      streamingResume: {
+        contact: { name: "", email: "", phone: "", location: "", links: [] },
+        summary: "A draft summary nobody should still be reading.",
+        experience: [],
+        projects: [],
+        skills: [],
+        education: [],
+      },
+    });
+    expect(container.textContent).not.toContain("A draft summary nobody should still be reading.");
+    expect(container.textContent).not.toContain("Drafting");
+  });
+
+  it("shows waiting tips only until the first substantive thing arrives", async () => {
+    await render({ phase: "comparing" });
+    expect(container.querySelector(".tip-card")).toBeTruthy();
+
+    // Each of these is enough on its own to retire the tips.
+    await render({ phase: "comparing", streamingScore: 62 });
+    expect(container.querySelector(".tip-card")).toBeNull();
+
+    await render({
+      phase: "comparing",
+      streamingRows: [
+        { requirement: "Go", kind: "must_have", status: "met", evidence: "", suggestion: "" },
+      ],
+    });
+    expect(container.querySelector(".tip-card")).toBeNull();
+
+    await render({ phase: "done", analysis: ANALYSIS, tailored: TAILORED });
+    expect(container.querySelector(".tip-card")).toBeNull();
+  });
+
+  it("shows no tips outside a working phase", async () => {
+    await render({ phase: "idle" });
+    expect(container.querySelector(".tip-card")).toBeNull();
+    await render({
+      phase: "error",
+      error: { kind: "server", message: "Analysis failed." },
+    });
+    expect(container.querySelector(".tip-card")).toBeNull();
+  });
+});

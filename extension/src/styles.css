@@ -66,6 +66,35 @@ header h1 { font-size: 15px; margin: 2px 0 0; }
 .reqs li { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .reqs li:last-child { border-bottom: 0; padding-bottom: 0; }
 
+/* WaitingTips. A card like the others, half a tone quieter: it occupies the
+   spot the result is about to take, and must not compete with it for
+   attention when both are briefly on screen during a re-render. */
+.tip-card { background: #f8fafc; }
+.tip-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: var(--bg);
+  white-space: nowrap;
+}
+
+/* The rotation's fade. Runs on MOUNT, and the tip paragraph is keyed on the
+   rotation counter, so every new tip is a new node and the animation replays
+   without any state saying "now fade". Opacity only — a card that also moved
+   would drag the eye back to it every eight seconds. */
+@keyframes tip-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.tip-card .tip-text { margin: 0; animation: tip-fade-in 400ms ease-in; }
+@media (prefers-reduced-motion: reduce) {
+  .tip-card .tip-text { animation: none; }
+}
+
 .breakdown { display: flex; flex-direction: column; gap: 10px; }
 .bd-entry { margin: 4px 0 8px; }
 .bd-title { font-weight: 600; }

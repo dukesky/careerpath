@@ -5,6 +5,7 @@ import { DownloadPdf } from "./DownloadPdf";
 import { SaveButton } from "./SaveButton";
 import { SupplementBox, type SupplementProps } from "./SupplementBox";
 import { QuestionCards } from "./QuestionCards";
+import { WaitingTips } from "./WaitingTips";
 import { supplementPlaceholder } from "./gapHint";
 
 const STATUS_MARK: Record<ReqStatus, string> = {
@@ -72,7 +73,43 @@ export function Results({
   canRun: boolean;
 }) {
   const progress = PHASE_COPY[state.phase];
-  const { analysis, tailored, rescoredScore } = state;
+  const { analysis, tailored, rescoredScore, streamingScore, streamingRows, streamingResume } =
+    state;
+
+  /**
+   * THE rule for everything the streamed preview touches: a real result always
+   * wins.
+   *
+   * Not a preference — a correctness requirement. The `writing` patch that
+   * delivers the analysis does NOT clear the streaming fields (only terminal
+   * patches do), so during the whole tailor leg this component holds a
+   * finished analysis and a half-arrived matrix at the same time. Reading the
+   * streamed value first would paint the approximation over the real thing for
+   * 20-30 seconds, and the pinned `.score` strings in App.test.tsx would move.
+   *
+   * So every pair below is written the same way: `analysis ? real : streamed`.
+   * Resist the urge to compress them into `streamed ?? real`.
+   */
+  const shownScore = analysis ? (baselineScore ?? analysis.overall_match_score) : streamingScore;
+  const shownRows = analysis ? analysis.requirements_matrix : streamingRows;
+  /** True while the rows on screen are a stream's prefix rather than a matrix. */
+  const rowsStreaming = !analysis && streamingRows.length > 0;
+
+  /**
+   * Whether the run is between its start and its first real content.
+   *
+   * This is the only window the tips card is allowed to occupy. "Substantive"
+   * deliberately includes the STREAMED fields: once a score or a single
+   * requirement row is on screen the user has something of their own to read,
+   * and career advice underneath it becomes noise competing with their result.
+   */
+  const working =
+    state.phase === "reading" || state.phase === "comparing" || state.phase === "writing";
+  const hasContent =
+    analysis !== null ||
+    streamingScore !== null ||
+    streamingRows.length > 0 ||
+    streamingResume !== null;
 
   /**
    * How many must-haves this role has, and whether every one is already met.
@@ -94,7 +131,13 @@ export function Results({
 
       {progress && !analysis && <p className="muted">{progress}</p>}
 
-      {analysis && (
+      {/* Under the phase line, not instead of it: the phase line says what the
+          product is doing, the tips say something useful while it does it.
+          Both are gone by the time there is anything of the user's own to
+          read. */}
+      <WaitingTips active={working && !hasContent} />
+
+      {(analysis || streamingScore !== null) && (
         <section className="card">
           {/* Raw integers, both sides. `roundToFive` used to sit on both of
               these numbers because they came from two uncalibrated rulers —
@@ -114,7 +157,12 @@ export function Results({
                 value shown here is the one that is about to BECOME it — so
                 nothing jumps when the run completes and the real baseline is
                 set. */}
-            {baselineScore ?? analysis.overall_match_score}
+            {/* When there is no analysis yet this is the streamed number, and
+                the `tailored &&` arrow below cannot be reached — so a
+                streaming-only card renders exactly "62 match". That absence of
+                an arrow is the honest reading: nothing has been rewritten yet,
+                so there is no second number to point at. */}
+            {shownScore}
             {tailored && (
               // `rescoredScore ?? projected` — the rescore arrives 20-30s
               // after this card first paints, so the projection holds the slot
@@ -147,7 +195,13 @@ export function Results({
               is near its honest ceiling for this role.
             </p>
           )}
-          {analysis.rationale && <p className="muted">{analysis.rationale}</p>}
+          {/* Says out loud that the number above is a stream's, not a
+              measurement's. Without it the card is indistinguishable from a
+              finished one that lost its download button, and a number that
+              later moves with no warning reads as the panel changing its
+              mind. Outside `.score` for the same reason as the hints above. */}
+          {!analysis && <p className="muted tiny">Still comparing — this number may still move.</p>}
+          {analysis?.rationale && <p className="muted">{analysis.rationale}</p>}
 
           {/* The download cannot appear any earlier than this. It downloads the
               REWRITTEN resume, which only exists once the tailor leg returns —
@@ -212,7 +266,49 @@ export function Results({
 
       {progress && analysis && !tailored && <p className="muted">{progress}</p>}
 
-      {analysis && (
+      {/* The rewrite, as far as it has been written. Sits where the finished
+          document's controls sit, because it IS the artifact — just not yet a
+          usable one.
+
+          Read-only and deliberately impoverished: no DownloadPdf, no
+          SaveButton, no Copy-as-JSON. Those all take `tailored.resume`, and
+          this object is not that — it is a prefix pulled out of a half-arrived
+          JSON buffer with an empty contact block, no skills and no education,
+          which would produce a PDF and a saved record that silently dropped
+          most of the user's resume. It is rendered inline rather than through
+          ResumeBreakdown for the same reason: that component prints "Not
+          detected" under every section it does not find, which is a claim
+          about the PARSE, and every one of them would be a lie here.
+
+          `!tailored &&` is the yielding rule again — the done patch clears
+          `streamingResume` anyway, but a restored cache entry need not have,
+          and a draft under a finished download is worse than no draft. */}
+      {!tailored && streamingResume && (
+        <section className="card">
+          <div className="label">Drafting your tailored resume…</div>
+          {streamingResume.summary && <p className="muted">{streamingResume.summary}</p>}
+          {streamingResume.experience.map((e, i) => (
+            <div key={i} className="bd-entry">
+              <div className="bd-title">
+                {[e.title, e.company].filter((s) => s.trim() !== "").join(" · ")}
+              </div>
+              {e.bullets.length > 0 && (
+                <ul className="bd-bullets">
+                  {e.bullets.map((b, j) => (
+                    <li key={j}>{b}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ))}
+          <p className="muted tiny">
+            A preview of what&rsquo;s being written. The finished version, with
+            everything else on your resume, downloads when it lands.
+          </p>
+        </section>
+      )}
+
+      {(analysis || shownRows.length > 0) && (
         <section className="card">
           <div className="label">Details</div>
 
@@ -230,17 +326,26 @@ export function Results({
             </>
           )}
 
+          {/* Same markup for both sources, on purpose: a streamed row and a
+              final row differ in how complete the LIST is, not in what a row
+              means — runStream.ts mirrors the server's own status coercion so
+              a row cannot change mark when the final frame replaces it. The
+              suffix below is the only difference the user sees. */}
           <div className="label">Requirements</div>
           <ul className="reqs">
-            {analysis.requirements_matrix.map((row, i) => (
+            {shownRows.map((row, i) => (
               <li key={i}>
                 <span>{STATUS_MARK[row.status]}</span> <strong>{row.requirement}</strong>
                 {row.evidence && <div className="muted tiny">{row.evidence}</div>}
               </li>
             ))}
           </ul>
+          {/* A short list of met requirements looks like a verdict. This says
+              it is a prefix, so the user does not conclude the role has three
+              requirements and close the panel. */}
+          {rowsStreaming && <p className="muted tiny">still assessing…</p>}
 
-          {analysis.gaps.length > 0 && (
+          {analysis && analysis.gaps.length > 0 && (
             <>
               <div className="label">Honest gaps</div>
               <ul className="reqs">

@@ -72,9 +72,11 @@ const LEGS_PER_GENERATE = 2;
  * and its second charges (9 — past the window and odd, so the pair rule below
  * does not wave it through).
  *
- * That third refinement is free but not fully served: the rescore route's own
- * MAX_RESCORES_PER_RUN is 4, so its measurement is refused and the user sees
- * the tailor model's projection instead of a measured number. The two ceilings
+ * Whether that third refinement's rescore is served depends on the run's
+ * history: on a run that never repaired it is rescore #4 of 4 and IS served;
+ * on a run that repaired (whose repair consumed rescore #2) it would be #5,
+ * is refused, and the user sees the tailor model's projection instead of a
+ * measured number. The two ceilings
  * count different units and are deliberately not derived from each other (see
  * that constant's note), so a change here does not move that one.
  *

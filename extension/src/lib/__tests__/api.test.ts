@@ -412,20 +412,57 @@ describe("api client", () => {
       expect(res).toEqual({ ok: true, data: { ok: 1 } });
     });
 
+    /**
+     * A response whose reader records its own cancellation.
+     *
+     * A real ReadableStream will not do: `cancel()` on a stream that has
+     * already been closed by its source resolves without ever reaching the
+     * underlying cancel algorithm, so the one thing this needs to observe
+     * would be invisible. Only `body.getReader()`, `read` and `cancel` are
+     * touched by the reader under test.
+     */
+    const recordingSse = (chunks: string[]) => {
+      const encoder = new TextEncoder();
+      const rec = { cancels: 0, reads: 0 };
+      let i = 0;
+      const res = {
+        ok: true,
+        status: 200,
+        body: {
+          getReader: () => ({
+            async read() {
+              rec.reads++;
+              if (i >= chunks.length) return { done: true, value: undefined };
+              return { done: false, value: encoder.encode(chunks[i++]) };
+            },
+            async cancel() {
+              rec.cancels++;
+            },
+          }),
+        },
+      } as unknown as Response;
+      return { res, rec };
+    };
+
     // The server's error frame carries the bare message; callers decide how to
     // dress it. No retry here — that judgement belongs to the run.
+    //
+    // Returning early also has to RELEASE the socket: the rest of the response
+    // is never going to be read, and an abandoned reader holds the connection
+    // open until the whole run's other legs finish with it.
     it("maps an error frame to a server failure carrying its message", async () => {
       await setToken("t1");
-      vi.stubGlobal(
-        "fetch",
-        vi.fn<typeof fetch>(async () =>
-          sse(frames('{"d":"partial"}', '{"error":"model timed out"}')),
-        ),
+      const { res: streamRes, rec } = recordingSse(
+        frames('{"d":"partial"}', '{"error":"model timed out"}', '{"d":"never read"}'),
       );
+      vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => streamRes));
 
-      const res = await apiStream("/api/analyze", {}, () => {});
+      const deltas: string[] = [];
+      const res = await apiStream("/api/analyze", {}, (d) => deltas.push(d));
 
       expect(res).toEqual({ ok: false, kind: "server", message: "model timed out" });
+      expect(deltas).toEqual(["partial"]); // stopped at the error frame
+      expect(rec.cancels).toBe(1);
     });
 
     // A stream that stops mid-JSON is the case the run's buffered fallback

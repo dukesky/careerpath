@@ -307,7 +307,7 @@ describe("POST /api/tailor with stream: true", () => {
  * to its controller after a disconnect is invisible from the Response. These
  * tests watch the controller itself.
  */
-function recordController() {
+function recordController(opts: { failEnqueueAfter?: number } = {}) {
   const rec = { enqueues: 0, closes: 0, throws: [] as unknown[] };
   const Real = globalThis.ReadableStream;
 
@@ -317,6 +317,12 @@ function recordController() {
     },
     enqueue(chunk: R) {
       rec.enqueues++;
+      // The other way a client goes away: the socket faults under us and the
+      // stream's own cancel() never runs, so `cancelled` stays false while
+      // every enqueue from here on throws.
+      if (opts.failEnqueueAfter !== undefined && rec.enqueues > opts.failEnqueueAfter) {
+        throw new TypeError("Invalid state: Controller is already closed");
+      }
       try {
         c.enqueue(chunk);
       } catch (err) {
@@ -437,5 +443,49 @@ describe("sseResponse when the client disconnects", () => {
     expect(rec.enqueues).toBe(1);
     expect(rec.closes).toBe(0);
     expect(rec.throws).toEqual([]);
+  });
+
+  // The dead-socket case cancel() does NOT cover. `closed` is what a faulted
+  // enqueue sets, and until `send` honoured it the producer kept drawing the
+  // whole generation out of the model — billed in full — for a reader that
+  // had already gone.
+  it("stops the producer once a faulted enqueue has marked the stream closed", async () => {
+    const rec = recordController({ failEnqueueAfter: 1 });
+
+    let finalized = false;
+    let completed = false;
+
+    const gen = (async function* (): AsyncGenerator<string, string> {
+      try {
+        yield "first";
+        yield "second";
+        yield "third";
+        yield "fourth";
+        completed = true;
+        return "firstsecondthirdfourth";
+      } finally {
+        finalized = true;
+      }
+    })();
+
+    const seen: string[] = [];
+    sseResponse(async (send) => {
+      const full = await drainDeltas(gen, (delta) => {
+        send({ d: delta });
+        seen.push(delta);
+      });
+      send({ final: full });
+    });
+
+    await flush();
+
+    // "first" landed; "second" is the enqueue that faults (write swallows it
+    // and sets `closed`); by "third" the guard throws ClientGone and the
+    // generator is closed by its finalizer rather than by running out.
+    expect(seen).toEqual(["first", "second"]);
+    expect(rec.enqueues).toBe(2);
+    expect(finalized).toBe(true);
+    expect(completed).toBe(false);
+    expect(rec.closes).toBe(0);
   });
 });

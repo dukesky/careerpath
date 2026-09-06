@@ -203,6 +203,44 @@ describe("streamLLM", () => {
     expect(call.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  // What a client disconnect looks like from in here: drainDeltas calls
+  // gen.return() while the generator is suspended at a yield, so neither the
+  // normal settle nor the throw path runs. The upstream call still happened
+  // and still cost money, so it has to land in the tally exactly once.
+  it("records the call once when the consumer hangs up after the first delta", async () => {
+    createMock.mockResolvedValue(
+      fakeStream([
+        deltaChunk("a"),
+        deltaChunk("b"),
+        { choices: [], usage: { prompt_tokens: 99, completion_tokens: 7 } },
+      ]),
+    );
+
+    const gen = streamLLM({
+      task: "analyze",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const first = await gen.next();
+    expect(first.value).toBe("a");
+    expect(statsCalls).toHaveLength(0); // nothing yet — the stream is still open
+
+    await gen.return("");
+
+    expect(recorded()).toHaveLength(1);
+    const call = recorded()[0];
+    expect(call).toMatchObject({
+      task: "analyze",
+      model: "anthropic/claude-sonnet-4.6",
+      // The usage chunk never arrived, so there is nothing honest to report
+      // but zeros; the duration is the part that still means something.
+      promptTokens: 0,
+      completionTokens: 0,
+      ok: true,
+    });
+    expect(call.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
   it("falls back to the task default temperature and omits max_tokens", async () => {
     createMock.mockResolvedValue(fakeStream([deltaChunk("x")]));
 

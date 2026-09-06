@@ -30,9 +30,9 @@ class ClientGone extends Error {
  * Opens an SSE response and runs `produce`, which pushes frames through `send`.
  * `[DONE]` is appended when it resolves, an error frame when it rejects.
  *
- * A client that hangs up cancels the stream: `send` then throws instead of
- * writing, so the producer unwinds rather than generating (and billing) into a
- * socket nobody is reading.
+ * A client that hangs up cancels the stream — or simply faults it — and `send`
+ * then throws instead of writing, so the producer unwinds rather than
+ * generating (and billing) into a socket nobody is reading.
  */
 export function sseResponse(
   produce: (send: SseSend) => Promise<void>,
@@ -56,7 +56,16 @@ export function sseResponse(
         }
       };
       const send: SseSend = (payload) => {
-        if (cancelled) throw new ClientGone();
+        // `closed` counts as gone, not just `cancelled`. A socket can fault
+        // without the stream's cancel() ever running — write() swallows that
+        // enqueue and records it here — and a guard that only watched
+        // `cancelled` would let the producer quietly draw the whole model
+        // generation, billed in full, into a reader that had already left.
+        //
+        // Only the producer's frames go through `send`. The terminal frames
+        // ([DONE] and the error frame) call `write` directly, so tightening
+        // this cannot swallow them.
+        if (cancelled || closed) throw new ClientGone();
         write(`data: ${JSON.stringify(payload)}\n\n`);
       };
       try {

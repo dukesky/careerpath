@@ -43,6 +43,7 @@ function clampScore(v: unknown): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+// Mirrored by hand in extension/src/lib/runStream.ts (the extension cannot import server src) — change both together.
 function toStatus(v: unknown): ReqStatus {
   const s = asString(v).toLowerCase().replace(/[\s-]+/g, "_");
   if (s === "met") return "met";

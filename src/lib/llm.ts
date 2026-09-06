@@ -264,6 +264,29 @@ export async function* streamLLM(
   let promptTokens = 0;
   let completionTokens = 0;
 
+  // Recording is guarded and lives in the `finally` because there are THREE
+  // ways out of this generator, not two: it settles, it throws, or the
+  // consumer ends it early with gen.return() — which is what drainDeltas does
+  // when the client disconnects. That third exit runs neither branch below,
+  // so before this the calls that a disconnect cut short were the only ones
+  // missing from the tally: real spend, invisible.
+  let recorded = false;
+  const record = async (ok: boolean) => {
+    if (recorded) return;
+    recorded = true;
+    await recordLLMCall({
+      task,
+      model,
+      quality,
+      durationMs: Date.now() - started,
+      // A failure reports zeros: whatever partial usage was in flight is not
+      // something the aggregate should treat as delivered work.
+      promptTokens: ok ? promptTokens : 0,
+      completionTokens: ok ? completionTokens : 0,
+      ok,
+    });
+  };
+
   try {
     const stream = await getClient().chat.completions.create({
       model,
@@ -288,31 +311,20 @@ export async function* streamLLM(
         yield delta;
       }
     }
+    await record(true);
   } catch (err) {
     // openai-node raises an APIError from inside the iterator whenever
     // OpenRouter surfaces an upstream error, so a mid-stream throw is a normal
     // path — count it, or streamed failures never reach the failure tally.
-    await recordLLMCall({
-      task,
-      model,
-      quality,
-      durationMs: Date.now() - started,
-      promptTokens: 0,
-      completionTokens: 0,
-      ok: false,
-    });
+    await record(false);
     throw err;
+  } finally {
+    // Reached with nothing recorded only on the early-return path. The call
+    // was made and the tokens burned up to the hang-up, so it counts as a
+    // success with whatever usage had arrived — usually none, because the
+    // usage chunk is the last one.
+    await record(true);
   }
-
-  await recordLLMCall({
-    task,
-    model,
-    quality,
-    durationMs: Date.now() - started,
-    promptTokens,
-    completionTokens,
-    ok: true,
-  });
 
   return full;
 }

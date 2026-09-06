@@ -124,6 +124,11 @@ async function readStream<T>(
           final = parsed.final;
           haveFinal = true;
         } else if (typeof parsed.error === "string" && parsed.error) {
+          // Nothing after this frame will ever be read, so let the socket go:
+          // returning out of the loop leaves the reader locked to a body the
+          // runtime then keeps alive. Failing to cancel cannot fail the leg,
+          // hence the swallowed rejection.
+          await reader.cancel().catch(() => {});
           // The message is the server's, bare — it is not wrapped here because
           // the caller decides how a streamed failure is surfaced, if at all.
           return { ok: false, kind: "server", message: parsed.error };

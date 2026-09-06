@@ -102,10 +102,17 @@ const STREAM_PATCH_INTERVAL_MS = 500;
 /**
  * A publisher that drops everything arriving inside the window above.
  *
- * `build` runs ONLY when the window is open — extraction re-scans the whole
- * buffer, so calling it per token would be quadratic in the length of a model
- * response. Returning null means "nothing new to say", and deliberately does
- * NOT consume the window: the next delta gets to try again immediately.
+ * What the window definitely bounds is PUBLISHES — the storage writes and the
+ * renders behind them, which is the expensive half.
+ *
+ * It bounds `build` less tightly than it looks. A null build means "nothing
+ * new to say" and deliberately does not consume the window, so while a long
+ * string is still streaming — the tailored summary, say, where every delta
+ * lands mid-value and extraction keeps refusing to read it — the full-buffer
+ * re-scan does run per delta. That is accepted rather than overlooked: the
+ * scan is a linear pass over tens of KB at the very most, deltas arrive at
+ * model speed rather than CPU speed, and the alternative (consuming the window
+ * on a null) would delay the first real paint by up to a window for nothing.
  */
 function throttle(
   onUpdate: (patch: Partial<RunState>) => void,
@@ -310,7 +317,9 @@ export async function runTailor(
   const runId = opts.runId || newRunId();
   const payload = {
     structuredResume: resume,
-    jdText: jd.text,
+    // 10_000 is the server's MAX_JD_CHARS (src/lib/limits.ts); it caps this
+    // itself, so anything past it is only ever uploaded to be discarded.
+    jdText: jd.text.slice(0, 10_000),
     extraInfo: opts.extraInfo ?? "",
     quality: "quality",
     runId,
@@ -465,10 +474,12 @@ export async function runTailor(
         {
           structuredResume: resume,
           // The same JD the other two legs measured against, in the only form
-          // this run has now that nothing parses it. Measuring the rewrite
-          // against a differently-shaped JD would break the one property this
-          // leg exists for: the same ruler on both sides of the arrow.
-          jdText: jd.text,
+          // this run has now that nothing parses it — and cut at the same
+          // 10_000 (the server's MAX_JD_CHARS, src/lib/limits.ts), because
+          // measuring the rewrite against a differently-shaped JD would break
+          // the one property this leg exists for: the same ruler on both
+          // sides of the arrow.
+          jdText: jd.text.slice(0, 10_000),
           quality: "quality",
           runId,
         },

@@ -45,7 +45,11 @@ export function WaitingTips({ active }: { active: boolean }) {
   // The deck currently being dealt, and which pass through it we are on.
   // Held in refs because neither is rendered directly: they only decide WHICH
   // tip `shownCount` names, so changing them must not itself cause a render.
-  const deck = useRef<number[]>(shuffled(TIPS.length));
+  // Lazily initialised: `useRef(shuffled(...))` would re-shuffle on EVERY
+  // render and throw the result away, and this component re-renders several
+  // times a second while a run streams.
+  const deck = useRef<number[] | null>(null);
+  if (deck.current === null) deck.current = shuffled(TIPS.length);
   const dealt = useRef(0);
 
   useEffect(() => {

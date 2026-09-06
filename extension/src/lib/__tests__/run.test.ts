@@ -192,6 +192,28 @@ describe("runTailor", () => {
     }
   });
 
+  // The server caps the posting at MAX_JD_CHARS before it reaches a model, so
+  // everything past that is bytes uploaded to be thrown away. A long posting
+  // page (or a mis-extracted whole document) is not rare enough to leave that
+  // to the wire.
+  it("caps the jdText it uploads on every leg", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+      if (String(url).endsWith("/api/tailor"))
+        return sse({ tailored: { resume: { summary: "v1" } }, remaining: 4 });
+      return json({ score: 80 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const long = { ...JD, text: "b".repeat(25_000) };
+    await runTailor(long, RESUME, () => {});
+
+    expect(fetchMock.mock.calls).toHaveLength(3); // analyze, tailor, rescore
+    for (const call of fetchMock.mock.calls) {
+      expect(bodyOf(call).jdText).toBe("b".repeat(10_000));
+    }
+  });
+
   it("asks the two model legs to stream, and the rescore leg not to", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });

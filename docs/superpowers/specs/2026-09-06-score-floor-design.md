@@ -19,7 +19,7 @@ requirements matrix 零翻转、盲评 70-83% 判改后文档更好。判定"噪
 |---|---|
 | 噪声性下跌（降分、矩阵无降级）显示 | "维持原分"：91 → 91（中性色）+ 小字 "Re-measured within the ruler's precision — every requirement holds; presentation improved" |
 | 真降级处置 | 自动修复一次：复用 autoRefine 机器（matrix-informed 免费 refine，adopt-only-if-not-worse），把降级行喂给 TARGETED UPLIFT；修复后仍降级才照实显示双数字并点名降级行 |
-| 修复触发范围 | **仅 must-have 行降级**触发修复（bench 观察到的降级全是 nice-to-have 判读抖动）；nice-to-have-only 降级 + 降分照实显示双数字 + 一行说明，不修复 |
+| 修复触发范围 | **任何行降级 + 降分即触发修复**（owner 2026-09-06 放宽：接受 ~5-8% 的 run 延迟等待，换取"用户基本永远看不到降分"）。修复后残余 nice-to-have 降级 → 显示**左分** + 小字点名读弱的行（数字不降，说明保诚实）；残余 must-have 降级（修复+采纳门下预计 ≈0）→ 唯一照实显示低分的情形，点名该行并引导问题卡片 |
 | 修复等待期 UI | 复用 WaitingTips（tips 轮换）+ 诚实的加倍用心文案（见 §5） |
 | 不采用 | "分数会降就不改/少改简历"——盲评证明降分时文档通常更好，为仪器噪声丢弃更好的文档是让真价值给假信号让路；任何形式的分数注水 |
 

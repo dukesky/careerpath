@@ -151,7 +151,20 @@ describe("TAILOR_SYSTEM change_log slimming", () => {
   it("caps change_log entries and requires them to be real", () => {
     const s = sys();
     expect(s).toContain("At most 6 entries");
-    expect(s).toContain("if you reverted it, it does not belong in the log");
+    expect(s).toContain(
+      "Every entry must describe an edit that IS present in the output resume",
+    );
+  });
+
+  // Bench iteration 2: 4/12 outputs logged reorders the resume does not show,
+  // and 2 more burned a capped slot on an "Order unchanged" non-edit. Name the
+  // "no change" note as forbidden, and make the model verify each entry against
+  // its own output before emitting the log.
+  it("forbids no-change notes and demands a self-check against the output", () => {
+    const s = sys();
+    expect(s).toContain('a "no change" note');
+    expect(s).toContain("Before emitting the log, check each entry against your own output");
+    expect(s).toContain("fabrication about your work");
   });
 });
 

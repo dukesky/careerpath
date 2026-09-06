@@ -225,7 +225,7 @@ Rules for "resume":
 Rules for "change_log":
 - At most 6 entries — one per meaningful SECTION-level change, not one per sentence. "section" e.g. "Summary", "Experience — <Company>", "Skills".
 - "original" and "revised" are snippets of 10 words or fewer; "reason" is one short sentence tying the change to the job.
-- Every entry must describe an edit that is actually present in the output resume. Never log an intention, a consideration, or a reverted change — if you reverted it, it does not belong in the log.
+- Every entry must describe an edit that IS present in the output resume — never an intention, a consideration, a reverted change, or a "no change" note. Before emitting the log, check each entry against your own output; an entry that misdescribes what you did is fabrication about your work.
 
 Rules for "projected_match_score":
 - Integer 0-100. Judge the TAILORED resume against the job's must-have and nice-to-have requirements exactly as a recruiter would score a gap analysis.

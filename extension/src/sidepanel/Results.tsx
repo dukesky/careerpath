@@ -73,8 +73,16 @@ export function Results({
   canRun: boolean;
 }) {
   const progress = PHASE_COPY[state.phase];
-  const { analysis, tailored, rescoredScore, streamingScore, streamingRows, streamingResume } =
-    state;
+  const {
+    analysis,
+    tailored,
+    rescoredScore,
+    scoreNote,
+    downgradedRequirements,
+    streamingScore,
+    streamingRows,
+    streamingResume,
+  } = state;
 
   /**
    * THE rule for everything the streamed preview touches: a real result always
@@ -123,6 +131,34 @@ export function Results({
   const mustHaves = analysis?.requirements_matrix.filter((r) => r.kind === "must_have") ?? [];
   const atCeiling = mustHaves.length > 0 && mustHaves.every((r) => r.status === "met");
 
+  /**
+   * The repair leg's window: a free rewrite is in flight and NO number has
+   * been decided yet.
+   *
+   * run.ts withholds the dipped measurement on this path deliberately (see the
+   * repair block there) — publishing it would make the number visibly fall and
+   * jump back. So this is the one refining state with an empty right-hand
+   * slot, and it is a different sentence from the auto-refine tail's: that leg
+   * runs with a measured number already on screen and is trying to improve it,
+   * this one is the wait for the number itself.
+   *
+   * `scoreNote === null` is redundant today — run.ts never sets a note without
+   * a score — but it is the field that actually means "nothing decided", and
+   * stating both keeps this reading true if a note ever arrives first.
+   */
+  const repairWaiting = state.refining && rescoredScore === null && scoreNote === null;
+
+  /**
+   * The rows a note names, split into "the one to say" and "how many more".
+   *
+   * Naming the first is what stops a held number from being a lie by
+   * omission; counting the rest is what stops a list of names from burying it.
+   * Must-haves lead the array (run.ts orders it), so the named row is always
+   * the one the reader has to act on.
+   */
+  const [namedRow, ...otherRows] = downgradedRequirements;
+  const andMore = otherRows.length > 0 ? ` and ${otherRows.length} more` : "";
+
   return (
     <div>
       {state.phase === "error" && state.error && (
@@ -134,8 +170,15 @@ export function Results({
       {/* Under the phase line, not instead of it: the phase line says what the
           product is doing, the tips say something useful while it does it.
           Both are gone by the time there is anything of the user's own to
-          read. */}
-      <WaitingTips active={working && !hasContent} />
+          read.
+
+          The repair wait earns them for the same reason the first paint does,
+          not as a second exception: the slot the user is watching is empty on
+          purpose, and the wait is a whole model round-trip. `hasContent` is
+          deliberately not consulted there — a finished rewrite IS on screen by
+          then, and gating on it would retire the tips in the one state that
+          most needs something to read. */}
+      <WaitingTips active={(working && !hasContent) || repairWaiting} />
 
       {(analysis || streamingScore !== null) && (
         <section className="card">
@@ -163,25 +206,93 @@ export function Results({
                 an arrow is the honest reading: nothing has been rewritten yet,
                 so there is no second number to point at. */}
             {shownScore}
-            {tailored && (
-              // `rescoredScore ?? projected` — the rescore arrives 20-30s
-              // after this card first paints, so the projection holds the slot
-              // until then and is simply replaced in place. No spinner and no
-              // transition: a number quietly becoming more accurate is not an
-              // event worth animating, and flagging it would invite the user
-              // to distrust the first value.
-              <span className="after">
-                {" "}
-                → {rescoredScore ?? tailored.projected_match_score}
-              </span>
-            )}
+            {tailored &&
+              (repairWaiting ? (
+                // The one place this card animates. The repair leg is holding
+                // a number back on purpose, so the slot cannot show the
+                // projection (it would be replaced by a different number
+                // moments later — the flicker the hold exists to prevent) and
+                // cannot show nothing (the card would read as one that lost
+                // its second number). A placeholder that is visibly waiting is
+                // the only honest third option.
+                <span className="after-neutral">
+                  {" "}
+                  → <span className="pending-dots">…</span>
+                </span>
+              ) : (
+                // `rescoredScore ?? projected` — the rescore arrives 20-30s
+                // after this card first paints, so the projection holds the
+                // slot until then and is simply replaced in place. No spinner
+                // and no transition: a number quietly becoming more accurate is
+                // not an event worth animating, and flagging it would invite
+                // the user to distrust the first value.
+                //
+                // The colour is the note's, not the number's. A held number
+                // ("maintained", "nice_dip") was never measured higher — run.ts
+                // pinned it to the left score — so green would claim an
+                // improvement nothing observed. Green stays for the two cases
+                // that earned it: a real measured number (note null) and the
+                // honest drop ("downgraded"), which is not an improvement but
+                // IS the measurement, and dressing it in grey would hide that
+                // it moved at all.
+                <span
+                  className={
+                    scoreNote === "maintained" || scoreNote === "nice_dip"
+                      ? "after-neutral"
+                      : "after"
+                  }
+                >
+                  {" "}
+                  → {rescoredScore ?? tailored.projected_match_score}
+                </span>
+              ))}
             <span className="muted tiny"> match</span>
           </div>
           {/* Outside the `.score` div on purpose: that element's text is the
               two numbers and nothing else, and the background auto-refine leg
               is a fact ABOUT the right-hand number, not part of it. */}
           {state.refining && (
-            <p className="muted tiny">Improving the rewrite against the gaps…</p>
+            <p className="muted tiny">
+              {repairWaiting
+                ? // No count in the copy, deliberately: this hint also covers
+                  // the auto-refine tail's own unmeasured case, where there is
+                  // no downgraded row to count, and a sentence that promises a
+                  // number it sometimes cannot produce is worse than a general
+                  // one. The time estimate is the part the waiting user
+                  // actually wants.
+                  "Taking a second pass at your resume — this usually takes under a minute."
+                : "Improving the rewrite against the gaps…"}
+            </p>
+          )}
+          {/* The note under the number, and the reason the number is allowed to
+              be what it is. Gated on a decided note, so the untouched path
+              (note null) renders exactly what it always did.
+
+              Suppressed while the repair leg is in flight: the hint above owns
+              that state, and a note from the FIRST measurement standing under a
+              placeholder would describe a number that is no longer on screen. */}
+          {scoreNote === "maintained" && !state.refining && (
+            <p className="muted tiny">
+              {/* A JS string rather than JSX text, like the two notes below it:
+                  the three sentences are one voice and are pinned verbatim by
+                  the tests, and JSX text would silently collapse the line break
+                  this one needs to fit the column. */}
+              {"Re-measured within the ruler's precision — every requirement holds; presentation improved."}
+            </p>
+          )}
+          {scoreNote === "nice_dip" && !state.refining && namedRow && (
+            <p className="muted tiny">
+              {`One nice-to-have reads softer on the second pass: "${namedRow}"${andMore} — core requirements all hold.`}
+            </p>
+          )}
+          {/* The only note that asks for something. A lower number with no way
+              forward is a dead end, and the cards below ARE the way forward —
+              they are the one path the bench found that actually moves the
+              measured score, so the sentence points straight at them. */}
+          {scoreNote === "downgraded" && !state.refining && namedRow && (
+            <p className="muted tiny">
+              {`The rewrite reads weaker on: "${namedRow}"${andMore}. Try the question cards below — real detail there raises it back.`}
+            </p>
           )}
           {/* Mutually exclusive with the hint above by the `!state.refining`
               gate: while the refine leg is still running the number may yet

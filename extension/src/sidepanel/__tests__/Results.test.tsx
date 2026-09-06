@@ -122,6 +122,12 @@ describe("Results - uplift wiring", () => {
   // The `.score` assertion is the point of the second half: that element's
   // text is asserted verbatim in several App tests ("72 → 82 match"), so the
   // hint has to sit OUTSIDE it or it silently breaks them.
+  //
+  // `rescoredScore` is set because this is the AUTO-REFINE tail, and that leg
+  // runs with a measured number already published (run.ts sends `first.patch`
+  // before raising `refining`). Refining with the slot still empty is the
+  // repair leg, a different state with its own copy — see "Results - score
+  // floor display" below.
   it("shows the refining hint only while refining, and never inside .score", async () => {
     await renderResults();
     expect(container.textContent).not.toContain("Improving the rewrite");
@@ -131,6 +137,7 @@ describe("Results - uplift wiring", () => {
         phase: "done",
         analysis: ANALYSIS,
         tailored: TAILORED,
+        rescoredScore: 70,
         refining: true,
       },
     });
@@ -200,6 +207,8 @@ describe("Results - uplift wiring", () => {
     expect(container.textContent).not.toContain("honest ceiling");
   });
 
+  // Same fixture note as above: `rescoredScore` set makes this the auto-refine
+  // tail rather than the repair wait.
   it("stays silent while the refine leg is still running", async () => {
     await renderResults({
       state: {
@@ -207,6 +216,7 @@ describe("Results - uplift wiring", () => {
         phase: "done",
         analysis: ALL_MET,
         tailored: TAILORED,
+        rescoredScore: 70,
         refining: true,
       },
     });
@@ -219,6 +229,143 @@ describe("Results - uplift wiring", () => {
       state: { ...INITIAL_RUN_STATE, phase: "comparing", analysis: ANALYSIS, tailored: null },
     });
     expect(container.textContent).not.toContain("Raise your score with real experience");
+  });
+});
+
+/**
+ * The score floor's four display states.
+ *
+ * Each one is a different answer to the same question — "why is the
+ * right-hand number what it is?" — and the panel is the only place that
+ * answer exists. A held number with no sentence under it is a lie by
+ * omission; a lower number with no way forward is a dead end. So each state
+ * is pinned here by the exact sentence it shows AND by the colour of the
+ * arrow, because "the number held" and "the number improved" must not look
+ * alike.
+ */
+describe("Results - score floor display", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** A finished run whose rescore has been decided, however the caller says. */
+  async function renderScore(state: Partial<Parameters<typeof Results>[0]["state"]>) {
+    await act(async () => {
+      root.render(
+        <Results
+          state={{
+            ...INITIAL_RUN_STATE,
+            phase: "done",
+            analysis: ANALYSIS,
+            tailored: TAILORED,
+            ...state,
+          }}
+          company=""
+          roleTitle=""
+          jdSummary=""
+          jdUrl={undefined}
+          signedIn={false}
+          saving={false}
+          onSavingChange={() => {}}
+          generatedAt={null}
+          baselineScore={60}
+          appliedSupplement=""
+          canRun
+          onImprove={() => {}}
+          supplement={{ text: "", onChange: () => {}, onSubmit: () => {}, busy: false, canRun: true }}
+        />,
+      );
+    });
+  }
+
+  // "maintained": the second read came back lower, but not one requirement
+  // got worse, so run.ts holds the number at the left score. Green would
+  // claim an improvement that was never measured; red would claim a loss
+  // that never happened. Neutral is the only honest colour.
+  it("holds the number in a neutral arrow and says why, when nothing got worse", async () => {
+    await renderScore({ rescoredScore: 60, scoreNote: "maintained" });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 60 match");
+    expect(container.querySelector(".score .after-neutral")).toBeTruthy();
+    expect(container.querySelector(".score .after")).toBeNull();
+    expect(container.textContent).toContain(
+      "Re-measured within the ruler's precision — every requirement holds; presentation improved.",
+    );
+  });
+
+  // "nice_dip": the number still holds, so the sentence under it has to name
+  // what it is holding OVER — otherwise the panel is quietly hiding a row the
+  // user had and lost. The extra rows are counted, not listed: a wall of
+  // names under a 28px number buries the one that matters.
+  it("names the softened nice-to-have, and counts the rest", async () => {
+    await renderScore({
+      rescoredScore: 60,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Terraform", "Helm charts", "Bash"],
+    });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 60 match");
+    expect(container.querySelector(".score .after-neutral")).toBeTruthy();
+    expect(container.textContent).toContain(
+      'One nice-to-have reads softer on the second pass: "Terraform" and 2 more — core requirements all hold.',
+    );
+  });
+
+  // "downgraded": the ONE display allowed to go down. It gets the ordinary
+  // arrow, because the drop is real and measured, and it gets a way forward —
+  // the question cards below it are what actually raises the number back.
+  it("shows the lower number honestly, names the row, and points at the cards", async () => {
+    await renderScore({
+      rescoredScore: 55,
+      scoreNote: "downgraded",
+      downgradedRequirements: ["Kubernetes"],
+    });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 55 match");
+    expect(container.querySelector(".score .after")).toBeTruthy();
+    expect(container.querySelector(".score .after-neutral")).toBeNull();
+    expect(container.textContent).toContain(
+      'The rewrite reads weaker on: "Kubernetes". Try the question cards below — real detail there raises it back.',
+    );
+    expect(container.textContent).toContain("Raise your score with real experience");
+  });
+
+  // The repair leg's own window: `refining` is up and NO number has been
+  // published yet, deliberately — run.ts withholds the dipped measurement
+  // rather than showing a number it is about to replace. The slot still has
+  // to be occupied, or the card reads as one that lost its second number.
+  it("holds the slot on a pulsing placeholder while the repair leg runs", async () => {
+    await renderScore({ refining: true });
+    expect(container.querySelector(".score .pending-dots")?.textContent).toBe("…");
+    expect(container.querySelector(".score")?.textContent).toBe("60 → … match");
+    expect(container.textContent).toContain(
+      "Taking a second pass at your resume — this usually takes under a minute.",
+    );
+    // The auto-refine hint is about a number already on screen. There isn't
+    // one here, so it would be describing nothing.
+    expect(container.textContent).not.toContain("Improving the rewrite against the gaps");
+    // Same reasoning as the first-paint window: there is nothing of the
+    // user's own to read in this slot yet, so the tips are welcome again.
+    expect(container.querySelector(".tip-card")).toBeTruthy();
+  });
+
+  // The other refining state, and the reason the two cannot share copy: once
+  // a measured number is on screen the leg is an improvement attempt against
+  // it, not a wait for it, and the pinned `.score` string must survive.
+  it("keeps the auto-refine hint when a measured number is already published", async () => {
+    await renderScore({ refining: true, rescoredScore: 70 });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 70 match");
+    expect(container.querySelector(".score .pending-dots")).toBeNull();
+    expect(container.textContent).toContain("Improving the rewrite against the gaps…");
+    expect(container.querySelector(".tip-card")).toBeNull();
   });
 });
 

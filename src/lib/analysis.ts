@@ -221,9 +221,10 @@ Rules for "resume":
 - Rewrite bullets (and the summary, only when one is requested below) to foreground role-relevant impact using the candidate's real facts.
 - Fold in relevant "extra info" as real experience where appropriate.
 - Reorder experience/skills so the most relevant items come first.
+- State each accomplishment exactly once. If it fits two sections, pick the stronger home — duplicating it reads as padding and double-counts the fact.
 
 Rules for "change_log":
-- At most 6 entries — one per meaningful SECTION-level change, not one per sentence. "section" e.g. "Summary", "Experience — <Company>", "Skills".
+- At most 6 entries — one per meaningful SECTION-level change, not one per sentence. Log CONTENT edits only (rewording, added emphasis, folded-in facts, cuts); never log reordering or position moves — order is visible in the output itself, and reports about "moving" things are where logs go wrong. "section" e.g. "Summary", "Experience — <Company>", "Skills".
 - "original" and "revised" are snippets of 10 words or fewer; "reason" is one short sentence tying the change to the job.
 - Every entry must describe an edit that IS present in the output resume — never an intention, a consideration, a reverted change, or a "no change" note. Before emitting the log, check each entry against your own output; an entry that misdescribes what you did is fabrication about your work.
 

@@ -166,6 +166,23 @@ describe("TAILOR_SYSTEM change_log slimming", () => {
     expect(s).toContain("Before emitting the log, check each entry against your own output");
     expect(s).toContain("fabrication about your work");
   });
+
+  // Bench iteration 3: 4/12 outputs logged reorders/moves that never happened.
+  // The model's self-knowledge about POSITION is unreliable while its reporting
+  // of CONTENT edits is accurate, so restrict the log to content edits only.
+  it("restricts the log to content edits and forbids reporting position moves", () => {
+    const s = sys();
+    expect(s).toContain("never log reordering or position moves");
+    expect(s).toContain("Log CONTENT edits only");
+  });
+
+  // One bench output carried the same accomplishment as both an Experience
+  // bullet and an identical Projects entry, which double-counts the fact.
+  it("requires each accomplishment to appear exactly once", () => {
+    const s = sys();
+    expect(s).toContain("State each accomplishment exactly once");
+    expect(s).toContain("pick the stronger home");
+  });
 });
 
 describe("TAILOR_SYSTEM shape neutrality", () => {

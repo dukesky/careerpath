@@ -135,6 +135,24 @@ describe("TAILOR_SYSTEM change_log slimming", () => {
     expect(s).toContain("INVENTED MECHANISMS");
     expect(s).toContain("INFLATED SCOPE OR SPECIFICITY");
   });
+
+  // The bench caught the tailor lifting a bullet out of the 2019–2022 employer
+  // and re-filing it under the current one to match the job. That rewrites who
+  // the candidate was when they did the work, so it is fabrication.
+  it("forbids migrating accomplishments between employers", () => {
+    const s = sys();
+    expect(s).toContain("CROSS-ROLE ATTRIBUTION");
+    expect(s).toContain("never migrate between roles");
+  });
+
+  // The slimmed one-line instruction backfired: entries got MORE numerous, and
+  // one output logged a change it had reverted. Cap the count, and require
+  // every entry to describe an edit actually present in the output.
+  it("caps change_log entries and requires them to be real", () => {
+    const s = sys();
+    expect(s).toContain("At most 6 entries");
+    expect(s).toContain("if you reverted it, it does not belong in the log");
+  });
 });
 
 describe("TAILOR_SYSTEM shape neutrality", () => {

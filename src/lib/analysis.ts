@@ -192,6 +192,7 @@ Fabrication is usually plausible embellishment, not invented employers. Each of 
 - IMPORTED JOB-DESCRIPTION LANGUAGE: the job's keywords may only describe work the resume already supports. Never restate a JD responsibility as something the candidate did.
 - INVENTED MECHANISMS: when the source states an outcome without the method ("cut errors from 3% to 0.1%"), do not supply the method. The "how" is a fact like any other.
 - INFLATED SCOPE OR SPECIFICITY: "built X" is not "owned X end to end"; "presented the results internally" is not "presented <specific metrics> to <specific stakeholders>". A rewrite may be at most as specific as its source.
+- CROSS-ROLE ATTRIBUTION: every accomplishment stays under the role the source lists it in. Moving a bullet to a different employer — even to better match the job — rewrites who the candidate was when they did the work, and is fabrication. Reorder within a role; never migrate between roles.
 
 Truthful does not mean timid. The candidate's real facts, chosen well and written tightly, are the strongest version of this resume: lead with the most relevant real impact, keep concrete numbers the source gives, and cut filler. Rephrase for impact; never add.
 
@@ -222,8 +223,9 @@ Rules for "resume":
 - Reorder experience/skills so the most relevant items come first.
 
 Rules for "change_log":
-- One entry per meaningful change. "section" e.g. "Summary", "Experience — <Company>", "Skills".
+- At most 6 entries — one per meaningful SECTION-level change, not one per sentence. "section" e.g. "Summary", "Experience — <Company>", "Skills".
 - "original" and "revised" are snippets of 10 words or fewer; "reason" is one short sentence tying the change to the job.
+- Every entry must describe an edit that is actually present in the output resume. Never log an intention, a consideration, or a reverted change — if you reverted it, it does not belong in the log.
 
 Rules for "projected_match_score":
 - Integer 0-100. Judge the TAILORED resume against the job's must-have and nice-to-have requirements exactly as a recruiter would score a gap analysis.

@@ -70,6 +70,31 @@ export interface RunState {
    */
   refining: boolean;
   /**
+   * True for the whole span between the `done` paint and a settled right-hand
+   * number: the first rescore, the repair leg, and the auto-refine tail.
+   *
+   * It exists because `rescoredScore === null` cannot tell "not measured yet"
+   * apart from "measured, and it failed", and the panel owes those two states
+   * completely different displays. Before this flag both rendered the tailor
+   * model's own `projected_match_score` in the improvement colour with an
+   * arrow, identical to a settled measurement — and a projection is the
+   * rewriter grading its own work. Observed in production: "78 → 72" in green
+   * for 20-30 seconds, which then became "78 → 82" when the real number
+   * landed. Ten points out, in the direction that reads as "the rewrite made
+   * my resume worse" — the exact perception the score floor exists to prevent,
+   * arriving by a route the floor has no authority over, because the floor
+   * only governs numbers something actually measured.
+   *
+   * So: true -> the slot holds a placeholder, false + no score -> the
+   * projection, labelled as an estimate. Never a bare projection.
+   *
+   * Like `refining`, it blocks nothing — the run is already `done` when it
+   * goes up, and the resume is already downloadable. Unlike `refining` it is
+   * NOT part of the panel's busy gate: nothing about a measurement in flight
+   * should stop the user starting another run.
+   */
+  measuring: boolean;
+  /**
    * The match score the analyze stream has emitted so far, or null.
    *
    * The first three of these fields are PRESENTATION, and nothing else. They
@@ -103,6 +128,7 @@ export const INITIAL_RUN_STATE: RunState = {
   scoreNote: null,
   downgradedRequirements: [],
   refining: false,
+  measuring: false,
   streamingScore: null,
   streamingRows: [],
   streamingResume: null,
@@ -135,6 +161,18 @@ const NO_SCORE_NOTE: Pick<RunState, "scoreNote" | "downgradedRequirements"> = {
   scoreNote: null,
   downgradedRequirements: [],
 };
+
+/**
+ * What a terminal patch says about the measuring window: it is not open.
+ *
+ * Same rule as the two above, and it needs stating in the same three places
+ * for a sharper reason than either of them: `measuring` is the flag that puts
+ * an animated placeholder where a number goes. A terminal patch that left it
+ * alone would let App.tsx's state reset carry a raised flag from a previous
+ * run onto a finished or failed one, and the panel would sit forever waiting
+ * on a measurement nothing is running.
+ */
+const NOT_MEASURING: Pick<RunState, "measuring"> = { measuring: false };
 
 /** A rescore's answer: the number, and the matrix behind it ([] on an old server). */
 interface Measurement {
@@ -368,7 +406,13 @@ export async function runTailor(
   let live = true;
   const fail = (kind: ApiErrorKind, message: string) => {
     live = false;
-    onUpdate({ phase: "error", error: { kind, message }, ...NO_STREAM, ...NO_SCORE_NOTE });
+    onUpdate({
+      phase: "error",
+      error: { kind, message },
+      ...NO_STREAM,
+      ...NO_SCORE_NOTE,
+      ...NOT_MEASURING,
+    });
   };
 
   onUpdate({
@@ -381,6 +425,7 @@ export async function runTailor(
     rescoredScore: null,
     ...NO_SCORE_NOTE,
     refining: false,
+    ...NOT_MEASURING,
     ...NO_STREAM,
     error: null,
   });
@@ -512,6 +557,14 @@ export async function runTailor(
     // letting a reset leave a stale `true` beside a finished run. And nothing
     // has been measured yet, so there is no note to carry either.
     refining: false,
+    // Down here and up again in the very next patch, deliberately. This one is
+    // the terminal-completeness statement — a done patch describes a finished
+    // run's flags rather than inheriting them — and the raise below is what
+    // actually opens the window. Folding the two together (publishing
+    // `measuring: true` from this patch) would tie first paint to the
+    // measuring decision and leave a `done` patch that lies about a run whose
+    // rescore never starts.
+    ...NOT_MEASURING,
     ...NO_SCORE_NOTE,
     // And the same principle again for the streamed preview: both legs have
     // landed, so nothing is arriving. Leaving these set would strand a
@@ -761,168 +814,239 @@ export async function runTailor(
     };
   };
 
-  const measured = await measureWithRows(tailored.data.tailored?.resume);
+  // The measuring window opens HERE, one patch after first paint and one line
+  // before the request it describes. Until it closes, the panel shows a
+  // placeholder in the right-hand slot rather than
+  // `tailored.projected_match_score` — see RunState.measuring for the
+  // production display this replaced.
+  onUpdate({ measuring: true });
+
   /**
-   * True once the repair leg has run — which is also true of the free leg it
-   * spent, so the gated auto-refine tail below must not run as well.
+   * The window's last patch, HELD rather than published as it is decided.
+   *
+   * Everything below decides the right-hand number and then hands it to this
+   * variable; the `finally` at the bottom publishes it together with the
+   * closing `measuring: false`. One patch, not two, and that is a
+   * requirement rather than a tidiness preference: the number and the flag
+   * that says whether it is a measurement are one statement, and a panel that
+   * received them separately would render a frame in between — the placeholder
+   * gone, the flag still up, or (worse, in the other order) the projection
+   * labelled as an estimate for one frame before the real number lands.
+   *
+   * Empty is a complete answer. It means nothing was decided — the measurement
+   * failed — and the closing patch then says only that the window is shut,
+   * which is exactly what the panel needs to fall back to a LABELLED
+   * projection.
    */
-  let repaired = false;
-  if (measured) {
-    const first = decide(measured);
-    // ANY downgrade under a dipped number buys ONE matrix-aimed rewrite. Not
-    // just a must-have: the owner widened this deliberately, because a
-    // nice-to-have the rewrite dropped is still something the user had and
-    // lost, and the wait costs a free leg on the ~5-8% of runs that reach here.
-    //
-    // Not on a refine run, though, for exactly the reason the auto-refine tail
-    // is not: the server's budget for one runId funds ONE repair, and it is
-    // this one. The window is 8 legs (src/lib/quota.ts's MAX_FREE_LEGS) and 4
-    // rescores (the rescore route's MAX_RESCORES_PER_RUN), which pays for the
-    // charged generate's pair, one repair tailor, and both free refine pairs —
-    // 7 legs, 4 rescores, nothing spare. A refine that repaired itself would
-    // take the leg and the rescore the user's OTHER refine is holding, and at
-    // the ceiling would simply be refused. The DISPLAY still tells the truth
-    // there — only the repair is skipped.
-    if (first.downs.length === 0 || opts.priorAnalysis || opts.isRefinement) {
-      // Phase stays "done" — it already was, and re-sending it would be the
-      // only way this patch could disturb anything.
-      onUpdate(first.patch);
-    } else {
-      repaired = true;
-      // Nothing about the score is published until the decision is final. The
-      // panel holds the slot on a placeholder while `refining` is true and no
-      // note has been decided, so publishing the dipped measurement here would
-      // make the number visibly fall and then jump back — the exact flicker
-      // the hold-the-number design exists to prevent.
+  let closing: Partial<RunState> = {};
+  /**
+   * Publish the held patch now, and hand the closing slot to the leg that
+   * follows.
+   *
+   * Only the auto-refine tail needs this: it runs for tens of seconds with a
+   * hint that says it is improving a number, so that number has to be on
+   * screen before it starts.
+   */
+  const flushClosing = () => {
+    if (Object.keys(closing).length > 0) onUpdate(closing);
+    closing = {};
+  };
+
+  try {
+    const measured = await measureWithRows(tailored.data.tailored?.resume);
+    /**
+     * True once the repair leg has run — which is also true of the free leg it
+     * spent, so the gated auto-refine tail below must not run as well.
+     */
+    let repaired = false;
+    if (measured) {
+      const first = decide(measured);
+      // ANY downgrade under a dipped number buys ONE matrix-aimed rewrite. Not
+      // just a must-have: the owner widened this deliberately, because a
+      // nice-to-have the rewrite dropped is still something the user had and
+      // lost, and the wait costs a free leg on the ~5-8% of runs that reach here.
       //
-      // `settled` starts as the display for the measurement we already have:
-      // it is what the panel gets if the repair produces nothing better, or
-      // throws.
-      let settled = first.patch;
-      let adopted: Partial<RunState> = {};
-      try {
-        onUpdate({ refining: true });
-        const outcome = await runRefineLeg(analyzed.data.analysis);
-        const remeasured = outcome?.measurement ?? null;
-        // A stricter gate than the auto-refine tail's, because this rewrite
-        // exists to fix a specific regression: not-worse on the number is not
-        // enough, it must also have stopped losing must-haves. A repaired
-        // rewrite that still drops one is no improvement on the one the user
-        // already has, and adopting it would swap the document for nothing.
+      // Not on a refine run, though, for exactly the reason the auto-refine tail
+      // is not: the server's budget for one runId funds ONE repair, and it is
+      // this one. The window is 8 legs (src/lib/quota.ts's MAX_FREE_LEGS) and 4
+      // rescores (the rescore route's MAX_RESCORES_PER_RUN), which pays for the
+      // charged generate's pair, one repair tailor, and both free refine pairs —
+      // 7 legs, 4 rescores, nothing spare. A refine that repaired itself would
+      // take the leg and the rescore the user's OTHER refine is holding, and at
+      // the ceiling would simply be refused. The DISPLAY still tells the truth
+      // there — only the repair is skipped.
+      if (first.downs.length === 0 || opts.priorAnalysis || opts.isRefinement) {
+        // Phase stays "done" — it already was, and re-sending it would be the
+        // only way this patch could disturb anything.
         //
-        // This compareMatrices call must NOT be collapsed into the `downs`
-        // that `decide(remeasured)` computes just below, tempting as the
-        // second comparison of the same two matrices looks. `decide` returns
-        // `downs: []` from its first two branches WITHOUT comparing anything —
-        // rows absent (an old server) and score-at-or-above-left both answer
-        // "no downgrades" by construction. Reading those as the gate would let
-        // exactly the two shapes that were never examined pass it: a rewrite
-        // measured with no matrix at all, and one whose number came back up
-        // while a must-have got weaker. The gate has to ask the question
-        // itself.
-        if (
-          outcome &&
-          remeasured &&
-          remeasured.score >= measured.score &&
-          compareMatrices(
-            analyzed.data.analysis?.requirements_matrix ?? [],
-            remeasured.rows,
-          ).filter((d) => d.kind === "must_have").length === 0
-        ) {
-          // Re-branch on the measurement that now stands. `decide` can report
-          // downgrades again — a nice-to-have residual — and this time they
-          // are the DISPLAY, not a trigger: the repair runs once. A loop here
-          // would spend free legs the runId does not have on a rewrite the
-          // gate above has already refused once.
-          settled = decide(remeasured).patch;
-          adopted = { tailored: outcome.tailored, ...freshRemaining(outcome.remaining) };
+        // Held rather than published, so it can ride the closing
+        // `measuring: false`. Nothing is delayed by that: in every case but the
+        // gated auto-refine tail — which flushes it before it starts — this is
+        // already the run's last patch.
+        closing = first.patch;
+      } else {
+        repaired = true;
+        // Nothing about the score is published until the decision is final. The
+        // panel holds the slot on a placeholder while `refining` is true and no
+        // note has been decided, so publishing the dipped measurement here would
+        // make the number visibly fall and then jump back — the exact flicker
+        // the hold-the-number design exists to prevent.
+        //
+        // `settled` starts as the display for the measurement we already have:
+        // it is what the panel gets if the repair produces nothing better, or
+        // throws.
+        let settled = first.patch;
+        let adopted: Partial<RunState> = {};
+        try {
+          onUpdate({ refining: true });
+          const outcome = await runRefineLeg(analyzed.data.analysis);
+          const remeasured = outcome?.measurement ?? null;
+          // A stricter gate than the auto-refine tail's, because this rewrite
+          // exists to fix a specific regression: not-worse on the number is not
+          // enough, it must also have stopped losing must-haves. A repaired
+          // rewrite that still drops one is no improvement on the one the user
+          // already has, and adopting it would swap the document for nothing.
+          //
+          // This compareMatrices call must NOT be collapsed into the `downs`
+          // that `decide(remeasured)` computes just below, tempting as the
+          // second comparison of the same two matrices looks. `decide` returns
+          // `downs: []` from its first two branches WITHOUT comparing anything —
+          // rows absent (an old server) and score-at-or-above-left both answer
+          // "no downgrades" by construction. Reading those as the gate would let
+          // exactly the two shapes that were never examined pass it: a rewrite
+          // measured with no matrix at all, and one whose number came back up
+          // while a must-have got weaker. The gate has to ask the question
+          // itself.
+          if (
+            outcome &&
+            remeasured &&
+            remeasured.score >= measured.score &&
+            compareMatrices(
+              analyzed.data.analysis?.requirements_matrix ?? [],
+              remeasured.rows,
+            ).filter((d) => d.kind === "must_have").length === 0
+          ) {
+            // Re-branch on the measurement that now stands. `decide` can report
+            // downgrades again — a nice-to-have residual — and this time they
+            // are the DISPLAY, not a trigger: the repair runs once. A loop here
+            // would spend free legs the runId does not have on a rewrite the
+            // gate above has already refused once.
+            settled = decide(remeasured).patch;
+            adopted = { tailored: outcome.tailored, ...freshRemaining(outcome.remaining) };
+          }
+        } catch (err) {
+          console.warn(
+            JSON.stringify({
+              evt: "repair_threw",
+              message: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        } finally {
+          // One patch, describing the outcome completely — the same reason the
+          // done patch re-sends the analysis. Unconditional, because every path
+          // out of the block above has to clear the hint it turned on, and every
+          // path out of it also owes the panel a number: `settled` is the
+          // pre-repair display until something better replaces it.
+          //
+          // Handed to `closing` rather than published, for the reason spelled
+          // out there: the repair leg is inside the measuring window, so its
+          // outcome and the window closing are one patch.
+          closing = { ...settled, ...adopted, refining: false };
         }
-      } catch (err) {
-        console.warn(
-          JSON.stringify({
-            evt: "repair_threw",
-            message: err instanceof Error ? err.message : String(err),
-          }),
-        );
-      } finally {
-        // One patch, describing the outcome completely — the same reason the
-        // done patch re-sends the analysis. Unconditional, because every path
-        // out of the block above has to clear the hint it turned on, and every
-        // path out of it also owes the panel a number: `settled` is the
-        // pre-repair display until something better replaces it.
-        onUpdate({ ...settled, ...adopted, refining: false });
       }
     }
-  }
 
-  // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
-  // so the server treats it as a refinement and does not charge), measure the
-  // rewrite, and adopt it only when it is not worse. A refine run skips this —
-  // it IS one of the runId's two free refinements, and the allowance behind
-  // them has nothing spare. `isRefinement` is checked as well as
-  // `priorAnalysis` because a
-  // refine run whose previous entry carried no usable analysis is still a
-  // refine run: gating on the analysis alone would let the tail fire there and
-  // spend the runId's remaining legs on a rewrite it can never adopt.
-  //
-  // Same first-paint rule as above, one step further out: this leg is two more
-  // model calls, and every one of them happens after the `done` patch. It can
-  // only replace one number and one already-downloadable document with better
-  // versions of themselves; it can never delay what the user is looking at.
-  //
-  // Default OFF — see RunOptions.autoRefine. The leg is opt-in because it
-  // cannot reliably raise the MEASURED score, and running it unasked spends
-  // one of the runId's free refinements (which silently makes the user's own
-  // next refine a charged run) and doubles per-IP quota use. The two guards
-  // are independent and both stay: the flag decides whether this leg exists at
-  // all, `priorAnalysis || isRefinement` decides that it must never fire on a
-  // run that IS itself one of those refinements.
-  if (opts.autoRefine !== true) return;
-  if (opts.priorAnalysis || opts.isRefinement) return;
-  // Third guard, and the one that is new: the repair leg above already spent
-  // the ONE repair the runId's budget funds (8 legs, 4 rescores — see the
-  // repair's own comment above), on the same rewrite this tail would ask for.
-  // Running both would send an extra tailor and an extra rescore out of the
-  // allowance the user's two refines are holding, for a document the repair
-  // has already produced, measured, and either adopted or refused.
-  if (repaired) return;
-  // Adoption is published together with the closing `refining: false` rather
-  // than in its own patch, so the leg ends in ONE terminal patch that
-  // describes its outcome completely — the same reason the `done` patch
-  // re-sends the analysis.
-  let adopted: Partial<RunState> = {};
-  try {
-    onUpdate({ refining: true });
-    const outcome = await runRefineLeg(analyzed.data.analysis);
-    if (!outcome) return;
-    // Adopt only a measured, not-worse rewrite: the right-hand number must
-    // never go DOWN because of a leg the user did not ask for. `?? -1` adopts
-    // when the first measurement itself failed — any measured number beats an
-    // unmeasured projection. Unchanged from the day this leg was written; the
-    // repair leg's stricter gate is its own, and deliberately not shared.
-    if (outcome.measurement && outcome.measurement.score >= (measured?.score ?? -1)) {
-      adopted = {
-        tailored: outcome.tailored,
-        // The same three-way display the first measurement got. NO_SCORE_NOTE
-        // leads so that a rewrite measured WITHOUT rows cannot leave the first
-        // measurement's note standing beside its new number.
-        ...NO_SCORE_NOTE,
-        ...decide(outcome.measurement).patch,
-        ...freshRemaining(outcome.remaining),
-      };
+    // The free auto-refine leg: tailor again WITH the gap analysis (same runId,
+    // so the server treats it as a refinement and does not charge), measure the
+    // rewrite, and adopt it only when it is not worse. A refine run skips this —
+    // it IS one of the runId's two free refinements, and the allowance behind
+    // them has nothing spare. `isRefinement` is checked as well as
+    // `priorAnalysis` because a
+    // refine run whose previous entry carried no usable analysis is still a
+    // refine run: gating on the analysis alone would let the tail fire there and
+    // spend the runId's remaining legs on a rewrite it can never adopt.
+    //
+    // Same first-paint rule as above, one step further out: this leg is two more
+    // model calls, and every one of them happens after the `done` patch. It can
+    // only replace one number and one already-downloadable document with better
+    // versions of themselves; it can never delay what the user is looking at.
+    //
+    // Default OFF — see RunOptions.autoRefine. The leg is opt-in because it
+    // cannot reliably raise the MEASURED score, and running it unasked spends
+    // one of the runId's free refinements (which silently makes the user's own
+    // next refine a charged run) and doubles per-IP quota use. The two guards
+    // are independent and both stay: the flag decides whether this leg exists at
+    // all, `priorAnalysis || isRefinement` decides that it must never fire on a
+    // run that IS itself one of those refinements.
+    if (opts.autoRefine !== true) return;
+    if (opts.priorAnalysis || opts.isRefinement) return;
+    // Third guard, and the one that is new: the repair leg above already spent
+    // the ONE repair the runId's budget funds (8 legs, 4 rescores — see the
+    // repair's own comment above), on the same rewrite this tail would ask for.
+    // Running both would send an extra tailor and an extra rescore out of the
+    // allowance the user's two refines are holding, for a document the repair
+    // has already produced, measured, and either adopted or refused.
+    if (repaired) return;
+    // The tail is the one leg that runs with a number already on screen — its
+    // hint says it is improving that number — so the first measurement's display
+    // is published NOW rather than held to the end. Everything after this point
+    // decides the closing patch instead.
+    flushClosing();
+    // Adoption is published together with the closing `refining: false` rather
+    // than in its own patch, so the leg ends in ONE terminal patch that
+    // describes its outcome completely — the same reason the `done` patch
+    // re-sends the analysis.
+    let adopted: Partial<RunState> = {};
+    try {
+      onUpdate({ refining: true });
+      const outcome = await runRefineLeg(analyzed.data.analysis);
+      if (!outcome) return;
+      // Adopt only a measured, not-worse rewrite: the right-hand number must
+      // never go DOWN because of a leg the user did not ask for. `?? -1` adopts
+      // when the first measurement itself failed — any measured number beats an
+      // unmeasured projection. Unchanged from the day this leg was written; the
+      // repair leg's stricter gate is its own, and deliberately not shared.
+      if (outcome.measurement && outcome.measurement.score >= (measured?.score ?? -1)) {
+        adopted = {
+          tailored: outcome.tailored,
+          // The same three-way display the first measurement got. NO_SCORE_NOTE
+          // leads so that a rewrite measured WITHOUT rows cannot leave the first
+          // measurement's note standing beside its new number.
+          ...NO_SCORE_NOTE,
+          ...decide(outcome.measurement).patch,
+          ...freshRemaining(outcome.remaining),
+        };
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          evt: "refine_threw",
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } finally {
+      // Unconditional: every path out of the block above — adopted, discarded,
+      // failed, or thrown — has to clear the hint it turned on. The
+      // `priorAnalysis || isRefinement` early return above is before the `true`,
+      // so it needs nothing.
+      //
+      // Handed to `closing` rather than published: this leg is the last thing
+      // inside the measuring window, so its outcome and the window closing are
+      // the same patch. The outer `finally` publishes it on every path,
+      // including the `return` two lines up.
+      closing = { ...adopted, refining: false };
     }
-  } catch (err) {
-    console.warn(
-      JSON.stringify({
-        evt: "refine_threw",
-        message: err instanceof Error ? err.message : String(err),
-      }),
-    );
   } finally {
-    // Unconditional: every path out of the block above — adopted, discarded,
-    // failed, or thrown — has to clear the hint it turned on. The
-    // `priorAnalysis || isRefinement` early return above is before the `true`,
-    // so it needs nothing.
-    onUpdate({ ...adopted, refining: false });
+    // The window closes exactly once, on EVERY path out of the block above:
+    // the measurement that succeeded, the one that failed, either free leg,
+    // one of the three early returns, or an exception on its way to
+    // background/runs.ts. A `measuring` left raised is not a cosmetic leak —
+    // it freezes the right-hand slot on an animated placeholder for a
+    // measurement nothing is running, which is a worse display than the
+    // unlabelled projection this whole flag exists to remove.
+    //
+    // `closing` rides along rather than arriving as its own patch; see its
+    // declaration for why the number and the flag have to land together.
+    onUpdate({ ...closing, ...NOT_MEASURING });
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { runTailor, type RunState } from "@/lib/run";
+import { runTailor, INITIAL_RUN_STATE, type RunState } from "@/lib/run";
 import type { GapAnalysis, ParsedResume } from "@shared/contract";
 import type { ExtractedJD } from "@/content/extract";
 
@@ -90,6 +90,16 @@ function collect() {
 }
 
 const bodyOf = (call: unknown[]) => JSON.parse(String((call[1] as RequestInit).body));
+
+/**
+ * The state the panel is actually left holding: every patch merged in order,
+ * the way background/runs.ts and App.tsx merge them.
+ *
+ * A flag published `true` and never lowered is invisible to a per-patch
+ * assertion and fatal on screen, so the flags are asserted on the merge.
+ */
+const finalState = (patches: Partial<RunState>[]): RunState =>
+  patches.reduce<RunState>((acc, p) => ({ ...acc, ...p }), INITIAL_RUN_STATE);
 
 /**
  * Every delta opens the throttle window. The 500ms floor is real behaviour
@@ -788,14 +798,17 @@ describe("runTailor", () => {
     const { patches, onUpdate } = collect();
     await runTailor(JD, RESUME, onUpdate);
 
-    // The measurement patch carries the score and NOTHING else. No phase: the
-    // run was already `done` and re-sending it is the only way this patch
-    // could disturb what is on screen.
+    // The measurement patch carries the score and the flag that says it IS a
+    // measurement, and nothing else. No phase: the run was already `done` and
+    // re-sending it is the only way this patch could disturb what is on
+    // screen. The two fields travel together on purpose — a panel that
+    // received the number and the closing of the measuring window as separate
+    // patches would render a frame of one without the other.
     const scorePatch = patches.find((p) => p.rescoredScore != null);
-    expect(scorePatch).toEqual({ rescoredScore: 88 });
+    expect(scorePatch).toEqual({ rescoredScore: 88, measuring: false });
     // With the auto-refine leg off by default, that measurement patch is also
     // the LAST thing the run publishes.
-    expect(patches.at(-1)).toEqual({ rescoredScore: 88 });
+    expect(patches.at(-1)).toEqual({ rescoredScore: 88, measuring: false });
   });
 
   it("leaves the run done — never error — when the rescore fails", async () => {
@@ -948,7 +961,7 @@ describe("runTailor", () => {
     // that a second leg is in flight.
     expect(patches.some((p) => p.refining === true)).toBe(false);
     // The run ends on the measurement, with the first tailor's document.
-    expect(patches.at(-1)).toEqual({ rescoredScore: 65 });
+    expect(patches.at(-1)).toEqual({ rescoredScore: 65, measuring: false });
     const withTailored = patches.filter((p) => p.tailored);
     expect(withTailored.at(-1)?.tailored).toMatchObject({ resume: { summary: "v1" } });
   });
@@ -1189,6 +1202,7 @@ describe("runTailor", () => {
       rescoredScore: 74,
       scoreNote: null,
       downgradedRequirements: [],
+      measuring: false,
     });
     expect(patches.some((p) => p.refining === true)).toBe(false);
   });
@@ -1207,6 +1221,7 @@ describe("runTailor", () => {
       rescoredScore: 70,
       scoreNote: "maintained",
       downgradedRequirements: [],
+      measuring: false,
     });
     // No repair: zero downgrades is noise, and a second tailor would spend the
     // free leg the user's own refine needs to find nothing.
@@ -1328,7 +1343,7 @@ describe("runTailor", () => {
     expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
     // Below the left score, and shown anyway: with no rows there is nothing to
     // compare, so there is no honest reason to hold the number up.
-    expect(patches.at(-1)).toEqual({ rescoredScore: 60 });
+    expect(patches.at(-1)).toEqual({ rescoredScore: 60, measuring: false });
     expect(patches.some((p) => p.refining === true)).toBe(false);
   });
 
@@ -1403,6 +1418,7 @@ describe("runTailor", () => {
       rescoredScore: 70,
       scoreNote: "nice_dip",
       downgradedRequirements: ["Kubernetes cluster operations"],
+      measuring: false,
     });
   });
 
@@ -1446,6 +1462,7 @@ describe("runTailor", () => {
       rescoredScore: 70,
       scoreNote: "maintained",
       downgradedRequirements: [],
+      measuring: false,
     });
   });
 
@@ -1463,6 +1480,7 @@ describe("runTailor", () => {
       rescoredScore: 70,
       scoreNote: "nice_dip",
       downgradedRequirements: ["Kubernetes cluster operations"],
+      measuring: false,
     });
   });
 
@@ -1485,6 +1503,7 @@ describe("runTailor", () => {
       rescoredScore: 68,
       scoreNote: null,
       downgradedRequirements: [],
+      measuring: false,
     });
   });
 
@@ -1498,6 +1517,7 @@ describe("runTailor", () => {
       rescoredScore: 70,
       scoreNote: "maintained",
       downgradedRequirements: [],
+      measuring: false,
     });
   });
 
@@ -1516,6 +1536,7 @@ describe("runTailor", () => {
       rescoredScore: 74,
       scoreNote: null,
       downgradedRequirements: [],
+      measuring: false,
     });
     expect(patches.some((p) => p.refining === true)).toBe(false);
     const logged = warn.mock.calls
@@ -1536,5 +1557,129 @@ describe("runTailor", () => {
     expect(
       warn.mock.calls.filter((c) => String(c[0]).includes("score_up_must_down")),
     ).toHaveLength(0);
+  });
+
+  // ------------------------------------------------------------- measuring
+  //
+  // The window between the `done` paint and a settled number. The panel used
+  // to fill the right-hand slot with the tailor model's own
+  // `projected_match_score` for those 20-30 seconds, in the improvement
+  // colour, indistinguishable from a measurement — and it was observed in
+  // production ten points below the number that eventually landed, telling the
+  // user the rewrite had made their resume worse. This flag is what lets the
+  // panel say "not measured yet" instead of guessing.
+  //
+  // Its two halves are equally load-bearing: raised before the first rescore
+  // request (or the placeholder arrives too late to cover the projection), and
+  // lowered on EVERY exit (or a stranded `true` freezes the slot on "…"
+  // forever, which is a worse failure than the one it replaced).
+
+  it("raises measuring after the done patch and before the first rescore request", async () => {
+    const order: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/rescore")) {
+          order.push("rescore-request");
+          return json({ score: 88 });
+        }
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
+      }),
+    );
+
+    await runTailor(JD, RESUME, (patch) => {
+      if (patch.phase === "done") order.push("done-patch");
+      // `=== true` skips the reading and done patches, which publish it as
+      // false to describe terminal state completely.
+      if (patch.measuring === true) order.push("measuring-on");
+      if (patch.rescoredScore != null) order.push("rescore-patch");
+    });
+
+    // The flag goes up in the gap between first paint and the request, so
+    // there is never a frame in which the slot holds an unmeasured number.
+    // Going up BEFORE the done patch would be wrong in the other direction —
+    // it would put a placeholder over a card that has no rewrite in it yet.
+    expect(order).toEqual(["done-patch", "measuring-on", "rescore-request", "rescore-patch"]);
+  });
+
+  it("leaves measuring false on the happy path", async () => {
+    runWith([{ score: 74, rows: rescoreRows("met", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(patches.some((p) => p.measuring === true)).toBe(true);
+    expect(finalState(patches).measuring).toBe(false);
+  });
+
+  // The exit the old display existed for: nothing was measured, so the panel
+  // falls back to the projection — which now has to be LABELLED as one, and
+  // cannot be while this flag is stuck up.
+  it("leaves measuring false when the measurement itself fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/rescore")) return json({ error: "Unknown run." }, 403);
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
+      }),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    const state = finalState(patches);
+    expect(state.measuring).toBe(false);
+    expect(state.rescoredScore).toBeNull();
+    // Still a completed, charged run — the flag going down is not an error.
+    expect(state.phase).toBe("done");
+  });
+
+  // The longest exit: a repair tailor and a second rescore, both inside the
+  // window. The whole span is one measurement as far as the panel is
+  // concerned, and it ends exactly once.
+  it("leaves measuring false after the repair leg, and holds it up across the whole span", async () => {
+    runWith([
+      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 71, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(finalState(patches).measuring).toBe(false);
+    // Raised once, lowered once: a flag that flickered down between the two
+    // rescores would let the projection back onto the screen mid-repair.
+    expect(patches.filter((p) => p.measuring === true)).toHaveLength(1);
+    const offAt = patches.findIndex((p) => p.measuring === false && p.phase === undefined);
+    expect(offAt).toBe(patches.length - 1);
+  });
+
+  it("leaves measuring false after the gated auto-refine tail", async () => {
+    runWith([
+      { score: 74, rows: rescoreRows("met", "met") },
+      { score: 76, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, { autoRefine: true });
+
+    expect(finalState(patches).measuring).toBe(false);
+    expect(patches.filter((p) => p.measuring === true)).toHaveLength(1);
+  });
+
+  // The terminal error patch, same completeness rule as the streaming fields
+  // and the score note: App.tsx resets state on a JD URL change, so a patch
+  // that omitted this would leave a previous run's raised flag under a failed
+  // one and animate a slot with nothing behind it.
+  it("clears measuring in the terminal error patch", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => json({ error: "You've used all your free runs." }, 402)),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(patches.at(-1)).toMatchObject({ phase: "error", measuring: false });
+    expect(patches[0]).toMatchObject({ phase: "reading", measuring: false });
   });
 });

@@ -136,15 +136,23 @@ async function readAll(): Promise<Record<string, LiveRun>> {
 function withStaleRule(run: LiveRun): LiveRun {
   const abandoned = Date.now() - run.updatedAt > STALE_RUN_MS;
   if (!isRunning(run.state)) {
-    // The refine tail is the one flag a TERMINAL record can be stranded with.
-    // The worker publishes `done` + `refining: true` and clears it 40-60s
-    // later; die in between (browser quit, extension reload or update) and
-    // nothing ever clears it — clearLiveRun only runs after the tail
-    // completes. The panel's busy gate counts `refining`, so that record
-    // disables the posting forever with no in-panel recovery. Only the flag
-    // is stale here, never the run: it finished and its result is valid, so
-    // this drops `refining` and leaves everything else intact.
-    if (run.state.refining && abandoned) return { ...run, state: { ...run.state, refining: false } };
+    // The two score-settling flags are the ones a TERMINAL record can be
+    // stranded with. The worker publishes `done` + `measuring: true` (and, on
+    // a free leg, `refining: true`) and clears them 20-60s later; die in
+    // between (browser quit, extension reload or update) and nothing ever
+    // clears them — clearLiveRun only runs once the settling completes.
+    //
+    // Each one strands its own damage. The panel's busy gate counts
+    // `refining`, so that flag disables the posting forever with no in-panel
+    // recovery; `measuring` freezes the right-hand slot on a pulsing
+    // placeholder, waiting on a measurement no worker is running. Only the
+    // flags are stale here, never the run: it finished and its result is
+    // valid, so this drops both and leaves everything else intact. With
+    // `measuring` down, a record whose measurement never landed falls back to
+    // the labelled projection, which is what it would have shown anyway.
+    if ((run.state.refining || run.state.measuring) && abandoned) {
+      return { ...run, state: { ...run.state, refining: false, measuring: false } };
+    }
     return run;
   }
   if (!abandoned) return run;

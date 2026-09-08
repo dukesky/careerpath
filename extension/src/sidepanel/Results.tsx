@@ -149,6 +149,32 @@ export function Results({
   const repairWaiting = state.refining && rescoredScore === null && scoreNote === null;
 
   /**
+   * Whether the right-hand slot has to hold a placeholder rather than a number.
+   *
+   * `state.measuring` is the general answer — the ~20-30s between first paint
+   * and a settled measurement, which now covers the repair leg too, so in a
+   * live run this flag alone would do. `repairWaiting` stays OR-ed in because
+   * it is a different claim: it reads a REFINE in flight with nothing decided,
+   * which is true of a state assembled from patches this component did not see
+   * in order, or restored from a live-run record written by an older build.
+   * Dropping it would let such a state fall through to the projection branch —
+   * a number, from the rewriter, under a hint that says it is still rewriting.
+   */
+  const pendingScore = state.measuring || repairWaiting;
+
+  /**
+   * The measurement is over and produced nothing.
+   *
+   * Two ways to get here and the display is right for both: the rescore leg
+   * failed (run.ts degrades silently — see the bottom of runTailor), or this
+   * is a cached entry from before measurement existed. The projection is then
+   * the only number there is, so it is shown — but never bare, and never in
+   * the improvement colour. `.after` would be the panel telling the user the
+   * rewriter's estimate of its own work is a measured gain.
+   */
+  const showingEstimate = tailored !== null && !pendingScore && rescoredScore === null;
+
+  /**
    * The rows a note names, split into "the one to say" and "how many more".
    *
    * Naming the first is what stops a held number from being a lie by
@@ -207,25 +233,27 @@ export function Results({
                 so there is no second number to point at. */}
             {shownScore}
             {tailored &&
-              (repairWaiting ? (
-                // The one place this card animates. The repair leg is holding
-                // a number back on purpose, so the slot cannot show the
-                // projection (it would be replaced by a different number
-                // moments later — the flicker the hold exists to prevent) and
-                // cannot show nothing (the card would read as one that lost
-                // its second number). A placeholder that is visibly waiting is
-                // the only honest third option.
+              (pendingScore ? (
+                // The one place this card animates, and it now covers the
+                // whole span in which no number has been measured — the first
+                // rescore as well as the repair leg. The slot cannot show the
+                // projection: that number is the rewriter's estimate of its own
+                // work, it is replaced by a real measurement moments later, and
+                // it was observed in production sitting ten points BELOW the
+                // measurement that replaced it, in green, telling the user the
+                // rewrite had made their resume worse. It cannot show nothing
+                // either (the card would read as one that lost its second
+                // number). A placeholder that is visibly waiting is the only
+                // honest third option.
                 <span className="after-neutral">
                   {" "}
                   → <span className="pending-dots">…</span>
                 </span>
               ) : (
-                // `rescoredScore ?? projected` — the rescore arrives 20-30s
-                // after this card first paints, so the projection holds the
-                // slot until then and is simply replaced in place. No spinner
-                // and no transition: a number quietly becoming more accurate is
-                // not an event worth animating, and flagging it would invite
-                // the user to distrust the first value.
+                // `rescoredScore ?? projected` — by here the measurement has
+                // either landed or failed. When it failed the projection is all
+                // there is, so it takes the slot with the estimate line below
+                // saying so; nothing that reaches this point is unlabelled.
                 //
                 // The colour is the note's, not the number's, and green is
                 // reserved for one case: a measured improvement (note null).
@@ -237,7 +265,14 @@ export function Results({
                 // "won" while the words say "reads weaker". Neutral is what
                 // lets the two agree. The drop is not hidden by it — the number
                 // itself is smaller and the note names the row.
-                <span className={scoreNote === null ? "after" : "after-neutral"}>
+                //
+                // `!showingEstimate` is the same rule applied to the number
+                // that was never measured at all. Green there would be the
+                // strongest claim this card can make — a measured improvement —
+                // attached to the one number nothing measured.
+                <span
+                  className={scoreNote === null && !showingEstimate ? "after" : "after-neutral"}
+                >
                   {" "}
                   → {rescoredScore ?? tailored.projected_match_score}
                 </span>
@@ -258,6 +293,17 @@ export function Results({
                   // actually wants.
                   "Taking a second pass at your resume — this usually takes under a minute."
                 : "Improving the rewrite against the gaps…"}
+            </p>
+          )}
+          {/* The label that makes the projection honest. Without it the number
+              above is the rewriter's own estimate of its own work, presented
+              exactly like a measurement — which is what this whole change
+              exists to stop. Short, and it says who produced the number and
+              why there is no better one, because the alternative reading of an
+              unexplained estimate is that the panel is broken. */}
+          {showingEstimate && (
+            <p className="muted tiny">
+              {"Estimated by the rewriter — we couldn't re-measure this one."}
             </p>
           )}
           {/* The note under the number, and the reason the number is allowed to
@@ -330,6 +376,24 @@ export function Results({
           {tailored && (
             <>
               <DownloadPdf resume={tailored.resume} company={company} />
+              {/* Directly under the button, and nowhere else. The measuring
+                  window puts an animated placeholder where a number goes, and
+                  a waiting placeholder on the thing the user came for reads as
+                  "not finished yet" — so the one sentence that corrects that
+                  has to be attached to the control that proves it, not stacked
+                  with the score notes 60px above where it would be read as a
+                  fact about the number instead of an invitation to leave.
+
+                  Not shown during the repair leg, which is inside the same
+                  window: that leg is rewriting the DOCUMENT, so a line telling
+                  the user to download it now points at a version that is about
+                  to be replaced. `state.refining` owns the copy there — see the
+                  hint above. */}
+              {state.measuring && !state.refining && (
+                <p className="muted tiny center">
+                  {"Your tailored resume is ready to download — we're re-measuring the match score, about 20 seconds."}
+                </p>
+              )}
               {(signedIn || saving) && (
                 // `|| saving` keeps an in-flight save's own SaveButton
                 // mounted through `signedIn` flipping to false underneath

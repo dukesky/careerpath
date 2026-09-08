@@ -394,6 +394,133 @@ describe("Results - score floor display", () => {
 });
 
 /**
+ * The measuring window: the ~20-30s between the `done` paint and the rescore
+ * landing.
+ *
+ * This slot used to be filled with `tailored.projected_match_score` — the
+ * tailor model's estimate of its own work — in success green, with an arrow,
+ * indistinguishable from a settled measurement. In production that rendered
+ * "78 → 72" and then became "78 → 82" once the real number landed: an
+ * unlabelled guess, ten points out in the wrong direction, telling the user
+ * their rewrite made things worse. The score floor governs MEASURED numbers
+ * and has no authority over a projection, so the projection had to stop
+ * pretending to be one.
+ *
+ * The rule those tests pin: the right-hand slot shows a measurement, a pending
+ * placeholder, or an explicitly-labelled estimate — never an unlabelled
+ * projection.
+ */
+describe("Results - the measuring window", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  const READY_HINT =
+    "Your tailored resume is ready to download — we're re-measuring the match score, about 20 seconds.";
+  const ESTIMATE_NOTE = "Estimated by the rewriter — we couldn't re-measure this one.";
+
+  async function renderScore(state: Partial<Parameters<typeof Results>[0]["state"]>) {
+    await act(async () => {
+      root.render(
+        <Results
+          state={{
+            ...INITIAL_RUN_STATE,
+            phase: "done",
+            analysis: ANALYSIS,
+            tailored: TAILORED,
+            ...state,
+          }}
+          company=""
+          roleTitle=""
+          jdSummary=""
+          jdUrl={undefined}
+          signedIn={false}
+          saving={false}
+          onSavingChange={() => {}}
+          generatedAt={null}
+          baselineScore={60}
+          appliedSupplement=""
+          canRun
+          onImprove={() => {}}
+          supplement={{ text: "", onChange: () => {}, onSubmit: () => {}, busy: false, canRun: true }}
+        />,
+      );
+    });
+  }
+
+  const buttons = () => Array.from(container.querySelectorAll("button")).map((b) => b.textContent);
+
+  // (a) The bug, stated as a test. TAILORED's projection is 70; while the
+  // measurement is in flight that number must not be anywhere in the score
+  // slot, because nothing has measured it and it is about to be replaced.
+  it("holds the slot on a placeholder — never the projection — while the measurement is in flight", async () => {
+    await renderScore({ measuring: true });
+    expect(container.querySelector(".score .pending-dots")?.textContent).toBe("…");
+    expect(container.querySelector(".score")?.textContent).toBe("60 → … match");
+    expect(container.querySelector(".score")?.textContent).not.toContain("70");
+    // The document is finished and downloadable — only its score is pending —
+    // so the button is there, and the hint next to it says exactly that.
+    expect(buttons()).toContain("Download PDF resume");
+    expect(container.textContent).toContain(READY_HINT);
+  });
+
+  // (b) The repair leg measures too, so it is inside the window — but it owns
+  // the copy there. Its sentence is about a second pass over the RESUME, and
+  // telling the user the resume is ready to download in the same breath would
+  // point at a document that is being replaced.
+  it("yields the copy to the repair leg, which is rewriting the document itself", async () => {
+    await renderScore({ measuring: true, refining: true });
+    expect(container.textContent).toContain(
+      "Taking a second pass at your resume — this usually takes under a minute.",
+    );
+    expect(container.textContent).not.toContain(READY_HINT);
+  });
+
+  // (c) The measurement is over and produced nothing: the rescore leg failed,
+  // or this is an entry cached before rescoring existed. The projection is all
+  // there is, so it is shown — labelled, and never in the improvement colour.
+  it("labels the projection as an estimate once the measurement is over and empty", async () => {
+    await renderScore({ measuring: false, rescoredScore: null });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 70 match");
+    expect(container.querySelector(".score .after-neutral")).toBeTruthy();
+    expect(container.querySelector(".score .after")).toBeNull();
+    expect(container.textContent).toContain(ESTIMATE_NOTE);
+    expect(container.querySelector(".score .pending-dots")).toBeNull();
+  });
+
+  // (d) The settled case, byte-identical to what it always was: green arrow,
+  // no estimate label, no placeholder.
+  it("leaves a measured number exactly as it was", async () => {
+    await renderScore({ measuring: false, rescoredScore: 82 });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 82 match");
+    expect(container.querySelector(".score .after")).toBeTruthy();
+    expect(container.textContent).not.toContain(ESTIMATE_NOTE);
+    expect(container.textContent).not.toContain(READY_HINT);
+  });
+
+  // (e) A restored cache entry is a finished run read back off disk — every
+  // flag down, the measurement already in it. A placeholder there would be the
+  // panel claiming to be measuring something it will never measure.
+  it("never animates a restored cache entry", async () => {
+    await renderScore({ measuring: false, refining: false, rescoredScore: 77 });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 77 match");
+    expect(container.querySelector(".pending-dots")).toBeNull();
+    expect(container.textContent).not.toContain(READY_HINT);
+  });
+});
+
+/**
  * The streamed preview's half of Results.tsx.
  *
  * Every test here is really the same assertion twice: the preview paints when

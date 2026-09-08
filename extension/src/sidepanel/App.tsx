@@ -377,8 +377,14 @@ export default function App() {
           scoreNote: hit.scoreNote ?? null,
           downgradedRequirements: hit.downgradedRequirements ?? [],
           // A restored result is finished by definition: whatever free second
-          // leg it had ran to completion before it was cached.
+          // leg it had ran to completion before it was cached — and whatever
+          // measurement it had is either in `rescoredScore` above or never
+          // happened. Either way nothing is being measured NOW, and a restored
+          // entry that claimed otherwise would sit on the pending placeholder
+          // forever; with the flag down, an entry with no score falls back to
+          // the projection, labelled as the estimate it is.
           refining: false,
+          measuring: false,
           // Nothing is streaming into a result that was read back off disk.
           // These are live-run presentation only and are never cached.
           streamingScore: null,

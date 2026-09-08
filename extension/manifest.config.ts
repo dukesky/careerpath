@@ -80,7 +80,7 @@ const OPTIONAL_HOSTS = ["http://*/*", "https://*/*"];
 export default defineManifest((env) => ({
   manifest_version: 3,
   name: "career-path — tailor your resume",
-  version: "0.2.1",
+  version: "0.2.2",
   description:
     "Tailor your resume to the job posting you're looking at — honestly, without inventing experience.",
   // Pins the extension ID (epofgiefihhmbjhojdeffkdkhocjfpaf) across local

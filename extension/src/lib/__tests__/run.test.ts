@@ -1666,6 +1666,35 @@ describe("runTailor", () => {
     expect(patches.filter((p) => p.measuring === true)).toHaveLength(1);
   });
 
+  // ...and closes it AT THE FLUSH, not tens of seconds later at the end.
+  //
+  // The tail is the one leg that runs with a measured number already on screen,
+  // under a hint that says it is improving that number. Publishing the number
+  // while leaving the flag up would hold the panel's right-hand slot on the
+  // placeholder for the whole 40-60s tail — covering the very number the flush
+  // exists to put there, under a sentence about it. From the flush onwards the
+  // display belongs to `refining`, not to `measuring`.
+  it("closes the measuring window at the auto-refine flush, together with the number", async () => {
+    runWith([
+      { score: 74, rows: rescoreRows("met", "met") },
+      { score: 76, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, { autoRefine: true });
+
+    // The tail's hint going up is the divider: the patch before it is the
+    // flush, everything after it is the tail's own.
+    const refineAt = patches.findIndex((p) => p.refining === true);
+    expect(refineAt).toBeGreaterThan(0);
+    // One patch, carrying the number and the closed window together — the same
+    // rule the end-of-run closing patch follows.
+    expect(patches[refineAt - 1]).toMatchObject({ rescoredScore: 74, measuring: false });
+    // And what the panel is holding while the tail runs: the number, no
+    // placeholder.
+    const duringTail = finalState(patches.slice(0, refineAt + 1));
+    expect(duringTail).toMatchObject({ rescoredScore: 74, measuring: false, refining: true });
+  });
+
   // The terminal error patch, same completeness rule as the streaming fields
   // and the score note: App.tsx resets state on a JD URL change, so a patch
   // that omitted this would leave a previous run's raised flag under a failed

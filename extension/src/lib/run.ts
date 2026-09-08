@@ -85,8 +85,10 @@ export interface RunState {
    * arriving by a route the floor has no authority over, because the floor
    * only governs numbers something actually measured.
    *
-   * So: true -> the slot holds a placeholder, false + no score -> the
-   * projection, labelled as an estimate. Never a bare projection.
+   * So: true with nothing measured yet -> the slot holds a placeholder, false
+   * + no score -> the projection, labelled as an estimate. Never a bare
+   * projection. A measurement that has been published outranks the flag — the
+   * placeholder's whole claim is that there is no number.
    *
    * Like `refining`, it blocks nothing — the run is already `done` when it
    * goes up, and the resume is already downloadable. Unlike `refining` it is
@@ -825,8 +827,9 @@ export async function runTailor(
    * The window's last patch, HELD rather than published as it is decided.
    *
    * Everything below decides the right-hand number and then hands it to this
-   * variable; the `finally` at the bottom publishes it together with the
-   * closing `measuring: false`. One patch, not two, and that is a
+   * variable; the `finally` at the bottom — or `flushClosing`, on the one path
+   * that needs the number earlier — publishes it together with the closing
+   * `measuring: false`. One patch, not two, and that is a
    * requirement rather than a tidiness preference: the number and the flag
    * that says whether it is a measurement are one statement, and a panel that
    * received them separately would render a frame in between — the placeholder
@@ -840,15 +843,24 @@ export async function runTailor(
    */
   let closing: Partial<RunState> = {};
   /**
-   * Publish the held patch now, and hand the closing slot to the leg that
-   * follows.
+   * Publish the held patch now — WITH the closing `measuring: false` — and
+   * hand the closing slot to the leg that follows.
    *
    * Only the auto-refine tail needs this: it runs for tens of seconds with a
    * hint that says it is improving a number, so that number has to be on
-   * screen before it starts.
+   * screen before it starts. The flag has to come down with it, which is why
+   * the flush publishes the same pair the `finally` does rather than the
+   * number alone: `measuring` left up would hold the panel's right-hand slot
+   * on the placeholder for the tail's whole 40-60s, covering the very number
+   * this flush exists to show, underneath a sentence about it. From here on
+   * the display belongs to `refining`.
+   *
+   * The `finally` at the bottom republishes `measuring: false` afterwards.
+   * That is harmless — it is already false — and it is still what closes the
+   * window on every path that never reaches this flush.
    */
   const flushClosing = () => {
-    if (Object.keys(closing).length > 0) onUpdate(closing);
+    if (Object.keys(closing).length > 0) onUpdate({ ...closing, ...NOT_MEASURING });
     closing = {};
   };
 
@@ -989,8 +1001,9 @@ export async function runTailor(
     if (repaired) return;
     // The tail is the one leg that runs with a number already on screen — its
     // hint says it is improving that number — so the first measurement's display
-    // is published NOW rather than held to the end. Everything after this point
-    // decides the closing patch instead.
+    // is published NOW rather than held to the end, and the measuring window
+    // closes with it: `refining` owns the slot from here. Everything after this
+    // point decides the closing patch instead.
     flushClosing();
     // Adoption is published together with the closing `refining: false` rather
     // than in its own patch, so the leg ends in ONE terminal patch that

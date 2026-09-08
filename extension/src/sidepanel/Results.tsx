@@ -159,8 +159,17 @@ export function Results({
    * in order, or restored from a live-run record written by an older build.
    * Dropping it would let such a state fall through to the projection branch —
    * a number, from the rewriter, under a hint that says it is still rewriting.
+   *
+   * `rescoredScore === null` is what the placeholder actually claims — nothing
+   * has been MEASURED yet — so a published measurement ends the wait whatever
+   * the flags say. run.ts lowers `measuring` when it publishes one (see
+   * `flushClosing` there), so in a live run this narrows nothing; it is what
+   * keeps a state assembled out of order, or restored from an older build's
+   * record, from hiding a real number behind "…" under a hint about it. The
+   * projection is not at risk either way: it is only ever reached with
+   * `rescoredScore === null`, and it is labelled there.
    */
-  const pendingScore = state.measuring || repairWaiting;
+  const pendingScore = (state.measuring || repairWaiting) && rescoredScore === null;
 
   /**
    * The measurement is over and produced nothing.

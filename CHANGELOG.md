@@ -7,6 +7,42 @@ The web app has no version number; the extension carries its own in
 
 ---
 
+## 2026-09-08 — The waiting score says it is waiting (extension 0.2.2)
+
+### Changed
+
+- **The right-hand number is now always one of three things: a measurement, a
+  placeholder that says the measurement is still running, or an estimate
+  labelled as one.** It is never the rewriter's own projection presented as a
+  verdict. Between your resume landing on screen and the re-measurement
+  finishing, the panel used to fill that slot with the rewriting model's
+  estimate of its own work — in the same green as a settled score, with the
+  same arrow, indistinguishable from one. In production that showed "78 → 72"
+  for twenty-odd seconds and then became "78 → 82" when the real number
+  arrived: ten points out, in the direction that reads as "the rewrite made my
+  resume worse". That is the exact impression the score floor exists to
+  prevent, arriving by a route the floor has no authority over — the floor
+  governs numbers something measured, and nothing had measured that one.
+- **The wait now says what it is waiting for**, next to the download button:
+  your tailored resume is ready to download, and it is the score that is being
+  re-measured. The document was never held up for the number; the panel just
+  never said so.
+- **When the re-measurement fails, the projection is still shown — labelled.**
+  It reads as an estimate by the rewriter rather than a measured result, and
+  it drops the improvement colour, which was the strongest claim the card can
+  make attached to the one number nothing checked.
+
+### Notes
+
+- Nothing about this changes how long anything takes. The re-measurement
+  always ran after the resume was finished and downloadable; this only stops
+  the panel from filling the gap with a guess.
+- Results cached before the re-measurement existed carry no measured number,
+  so they show the labelled estimate rather than a placeholder for a
+  measurement that will never run.
+
+---
+
 ## 2026-09-03 — The "after" score is measured, not guessed (extension 0.2.0)
 
 ### Changed

@@ -509,6 +509,32 @@ describe("Results - the measuring window", () => {
     expect(container.textContent).not.toContain(READY_HINT);
   });
 
+  // (e2) The rule read from the other side: a MEASURED number that has already
+  // been published wins the slot, flag or no flag. run.ts lowers `measuring` at
+  // the auto-refine flush precisely so the tail never runs in this state, but a
+  // patch stream this component did not see in order — or a live-run record
+  // written by an older build — can still produce it, and covering a real
+  // measurement with "…" hides the very number the hint underneath is about.
+  //
+  // The placeholder means "nothing has been measured yet", which is exactly
+  // `rescoredScore === null`; it was never meant to outlive the number.
+  it("shows a published measurement rather than the placeholder while the flag is up", async () => {
+    await renderScore({ measuring: true, rescoredScore: 82 });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 82 match");
+    expect(container.querySelector(".score .pending-dots")).toBeNull();
+    // Measured and improved: the one case that earns the improvement colour.
+    expect(container.querySelector(".score .after")).toBeTruthy();
+    expect(container.textContent).not.toContain(ESTIMATE_NOTE);
+
+    // The auto-refine tail's own state — the same number, under the hint that
+    // says a better rewrite is being attempted against it. The hint is a
+    // sentence about that number, so the number has to be readable.
+    await renderScore({ measuring: true, refining: true, rescoredScore: 82 });
+    expect(container.querySelector(".score")?.textContent).toBe("60 → 82 match");
+    expect(container.querySelector(".score .pending-dots")).toBeNull();
+    expect(container.textContent).toContain("Improving the rewrite against the gaps…");
+  });
+
   // (e) A restored cache entry is a finished run read back off disk — every
   // flag down, the measurement already in it. A placeholder there would be the
   // panel claiming to be measuring something it will never measure.

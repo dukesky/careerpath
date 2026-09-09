@@ -63,7 +63,9 @@ export interface RunState {
    *
    * TWO legs raise it, and they are the same free leg — never both in one run:
    * the gated auto-refine tail (RunOptions.autoRefine, off by default) and the
-   * repair leg below, which fires on a dip that actually lost a requirement.
+   * repair leg below, which fires on a dip that lost a MUST-HAVE — the only
+   * branch whose displayed number the repair can move, since the floor holds
+   * the number itself everywhere else.
    * On the repair leg it means something stronger than a hint: no score has
    * been published yet, and the panel holds the slot on a placeholder rather
    * than showing a dipped number it is about to replace.
@@ -864,6 +866,40 @@ export async function runTailor(
     closing = {};
   };
 
+  /**
+   * One line per run, on the decision that STANDS. Observability only.
+   *
+   * The repair leg was narrowed to must-have downgrades on the argument that
+   * the floor already holds the number everywhere else, so the leg's effect on
+   * the DISPLAYED number is ~zero outside that branch. This line is how that
+   * argument gets checked against real usage: how often each branch fires, and
+   * — when `repaired` is true — what the repair actually settled on.
+   *
+   * Emitted exactly once, from the branch decision below. A measurement that
+   * failed decides no branch and logs nothing. The gated auto-refine tail
+   * (default OFF) does not re-log either: the branch being counted here is the
+   * repair decision, and a second line would double-count the run.
+   */
+  const logBranch = (
+    measured: number,
+    decision: { patch: Partial<RunState>; downs: Downgrade[] },
+    repaired: boolean,
+  ) => {
+    console.log(
+      JSON.stringify({
+        evt: "score_branch",
+        left: leftScore,
+        measured,
+        // The rows-empty branch decides no note at all; `null` is how that
+        // reads on the wire, where an `undefined` would simply vanish from
+        // the JSON and leave the field missing rather than empty.
+        note: decision.patch.scoreNote ?? null,
+        downs: decision.downs.map((d) => ({ kind: d.kind, requirement: d.requirement })),
+        repaired,
+      }),
+    );
+  };
+
   try {
     const measured = await measureWithRows(tailored.data.tailored?.resume);
     /**
@@ -873,10 +909,14 @@ export async function runTailor(
     let repaired = false;
     if (measured) {
       const first = decide(measured);
-      // ANY downgrade under a dipped number buys ONE matrix-aimed rewrite. Not
-      // just a must-have: the owner widened this deliberately, because a
-      // nice-to-have the rewrite dropped is still something the user had and
-      // lost, and the wait costs a free leg on the ~5-8% of runs that reach here.
+      // A MUST-HAVE downgrade under a dipped number buys ONE matrix-aimed
+      // rewrite. Nothing else does — narrowed from "any downgrade" after the
+      // owner watched it fire on a nice-to-have in production, hold the score
+      // slot on a placeholder for ~45s, and settle on 82 when the floor would
+      // have shown 82 instantly. That is the general case, not an unlucky one:
+      // the floor holds the number at the left score in every branch except a
+      // must-have downgrade, so outside that branch the repair's effect on the
+      // DISPLAYED number is ~zero and the wait buys nothing.
       //
       // Not on a refine run, though, for exactly the reason the auto-refine tail
       // is not: the server's budget for one runId funds ONE repair, and it is
@@ -887,15 +927,31 @@ export async function runTailor(
       // take the leg and the rescore the user's OTHER refine is holding, and at
       // the ceiling would simply be refused. The DISPLAY still tells the truth
       // there — only the repair is skipped.
-      if (first.downs.length === 0 || opts.priorAnalysis || opts.isRefinement) {
+      if (
+        first.downs.filter((d) => d.kind === "must_have").length === 0 ||
+        opts.priorAnalysis ||
+        opts.isRefinement
+      ) {
         // Phase stays "done" — it already was, and re-sending it would be the
         // only way this patch could disturb anything.
         //
-        // Held rather than published, so it can ride the closing
-        // `measuring: false`. Nothing is delayed by that: in every case but the
-        // gated auto-refine tail — which flushes it before it starts — this is
-        // already the run's last patch.
+        // Every branch that lands here SETTLES NOW: the number, the note and
+        // the closing `measuring: false` go out together, with nothing awaited
+        // between this line and the patch. That is what a nice-to-have dip
+        // gets now — the held number and the row it names, immediately,
+        // instead of a placeholder over a repair that could not have changed
+        // it. Held rather than published only so it can ride that closing
+        // flag; in every case but the gated auto-refine tail — which flushes
+        // it before it starts — this is already the run's last patch.
+        //
+        // The must-have branch below deliberately does NOT settle early, and
+        // the asymmetry is the point: there, publishing `first.patch` would
+        // put the lower "downgraded" number on screen for the repair's whole
+        // span, only for the repair to retract it. A number that falls and
+        // jumps back is worse than a placeholder; a held number that was going
+        // to be held anyway is worse than showing it at once.
         closing = first.patch;
+        logBranch(measured.score, first, false);
       } else {
         repaired = true;
         // Nothing about the score is published until the decision is final. The
@@ -907,7 +963,10 @@ export async function runTailor(
         // `settled` starts as the display for the measurement we already have:
         // it is what the panel gets if the repair produces nothing better, or
         // throws.
-        let settled = first.patch;
+        let settled = first;
+        // The measurement `settled` describes. Tracked beside it only so the
+        // telemetry line below reports the number that actually stands.
+        let settledScore = measured.score;
         let adopted: Partial<RunState> = {};
         try {
           onUpdate({ refining: true });
@@ -943,7 +1002,8 @@ export async function runTailor(
             // are the DISPLAY, not a trigger: the repair runs once. A loop here
             // would spend free legs the runId does not have on a rewrite the
             // gate above has already refused once.
-            settled = decide(remeasured).patch;
+            settled = decide(remeasured);
+            settledScore = remeasured.score;
             adopted = { tailored: outcome.tailored, ...freshRemaining(outcome.remaining) };
           }
         } catch (err) {
@@ -963,7 +1023,12 @@ export async function runTailor(
           // Handed to `closing` rather than published, for the reason spelled
           // out there: the repair leg is inside the measuring window, so its
           // outcome and the window closing are one patch.
-          closing = { ...settled, ...adopted, refining: false };
+          closing = { ...settled.patch, ...adopted, refining: false };
+          // Once, on the outcome that stands — the post-repair display when
+          // the rewrite was adopted, the pre-repair one when it was refused,
+          // failed or threw. Reporting the triggering dip instead would make
+          // the line say nothing about whether the repair helped.
+          logBranch(settledScore, settled, true);
         }
       }
     }

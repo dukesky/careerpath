@@ -1228,10 +1228,80 @@ describe("runTailor", () => {
     expect(patches.some((p) => p.refining === true)).toBe(false);
   });
 
+  // (b2) — THE owner's observed case, and the reason the repair was narrowed to
+  // must-haves. A dip that lost only a nice-to-have is already answered by the
+  // floor: the number is held at the left score whatever the repair does, so
+  // the repair could only ever settle on the number the panel would have shown
+  // instantly — after ~45s behind a placeholder. Observed in production as
+  // 82 → 82.
+  it("does not repair a dip that lost only nice-to-haves, and settles the number at once", async () => {
+    const run = runWith([{ score: 66, rows: rescoreRows("met", "missing") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    // No second tailor and no second rescore: the free leg is not spent, and
+    // the runId's allowance stays with the user's own refines.
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+    // The held number, the note and the named row — published with the window
+    // already closed in the SAME patch, so the placeholder is never shown.
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 70,
+      scoreNote: "nice_dip",
+      downgradedRequirements: ["Kubernetes cluster operations"],
+      measuring: false,
+    });
+    // ...and that settled patch is the run's last word, not an early one that
+    // a later patch corrects.
+    expect(finalState(patches)).toMatchObject({
+      rescoredScore: 70,
+      scoreNote: "nice_dip",
+      measuring: false,
+      refining: false,
+    });
+  });
+
+  // The other side of the narrowed trigger: a must-have downgrade still buys
+  // the repair, and still holds the slot while it runs. The asymmetry is
+  // deliberate — publishing the "downgraded" display first would flash a lower
+  // number the repair is about to retract.
+  it("repairs a dip that lost a must-have, and publishes no score until it settles", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("partially_met", "met") },
+      { score: 71, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    expect(run.tailorBodies[1].analysis).toEqual(LEFT_ANALYSIS);
+    const refiningAt = patches.findIndex((p) => p.refining === true);
+    expect(refiningAt).toBeGreaterThanOrEqual(0);
+    // The dipped 66 never reaches the panel: one number is published, after the
+    // hint went up, and it is the settled one.
+    const scored = patches.filter((p) => p.rescoredScore != null);
+    expect(scored).toHaveLength(1);
+    expect(patches.indexOf(scored[0])).toBeGreaterThan(refiningAt);
+    expect(scored[0].rescoredScore).toBe(71);
+  });
+
+  // A must-have among the downgrades is enough, whatever else came with it.
+  it("repairs a mixed dip: one must-have alongside one nice-to-have", async () => {
+    const run = runWith([
+      { score: 66, rows: rescoreRows("partially_met", "missing") },
+      { score: 71, rows: rescoreRows("met", "met") },
+    ]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate);
+
+    expect(run.counts()).toEqual({ tailor: 2, rescore: 2 });
+    expect(patches.some((p) => p.refining === true)).toBe(true);
+  });
+
   // (c) + the recovery half of (d)
   it("repairs a dip that lost a requirement: a second tailor WITH the analysis, then a second rescore", async () => {
     const run = runWith([
-      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 66, rows: rescoreRows("partially_met", "met") },
       { score: 71, rows: rescoreRows("met", "met") },
     ]);
     const { patches, onUpdate } = collect();
@@ -1261,7 +1331,7 @@ describe("runTailor", () => {
   // (d)
   it("shows maintained after a repair that fixed the rows but not the number", async () => {
     const run = runWith([
-      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 66, rows: rescoreRows("partially_met", "met") },
       { score: 68, rows: rescoreRows("met", "met") },
     ]);
     const { patches, onUpdate } = collect();
@@ -1281,7 +1351,7 @@ describe("runTailor", () => {
   // (e)
   it("keeps the left number and names the row when only a nice-to-have survives the repair", async () => {
     const run = runWith([
-      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 66, rows: rescoreRows("partially_met", "missing") },
       { score: 67, rows: rescoreRows("met", "partially_met") },
     ]);
     const { patches, onUpdate } = collect();
@@ -1354,7 +1424,7 @@ describe("runTailor", () => {
   // hold-the-number design exists to avoid.
   it("turns refining on before it publishes any score during a repair", async () => {
     runWith([
-      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 66, rows: rescoreRows("partially_met", "met") },
       { score: 67, rows: rescoreRows("met", "met") },
     ]);
     const { patches, onUpdate } = collect();
@@ -1422,12 +1492,31 @@ describe("runTailor", () => {
     });
   });
 
+  // The same guard, on the dip that WOULD buy a repair on a fresh run. The one
+  // above no longer reaches the guard at all now the trigger is must-haves
+  // only, so this is what keeps it covered.
+  it("never repairs a refinement run whose dip lost a must-have", async () => {
+    const run = runWith([{ score: 66, rows: rescoreRows("partially_met", "met") }]);
+    const { patches, onUpdate } = collect();
+    await runTailor(JD, RESUME, onUpdate, { runId: "reused-id", isRefinement: true });
+
+    expect(run.counts()).toEqual({ tailor: 1, rescore: 1 });
+    expect(patches.some((p) => p.refining === true)).toBe(false);
+    // The display still tells the truth; only the repair is skipped.
+    expect(patches.at(-1)).toEqual({
+      rescoredScore: 66,
+      scoreNote: "downgraded",
+      downgradedRequirements: ["Go microservices at scale"],
+      measuring: false,
+    });
+  });
+
   // Both legs are the SAME free leg. Running them back to back would send the
   // runId a third tailor and a third rescore for a rewrite the repair already
   // produced and measured.
   it("does not also run the gated auto-refine tail after a repair", async () => {
     const run = runWith([
-      { score: 66, rows: rescoreRows("met", "missing") },
+      { score: 66, rows: rescoreRows("partially_met", "missing") },
       { score: 67, rows: rescoreRows("met", "met") },
     ]);
     await runTailor(JD, RESUME, () => {}, { autoRefine: true });
@@ -1549,6 +1638,76 @@ describe("runTailor", () => {
     });
   });
 
+  // ------------------------------------------------------ branch telemetry
+  //
+  // One line per run, on the settled decision. It exists so the owner can find
+  // out from real usage how often each branch fires — and, now that the repair
+  // only fires on a must-have, whether it earns its keep at all.
+
+  it("logs the settled score branch once per run", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    runWith([{ score: 66, rows: rescoreRows("met", "missing") }]);
+    await runTailor(JD, RESUME, () => {});
+
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes("score_branch"));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toEqual({
+      evt: "score_branch",
+      left: 70,
+      measured: 66,
+      note: "nice_dip",
+      downs: [{ kind: "nice_to_have", requirement: "Kubernetes cluster operations" }],
+      repaired: false,
+    });
+  });
+
+  // After a repair the line describes the outcome that STANDS, not the dip
+  // that triggered it — otherwise the rate it reports would say nothing about
+  // whether the repair helped.
+  it("logs the post-repair outcome, once, with repaired true", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    runWith([
+      { score: 66, rows: rescoreRows("partially_met", "met") },
+      { score: 71, rows: rescoreRows("met", "met") },
+    ]);
+    await runTailor(JD, RESUME, () => {});
+
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes("score_branch"));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toEqual({
+      evt: "score_branch",
+      left: 70,
+      measured: 71,
+      note: null,
+      downs: [],
+      repaired: true,
+    });
+  });
+
+  // Nothing was decided, so there is no branch to report. A line here would
+  // count a failed measurement as a display that never happened.
+  it("logs no branch when the measurement itself failed", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async (url) => {
+        if (String(url).endsWith("/api/analyze")) return sse({ analysis: {}, remaining: 4 });
+        if (String(url).endsWith("/api/rescore")) return json({ error: "Unknown run." }, 403);
+        return sse({ tailored: { projected_match_score: 80 }, remaining: 4 });
+      }),
+    );
+    await runTailor(JD, RESUME, () => {});
+
+    expect(
+      log.mock.calls.filter((c) => String(c[0]).includes("score_branch")),
+    ).toHaveLength(0);
+  });
+
   it("stays silent when the score went up with nothing weaker", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     runWith([{ score: 74, rows: rescoreRows("met", "met") }]);
@@ -1640,7 +1799,7 @@ describe("runTailor", () => {
   // concerned, and it ends exactly once.
   it("leaves measuring false after the repair leg, and holds it up across the whole span", async () => {
     runWith([
-      { score: 66, rows: rescoreRows("met", "partially_met") },
+      { score: 66, rows: rescoreRows("partially_met", "met") },
       { score: 71, rows: rescoreRows("met", "met") },
     ]);
     const { patches, onUpdate } = collect();
